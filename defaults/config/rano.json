@@ -66,5 +66,23 @@
     "work-reviewer": "검수 담당",
     "personal-worker": "작업 담당",
     "personal-reviewer": "검수 담당"
+  },
+  "roleSkills": {
+    "work-writer": [
+      "rano-docx",
+      "rano-xlsx",
+      "rano-pptx",
+      "rano-pdf"
+    ],
+    "work-coder": [
+      "rano-xlsx",
+      "rano-pdf"
+    ],
+    "personal-worker": [
+      "rano-docx",
+      "rano-xlsx",
+      "rano-pptx",
+      "rano-pdf"
+    ]
   }
 }

@@ -27,6 +27,7 @@ import { buildLeaderSystemPrompt, readLeaderContext } from './leaderPrompt.js';
 import { APPROVAL_STAGE_TOOLS, loadRoles, READ_ONLY_TOOLS } from './roles.js';
 import { shareWithMission } from '../engine/attachments.js';
 import { recordLimit, recordResult } from '../engine/usage.js';
+import { roleSkills } from '../skills/skills.js';
 
 export interface MissionLeaderDeps {
   config: RanoConfig;
@@ -280,7 +281,10 @@ export class MissionLeader implements MissionLeaderApi {
     const roles = loadRoles(config, mission);
     const ctx = await readLeaderContext(
       mission,
-      Object.entries(roles).map(([name, def]) => ({ name, description: def.description })),
+      Object.entries(roles).map(([name, def]) => {
+        const sk = mission.stagePolicy === 'approval' ? roleSkills()[name] ?? [] : [];
+        return { name, description: `${def.description}${sk.length ? ` (스킬: ${sk.join(', ')} — 엑셀·워드·PPT·PDF 같은 파일 결과물은 이 역할에게)` : ''}` };
+      }),
       config.memoryDir,
     );
     const systemPrompt = buildLeaderSystemPrompt(ctx);

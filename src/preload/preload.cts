@@ -272,6 +272,33 @@ const api: RanoApi = {
   async mobileNewCode(): Promise<void> {
     await ipcRenderer.invoke('mobile:new-code');
   },
+  skillsList(): Promise<any> {
+    return ipcRenderer.invoke('skills:list');
+  },
+  skillRead(name: string): Promise<any> {
+    return ipcRenderer.invoke('skills:read', String(name ?? ''));
+  },
+  roleSkills(): Promise<any> {
+    return ipcRenderer.invoke('skills:role-map');
+  },
+  setRoleSkills(role: string, names: string[]): Promise<any> {
+    return ipcRenderer.invoke('skills:set-role', String(role ?? ''), Array.isArray(names) ? names.filter((x) => typeof x === 'string').slice(0, 50) : String(names ?? ''));
+  },
+  skillPreview(source: string): Promise<any> {
+    return ipcRenderer.invoke('skills:preview', String(source ?? ''));
+  },
+  skillInstall(token: string): Promise<any> {
+    return ipcRenderer.invoke('skills:install', String(token ?? ''));
+  },
+  skillRemove(name: string): Promise<any> {
+    return ipcRenderer.invoke('skills:remove', String(name ?? ''));
+  },
+  toolsStatus(): Promise<any> {
+    return ipcRenderer.invoke('tools:status');
+  },
+  toolsInstall(): Promise<any> {
+    return ipcRenderer.invoke('tools:install');
+  },
   usageSummary(): Promise<UsageSummary> {
     return ipcRenderer.invoke('usage:summary');
   },

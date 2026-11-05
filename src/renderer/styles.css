@@ -1067,3 +1067,12 @@ button.approvals:hover { background: #efeeea; }
 .mobile-code { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .mobile-code-num { font-size: 26px; font-weight: 700; letter-spacing: 6px; background: #f3f8f4; border: 1px solid #d9e6dc; border-radius: 10px; padding: 4px 14px; margin-left: 6px; font-variant-numeric: tabular-nums; }
 .msg-via { font-size: 12px; margin-right: 4px; }
+
+/* 스킬 */
+.skill-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 10px; font-size: 13px; }
+.skill-modal { width: min(860px, calc(100vw - 48px)); max-height: calc(100vh - 48px); display: flex; flex-direction: column; }
+.skill-modal-body { overflow: auto; display: flex; flex-direction: column; gap: 10px; }
+.skill-modal-body .org-row .org-input { flex: 1; }
+.skill-md { border: 1px solid #ecece6; border-radius: 10px; padding: 12px 16px; background: #fff; max-height: 420px; overflow: auto; }
+.skill-script { color: #9a5512; }
+.skill-picks { flex-wrap: wrap; gap: 10px 16px; }

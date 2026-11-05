@@ -146,6 +146,34 @@ interface MobileStatus {
   error?: string;
 }
 
+/** 스킬 보관함 */
+interface SkillInfo {
+  name: string;
+  description: string;
+  builtin: boolean; // 라노 OS 기본 스킬
+  files: number;
+  hasScripts: boolean;
+  usedBy: string[]; // 이 스킬을 쓰는 역할
+}
+interface SkillPreview {
+  token: string;
+  name: string;
+  description: string;
+  source: string;
+  files: { path: string; size: number; script: boolean }[];
+  skillMd: string;
+  license?: string;
+  exists: boolean; // 같은 이름이 이미 있음(바꿔 넣게 됨)
+  builtin: boolean; // 기본 스킬과 같은 이름(넣을 수 없음)
+}
+interface ToolsStatus {
+  installed: boolean;
+  installing: boolean;
+  packages: { name: string; version?: string }[];
+  python?: string;
+  log?: string; // 설치 중 마지막 줄
+}
+
 interface SetupStatus {
   needed: boolean; // 안내를 띄워야 하는지 (처음 쓰는 사람)
   dataDir: string; // 데이터 폴더 (~ 로 줄임)
@@ -320,6 +348,15 @@ interface RanoApi {
   mobileDisconnect(): Promise<{ ok: boolean; message: string }>;
   mobileOptions(o: { allRano?: boolean; approvals?: boolean; keepAwake?: boolean }): Promise<void>;
   mobileNewCode(): Promise<void>;
+  skillsList(): Promise<SkillInfo[]>;
+  skillRead(name: string): Promise<{ name: string; description: string; body: string; files: string[] } | null>;
+  roleSkills(): Promise<Record<string, string[]>>;
+  setRoleSkills(role: string, names: string[]): Promise<{ ok: boolean; message: string }>;
+  skillPreview(source: string): Promise<{ ok: true; preview: SkillPreview } | { ok: false; message: string }>;
+  skillInstall(token: string): Promise<{ ok: boolean; message: string; name?: string }>;
+  skillRemove(name: string): Promise<{ ok: boolean; message: string }>;
+  toolsStatus(): Promise<ToolsStatus>;
+  toolsInstall(): Promise<{ ok: boolean; message: string }>;
   usageSummary(): Promise<UsageSummary>;
   search(query: string): Promise<SearchHit[]>;
   missionDocs(missionId: string): Promise<MissionDoc[]>;

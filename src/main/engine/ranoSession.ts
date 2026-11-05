@@ -24,6 +24,7 @@ import { buildRanoSystemPrompt } from './ranoPrompt.js';
 import { zoneText } from '../admin/paths.js';
 import { storedApiKey } from './auth.js';
 import { imageBlocks } from './attachments.js';
+import { ranoPython } from '../skills/skills.js';
 import { fetchPlanLimits, recordLimit, recordResult } from './usage.js';
 
 export interface RanoSessionDeps {
@@ -98,6 +99,9 @@ export function buildSdkEnv(config: RanoConfig): Record<string, string | undefin
     if (key) env.ANTHROPIC_API_KEY = key;
     delete env.ANTHROPIC_AUTH_TOKEN;
   }
+  // 스킬이 쓰는 문서 도구 파이썬 (데이터 폴더에 설치돼 있으면)
+  const py = ranoPython(config);
+  if (py) env.RANO_PY = py;
   env.CLAUDE_AGENT_SDK_CLIENT_APP = 'rano-os/0.6.0';
   return env;
 }

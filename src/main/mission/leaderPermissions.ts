@@ -139,7 +139,7 @@ function checkReadPath(config: RanoConfig, mission: MissionConfig, raw: string, 
   const resolved = absPath(raw, cwd);
   const hit = blockedHit(config, resolved);
   if (hit) return { allow: false, reason: `차단 목록에 걸림: ${hit}`, message: MSG_BLOCKED, blocked: hit };
-  const roots = [...allowedRoots(mission), path.join(config.runsDir, 'drafts', mission.id)]; // 시안 폴더도 읽기 허용
+  const roots = [...allowedRoots(mission), path.join(config.runsDir, 'drafts', mission.id), path.join(config.rootDir, 'skills')]; // 시안 폴더·스킬 보관함도 읽기 허용
   for (const c of new Set([resolved, real(resolved)])) {
     if (!inAny(c, roots)) return { allow: false, reason: `작업 폴더 밖: ${c}`, message: MSG_OUTSIDE };
   }
@@ -417,7 +417,7 @@ export function decideApprovalStage(
   // 명령 실행
   if (toolName === 'Bash') {
     const command = typeof input.command === 'string' ? input.command : '';
-    const roots = [...allowedRoots(mission), path.join(config.runsDir, 'drafts', mission.id)]; // 시안 폴더도 읽기 허용
+    const roots = [...allowedRoots(mission), path.join(config.runsDir, 'drafts', mission.id), path.join(config.rootDir, 'skills')]; // 시안 폴더·스킬 보관함도 읽기 허용
     const b = classifyBash(command, {
       cwd,
       targets: mission.targets.map((t) => path.resolve(t)),
@@ -433,6 +433,9 @@ export function decideApprovalStage(
     if ((kind === 'write' || kind === 'outsideWrite') && b.writePaths.some((p) => inAny(p, mission.readonlyRefs))) {
       return { type: 'deny', reason: '명령으로 참고 폴더 쓰기', message: MSG_REFS };
     }
+    // 이 과제의 시안 폴더 안만 지우거나 쓰는 명령(rm·mv·cp 등)은 승인 없이 허용 (작업 리포가 아닌 라노의 임시 공간)
+    if ((kind === 'delete' || kind === 'write' || kind === 'outsideWrite') && actor.draftsDir && b.writePaths.length && b.writePaths.every((p) => within(p, actor.draftsDir!) || within(real(p), actor.draftsDir!)))
+      return { type: 'allow', reason: `시안 폴더 안 정리(${kind}): ${b.writePaths.map(displayPath).join(', ')}` };
     const files = b.writePaths.length ? `\n바뀔 수 있는 파일: ${b.writePaths.map(displayPath).join(', ')}` : '';
     return {
       type: 'ask',

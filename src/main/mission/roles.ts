@@ -3,6 +3,7 @@ import type { AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { MissionConfig, RanoConfig } from '../../shared/types.js';
+import { skillPromptFor } from '../skills/skills.js';
 
 export const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob'] as const;
 /** 3단계(approval)에서 팀원이 쓸 수 있는 내장 도구. 모두 앱의 권한 검사를 거친다(쓰기·실행은 승인함). */
@@ -99,7 +100,7 @@ export function loadRoles(config: RanoConfig, mission: MissionConfig): Record<st
     }
     out[role] = {
       description: parsed.description,
-      prompt: parsed.body + (readOnly ? READ_ONLY_NOTE : APPROVAL_NOTE),
+      prompt: parsed.body + (readOnly ? READ_ONLY_NOTE : APPROVAL_NOTE) + (readOnly ? '' : skillPromptFor(role)),
       tools,
       // 역할 파일에 적힌 모델보다 라노 설정이 우선한다 (전체 모델 ID 사용 가능)
       model: config.models.member,

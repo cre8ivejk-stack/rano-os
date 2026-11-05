@@ -29,6 +29,7 @@ import { checkForUpdate } from './engine/update.js';
 import { initUsage, usageSummary } from './engine/usage.js';
 import { searchAll } from './engine/search.js';
 import { TelegramBridge } from './mobile/telegram.js';
+import { initSkills, installSkill, installTools, listSkills, previewSkill, readSkill, removeSkill, roleSkills, setRoleSkills, toolsStatus } from './skills/skills.js';
 import { attachmentDataUrl, saveAttachments } from './engine/attachments.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -57,6 +58,7 @@ async function boot() {
   if (home.created) console.log(`[rano] 새 데이터 폴더를 만들었어요: ${defaultRootDir()} (${home.copied}개 파일)`);
   const config = loadConfig();
   initUsage(config.runsDir);
+  initSkills(config, defaultsDir(app.getAppPath()));
   const memory = new MemoryService(config, emit);
   const store = new ConversationStore(config);
 
@@ -319,6 +321,16 @@ async function boot() {
   ipcMain.handle(IPC.mobileDisconnect, () => mobile!.disconnect());
   ipcMain.handle(IPC.mobileOptions, (_e, o: any) => mobile!.setOptions({ ...(typeof o?.allRano === 'boolean' ? { allRano: o.allRano } : {}), ...(typeof o?.approvals === 'boolean' ? { approvals: o.approvals } : {}), ...(typeof o?.keepAwake === 'boolean' ? { keepAwake: o.keepAwake } : {}) }));
   ipcMain.handle(IPC.mobileNewCode, () => mobile!.newPairCode());
+  // 스킬 보관함과 문서 도구
+  ipcMain.handle('skills:list', () => listSkills());
+  ipcMain.handle('skills:read', (_e, n: unknown) => readSkill(String(n ?? '')));
+  ipcMain.handle('skills:role-map', () => roleSkills());
+  ipcMain.handle('skills:set-role', (_e, role: unknown, names: unknown) => setRoleSkills(String(role ?? ''), Array.isArray(names) ? names.filter((x): x is string => typeof x === 'string') : []));
+  ipcMain.handle('skills:preview', (_e, src: unknown) => previewSkill(String(src ?? '')));
+  ipcMain.handle('skills:install', (_e, t: unknown) => installSkill(String(t ?? '')));
+  ipcMain.handle('skills:remove', (_e, n: unknown) => removeSkill(String(n ?? '')));
+  ipcMain.handle('tools:status', () => toolsStatus());
+  ipcMain.handle('tools:install', () => installTools(() => undefined));
   ipcMain.handle(IPC.usageSummary, () => usageSummary(Object.fromEntries(config.missions.map((m) => [m.id, m.name]))));
   ipcMain.handle(IPC.updateCheck, () => {
     if ((config.raw as any)?.updates?.check === false) return { current: app.getVersion(), newer: false, error: '새 버전 확인을 꺼 두었어요 (rano.json updates.check)' };

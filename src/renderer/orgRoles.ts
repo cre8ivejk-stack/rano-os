@@ -1,5 +1,6 @@
 // 조직 화면: 역할 만들기·고치기·보기. 인재풀(pool) 역할만 고칠 수 있고, 나머지는 보기만 한다.
 import { el, zoneInfo } from './dom.js';
+import { roleSkillPicker } from './orgSkills.js';
 import { ROLE_NAME_RULE, SOURCE_LABEL, abilityText, button, checkbox, field, tildify, type Notice } from './orgCommon.js';
 
 interface RoleTemplate {
@@ -194,6 +195,9 @@ export class RoleEditor {
     bodyInput.rows = 10;
     bodyInput.placeholder = '무엇을 하고, 무엇은 하지 않고, 결과를 어떻게 보고하는지 적어 주세요.';
     wrap.appendChild(field('지침', bodyInput));
+
+    // 이 역할이 쓸 스킬 (기존 역할만: 새 역할은 만든 뒤에 고른다)
+    if (role) wrap.appendChild(roleSkillPicker(role.name));
 
     const err = el('p', 'org-problem');
     err.hidden = true;
