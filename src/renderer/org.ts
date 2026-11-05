@@ -60,6 +60,13 @@ export class OrgView {
     this.wizard.openProposal(p);
   }
 
+  /** 새 미션 추가 화면을 연다 */
+  openNewMission(): void {
+    this.notice.clear();
+    this.setMode('wizard');
+    this.wizard.open();
+  }
+
   shown(): void {
     if (this.mode === 'list') void this.load();
   }

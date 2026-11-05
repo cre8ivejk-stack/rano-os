@@ -8,6 +8,7 @@ import { TodoView } from './todo.js';
 import { proposalCard } from './orgProposal.js';
 import { ChatView, type SpeakerStyle } from './chatView.js';
 import { bindComposer, mustGet, setRoleLabels, setZoneInfo } from './dom.js';
+import { SetupGuide } from './setup.js';
 
 const rano = window.rano;
 
@@ -125,6 +126,16 @@ board.onWorkingChange = (anyWorking, names) => {
 };
 
 board.onApprovalsClick = () => showTab('approvals');
+board.onFirstMission = () => {
+  showTab('org');
+  org.openNewMission();
+};
+board.onAskRano = () => {
+  showTab('chat');
+  if (!chatInput.value.trim()) chatInput.value = '이런 일을 맡기고 싶어: ';
+  chatInput.focus();
+  refreshBusy();
+};
 board.office.onOutputsClick = () => showTab('outputs');
 
 // ---------- 승인함 · 결과물함 ----------
@@ -220,6 +231,7 @@ async function start(): Promise<void> {
     // 쉬운 이름이 없으면 역할 이름 그대로 보인다
   }
   rano.onEvent(handleEvent);
+  void new SetupGuide().openIfNeeded();
   void board.load();
   void approvals.load();
   void outputs.load();

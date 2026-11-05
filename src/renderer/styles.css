@@ -862,3 +862,20 @@ button.approvals:hover { background: #efeeea; }
 
 /* 개인 구역 표시 */
 .kind.org-zone-personal { background: #efe6fb; color: #5b3a8c; border-color: #d9c7f2; }
+
+/* 처음 켰을 때 안내 */
+.setup-overlay { position: fixed; inset: 0; z-index: 50; background: rgba(40, 44, 38, 0.42); display: flex; align-items: center; justify-content: center; padding: 24px; }
+.setup-card { background: #fff; border-radius: 16px; width: min(640px, 100%); max-height: calc(100vh - 48px); overflow: auto; padding: 28px 32px 22px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.18); display: flex; flex-direction: column; gap: 14px; }
+.setup-head { display: flex; flex-direction: column; gap: 6px; }
+.setup-badge { align-self: flex-start; font-size: 12px; color: #4b6b5a; background: #e8f0ea; border-radius: 999px; padding: 2px 10px; }
+.setup-title { margin: 0; font-size: 22px; }
+.setup-body { display: flex; flex-direction: column; gap: 12px; }
+.setup-intro p { margin: 0 0 6px; color: #555; line-height: 1.6; }
+.setup-zone { border: 1px solid #e3e3dc; border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
+.setup-path { font-size: 14px; flex: 1; }
+.setup-nav { display: flex; align-items: center; gap: 10px; justify-content: space-between; border-top: 1px solid #ecece6; padding-top: 14px; }
+.setup-nav .org-why, .setup-nav .org-ok { flex: 1; margin: 0; }
+
+/* 미션이 없을 때 현황판 안내 */
+.board-empty { background: #fff; border: 1px solid #e3e3dc; border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; line-height: 1.6; color: #444; }
+.board-empty-actions { display: flex; gap: 8px; margin-top: 10px; }

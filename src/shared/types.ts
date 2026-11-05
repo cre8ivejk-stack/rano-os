@@ -4,6 +4,25 @@
 // ---------- 설정 (config/rano.json 을 읽어 경로를 풀어 둔 형태) ----------
 export type Zone = 'work' | 'personal';
 
+/** 처음 켰을 때 안내 */
+export interface SetupStatus {
+  needed: boolean; // 안내를 띄워야 하는지 (처음 쓰는 사람)
+  dataDir: string; // 데이터 폴더 (~ 로 줄임)
+  profile: { name: string; callName: string; org: string; job: string; devLevel: string };
+  zones: Record<Zone, { label: string; root: string; exists: boolean }>;
+}
+export interface SetupInput {
+  profile: { name: string; callName: string; org: string; job: string; devLevel: 'none' | 'some' | 'dev' | string };
+  zones: Record<Zone, string>; // 절대 경로 또는 ~ 경로
+}
+export interface SetupFolderCheck {
+  ok: boolean;
+  path: string;
+  display: string;
+  exists: boolean;
+  problem?: string;
+}
+
 /** 화면이 켤 때 받는 설정 요약 */
 export interface AppSettings {
   roleLabels: Record<string, string>; // 역할 이름 → 쉬운 이름 (rano.json roleLabels)
@@ -150,6 +169,10 @@ export const IPC = {
   orgSaveRole: 'org:save-role', // invoke(RoleDraft, originalName?: string) → AdminResult (인재풀 역할만)
   orgRestart: 'org:restart', // invoke → void (앱 다시 시작: 설정 다시 읽기)
   appSettings: 'app:settings', // invoke → AppSettings (역할 쉬운 이름, 구역 이름·폴더)
+  setupStatus: 'setup:status', // invoke → SetupStatus
+  setupPickFolder: 'setup:pick-folder', // invoke(zone, current) → string | null (폴더 만들기 가능)
+  setupCheckFolder: 'setup:check-folder', // invoke(zone, path) → SetupFolderCheck
+  setupSave: 'setup:save', // invoke(SetupInput) → { ok, message, needsRestart }
   // ---- 할 일 목록 ----
   todosList: 'todos:list', // invoke → TodoItem[]
   todosAdd: 'todos:add', // invoke(missionId|null, title) → TodoItem[]
@@ -186,6 +209,10 @@ export interface RanoApi {
   orgSaveRole(draft: RoleDraft, originalName?: string): Promise<AdminResult>;
   orgRestart(): Promise<void>;
   appSettings(): Promise<AppSettings>;
+  setupStatus(): Promise<SetupStatus>;
+  setupPickFolder(zone: Zone, current: string): Promise<string | null>;
+  setupCheckFolder(zone: Zone, p: string): Promise<SetupFolderCheck>;
+  setupSave(input: SetupInput): Promise<{ ok: boolean; message: string; needsRestart: boolean }>;
   // ---- 할 일 목록 ----
   todosList(): Promise<TodoItem[]>;
   todosAdd(missionId: string | null, title: string): Promise<TodoItem[]>;

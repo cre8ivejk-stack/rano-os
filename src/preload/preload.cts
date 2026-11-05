@@ -19,6 +19,9 @@ import type {
   TodoStatus,
   Zone,
   AppSettings,
+  SetupFolderCheck,
+  SetupInput,
+  SetupStatus,
 } from '../shared/types.js' with { 'resolution-mode': 'import' };
 
 const CH_LOAD_HISTORY = 'rano:load-history';
@@ -44,6 +47,10 @@ const CH_ORG_ROLE = 'org:role';
 const CH_ORG_SAVE_ROLE = 'org:save-role';
 const CH_ORG_RESTART = 'org:restart';
 const CH_APP_SETTINGS = 'app:settings';
+const CH_SETUP_STATUS = 'setup:status';
+const CH_SETUP_PICK = 'setup:pick-folder';
+const CH_SETUP_CHECK = 'setup:check-folder';
+const CH_SETUP_SAVE = 'setup:save';
 const CH_TODOS_LIST = 'todos:list';
 const CH_TODOS_ADD = 'todos:add';
 const CH_TODOS_UPDATE = 'todos:update';
@@ -170,6 +177,22 @@ const api: RanoApi = {
   },
   appSettings(): Promise<AppSettings> {
     return ipcRenderer.invoke(CH_APP_SETTINGS);
+  },
+  setupStatus(): Promise<SetupStatus> {
+    return ipcRenderer.invoke(CH_SETUP_STATUS);
+  },
+  setupPickFolder(zone: Zone, current: string): Promise<string | null> {
+    return ipcRenderer.invoke(CH_SETUP_PICK, zoneOf(zone), String(current ?? ''));
+  },
+  setupCheckFolder(zone: Zone, p: string): Promise<SetupFolderCheck> {
+    return ipcRenderer.invoke(CH_SETUP_CHECK, zoneOf(zone), String(p ?? ''));
+  },
+  setupSave(input: SetupInput): Promise<{ ok: boolean; message: string; needsRestart: boolean }> {
+    const p = input?.profile ?? ({} as SetupInput['profile']);
+    return ipcRenderer.invoke(CH_SETUP_SAVE, {
+      profile: { name: String(p.name ?? ''), callName: String(p.callName ?? ''), org: String(p.org ?? ''), job: String(p.job ?? ''), devLevel: String(p.devLevel ?? '') },
+      zones: { work: String(input?.zones?.work ?? ''), personal: String(input?.zones?.personal ?? '') },
+    });
   },
   todosList(): Promise<TodoItem[]> {
     return ipcRenderer.invoke(CH_TODOS_LIST);

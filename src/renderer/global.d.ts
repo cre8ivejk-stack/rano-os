@@ -63,6 +63,25 @@ type RanoUiEvent =
 
 type Zone = 'work' | 'personal';
 
+/** 처음 켰을 때 안내 */
+interface SetupStatus {
+  needed: boolean; // 안내를 띄워야 하는지 (처음 쓰는 사람)
+  dataDir: string; // 데이터 폴더 (~ 로 줄임)
+  profile: { name: string; callName: string; org: string; job: string; devLevel: string };
+  zones: Record<Zone, { label: string; root: string; exists: boolean }>;
+}
+interface SetupInput {
+  profile: { name: string; callName: string; org: string; job: string; devLevel: 'none' | 'some' | 'dev' | string };
+  zones: Record<Zone, string>; // 절대 경로 또는 ~ 경로
+}
+interface SetupFolderCheck {
+  ok: boolean;
+  path: string;
+  display: string;
+  exists: boolean;
+  problem?: string;
+}
+
 interface AppSettings {
   roleLabels: Record<string, string>;
   zones: Record<Zone, { label: string; root: string }>;
@@ -178,6 +197,10 @@ interface RanoApi {
   orgSaveRole(draft: RoleDraft, originalName?: string): Promise<AdminResult>;
   orgRestart(): Promise<void>;
   appSettings(): Promise<AppSettings>;
+  setupStatus(): Promise<SetupStatus>;
+  setupPickFolder(zone: Zone, current: string): Promise<string | null>;
+  setupCheckFolder(zone: Zone, p: string): Promise<SetupFolderCheck>;
+  setupSave(input: SetupInput): Promise<{ ok: boolean; message: string; needsRestart: boolean }>;
   todosList(): Promise<TodoItem[]>;
   todosAdd(missionId: string | null, title: string): Promise<TodoItem[]>;
   todosUpdate(id: string, patch: { title?: string; status?: TodoStatus }): Promise<TodoItem[]>;

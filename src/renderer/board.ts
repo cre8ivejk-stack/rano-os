@@ -37,6 +37,10 @@ export class Board {
   private officeBtn = mustGet<HTMLButtonElement>('view-office-btn');
   private listBtn = mustGet<HTMLButtonElement>('view-list-btn');
   readonly office: OfficeView;
+  private emptyEl = el('div', 'board-empty');
+  /** 첫 미션 안내 버튼 */
+  onFirstMission: () => void = () => {};
+  onAskRano: () => void = () => {};
   private mode: 'office' | 'list' = 'office';
   private readonly demo = location.hash === '#office-demo';
   private demoStage = 0;
@@ -75,6 +79,20 @@ export class Board {
       onInput: () => this.refreshComposer(),
     }).autosize;
     this.closeBtn.addEventListener('click', () => this.close());
+    // 미션이 하나도 없을 때 사무실 위에 보이는 첫 미션 안내
+    this.emptyEl.hidden = true;
+    this.emptyEl.appendChild(el('strong', undefined, '아직 미션이 없어요.'));
+    this.emptyEl.appendChild(el('span', undefined, ' 미션은 리더 한 명이 팀원들과 맡는 일이에요. 라노에게 하고 싶은 일을 말하면 구성안을 만들어 드리고, 조직 탭에서 직접 만들 수도 있어요.'));
+    const firstBtns = el('div', 'board-empty-actions');
+    const ask = el('button', 'btn', '라노에게 말하기');
+    ask.type = 'button';
+    ask.addEventListener('click', () => this.onAskRano());
+    const make = el('button', 'btn btn-confirm', '조직 탭에서 첫 미션 만들기');
+    make.type = 'button';
+    make.addEventListener('click', () => this.onFirstMission());
+    firstBtns.append(ask, make);
+    this.emptyEl.appendChild(firstBtns);
+    this.officeEl.before(this.emptyEl);
     this.office = new OfficeView(this.officeEl);
     this.office.onLeaderClick = (id) => void this.open(id);
     this.office.onApprovalsClick = () => this.onApprovalsClick();
@@ -122,6 +140,7 @@ export class Board {
   private refreshOffice() {
     const list = this.demo ? demoStatuses(this.demoStage) : this.order.map((id) => this.statuses.get(id)).filter((s): s is MissionStatus => !!s);
     this.office.update(list);
+    this.emptyEl.hidden = this.demo || !this.listLoaded || list.length > 0;
     this.office.setVisible(this.mode === 'office' && this.tabVisible);
   }
 

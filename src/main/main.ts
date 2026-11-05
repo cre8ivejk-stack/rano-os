@@ -23,6 +23,7 @@ import { createTodoMcpServer } from './todo/todoTools.js';
 import { createOrgAdmin } from './admin/orgAdmin.js';
 import { createOrgMcpServer } from './admin/ranoOrgTools.js';
 import { zoneText } from './admin/paths.js';
+import { createSetup } from './setup.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -250,6 +251,27 @@ async function boot() {
   ipcMain.handle(IPC.orgSaveRole, (_e, d: any, originalName: unknown) =>
     orgSafe(() => org.saveRole(d, typeof originalName === 'string' ? originalName : undefined), fail('역할을 저장하지 못했어요')),
   );
+  const setup = createSetup(config, memory);
+  ipcMain.handle(IPC.setupStatus, () => setup.status());
+  ipcMain.handle(IPC.setupCheckFolder, (_e, zone: unknown, p: unknown) => setup.checkFolder(zone === 'personal' ? 'personal' : 'work', String(p ?? '')));
+  ipcMain.handle(IPC.setupPickFolder, async (_e, zone: unknown, current: unknown) => {
+    const z = zone === 'personal' ? 'personal' : 'work';
+    const cur = typeof current === 'string' && current.trim() ? current.trim().replace(/^~(?=\/|$)/, homedir()) : homedir();
+    const opts = {
+      title: `${zoneText(config)[z].label} 구역 폴더 고르기`,
+      defaultPath: existsSync(cur) ? cur : homedir(),
+      properties: ['openDirectory' as const, 'createDirectory' as const],
+    };
+    const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+    return r.canceled || !r.filePaths[0] ? null : r.filePaths[0];
+  });
+  ipcMain.handle(IPC.setupSave, async (_e, input: any) => {
+    try {
+      return await setup.save(input);
+    } catch {
+      return { ok: false, message: '설정을 저장하지 못했어요. 잠시 뒤 다시 해 주세요', needsRestart: false };
+    }
+  });
   ipcMain.handle(IPC.appSettings, () => {
     const raw = (config.raw ?? {}) as { roleLabels?: unknown };
     const roleLabels: Record<string, string> = {};
