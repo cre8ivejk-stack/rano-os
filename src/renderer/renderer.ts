@@ -10,6 +10,7 @@ import { ChatView, type SpeakerStyle } from './chatView.js';
 import { bindComposer, mustGet, setRoleLabels, setZoneInfo } from './dom.js';
 import { SetupGuide } from './setup.js';
 import { AccountButton } from './account.js';
+import { SettingsButton } from './settings.js';
 
 const rano = window.rano;
 
@@ -233,7 +234,13 @@ async function start(): Promise<void> {
   }
   rano.onEvent(handleEvent);
   const topbar = document.querySelector<HTMLElement>('.topbar');
-  if (topbar) new AccountButton(topbar);
+  if (topbar) {
+    const right = document.createElement('div');
+    right.className = 'topbar-right';
+    topbar.appendChild(right);
+    new SettingsButton(right);
+    new AccountButton(right);
+  }
   void new SetupGuide().openIfNeeded();
   void board.load();
   void approvals.load();

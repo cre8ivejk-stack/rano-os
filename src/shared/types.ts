@@ -38,6 +38,7 @@ export interface SetupFolderCheck {
 export interface AppSettings {
   roleLabels: Record<string, string>; // 역할 이름 → 쉬운 이름 (rano.json roleLabels)
   zones: Record<Zone, { label: string; root: string }>; // root 는 ~ 로 줄인 경로
+  version: string; // 앱 버전
 }
 
 /** 구역: 회사(~/work)와 개인(~/personal). 미션은 자기 구역 루트 아래 폴더만 쓰고, denyRead 는 그 구역 미션이 읽지도 쓰지도 못한다. */
@@ -181,6 +182,9 @@ export const IPC = {
   orgRestart: 'org:restart', // invoke → void (앱 다시 시작: 설정 다시 읽기)
   appSettings: 'app:settings', // invoke → AppSettings (역할 쉬운 이름, 구역 이름·폴더)
   setupStatus: 'setup:status', // invoke → SetupStatus
+  settingsSaveProfile: 'settings:save-profile', // invoke(profile) → me.md
+  settingsSaveZones: 'settings:save-zones', // invoke(zones) 미션이 있는 구역은 거절
+  openDataFolder: 'settings:open-data-folder', // Finder 로 데이터 폴더 열기
   authStatus: 'auth:status',
   authStartLogin: 'auth:start-login', // invoke(kind) → { ok, url? } 로그인 페이지를 브라우저로 연다
   authSubmitCode: 'auth:submit-code', // invoke(code) 브라우저에 나온 코드
@@ -238,6 +242,9 @@ export interface RanoApi {
   authUseMethod(method: 'max' | 'apiKey'): Promise<AuthResult>;
   authRemoveApiKey(): Promise<AuthResult>;
   authOpenLoginPage(url: string): Promise<void>;
+  settingsSaveProfile(profile: SetupInput['profile']): Promise<AuthResult>;
+  settingsSaveZones(zones: Record<Zone, string>): Promise<{ ok: boolean; message: string; needsRestart: boolean }>;
+  openDataFolder(): Promise<void>;
   setupStatus(): Promise<SetupStatus>;
   setupPickFolder(zone: Zone, current: string): Promise<string | null>;
   setupCheckFolder(zone: Zone, p: string): Promise<SetupFolderCheck>;

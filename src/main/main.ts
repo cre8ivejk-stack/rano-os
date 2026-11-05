@@ -273,6 +273,11 @@ async function boot() {
   app.on('before-quit', () => auth.cancelLogin());
   const setup = createSetup(config, memory);
   ipcMain.handle(IPC.setupStatus, () => setup.status());
+  ipcMain.handle(IPC.settingsSaveProfile, (_e, p: any) => setup.saveProfile(p ?? {}).catch(() => ({ ok: false, message: '저장하지 못했어요' })));
+  ipcMain.handle(IPC.settingsSaveZones, (_e, z: any) => setup.saveZones({ work: String(z?.work ?? ''), personal: String(z?.personal ?? '') }).catch(() => ({ ok: false, message: '저장하지 못했어요', needsRestart: false })));
+  ipcMain.handle(IPC.openDataFolder, async () => {
+    await shell.openPath(config.rootDir);
+  });
   ipcMain.handle(IPC.setupCheckFolder, (_e, zone: unknown, p: unknown) => setup.checkFolder(zone === 'personal' ? 'personal' : 'work', String(p ?? '')));
   ipcMain.handle(IPC.setupPickFolder, async (_e, zone: unknown, current: unknown) => {
     const z = zone === 'personal' ? 'personal' : 'work';
@@ -297,7 +302,7 @@ async function boot() {
     const roleLabels: Record<string, string> = {};
     if (raw.roleLabels && typeof raw.roleLabels === 'object')
       for (const [k, v] of Object.entries(raw.roleLabels as Record<string, unknown>)) if (typeof v === 'string' && v.trim()) roleLabels[k] = v.trim().slice(0, 30);
-    return { roleLabels, zones: zoneText(config) };
+    return { roleLabels, zones: zoneText(config), version: app.getVersion() };
   });
   ipcMain.handle(IPC.orgRestart, () => {
     // 기다리던 과제는 대기열 기록으로 다음 실행 때 이어 간다 (before-quit 에서 정리)

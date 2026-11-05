@@ -50,6 +50,9 @@ const CH_ORG_SAVE_ROLE = 'org:save-role';
 const CH_ORG_RESTART = 'org:restart';
 const CH_APP_SETTINGS = 'app:settings';
 const CH_SETUP_STATUS = 'setup:status';
+const CH_SET_PROFILE = 'settings:save-profile';
+const CH_SET_ZONES = 'settings:save-zones';
+const CH_OPEN_DATA = 'settings:open-data-folder';
 const CH_AUTH = {
   status: 'auth:status',
   start: 'auth:start-login',
@@ -217,6 +220,15 @@ const api: RanoApi = {
   },
   async authOpenLoginPage(url: string): Promise<void> {
     await ipcRenderer.invoke(CH_AUTH.open, String(url ?? ''));
+  },
+  settingsSaveProfile(p: SetupInput['profile']): Promise<AuthResult> {
+    return ipcRenderer.invoke(CH_SET_PROFILE, { name: String(p?.name ?? ''), callName: String(p?.callName ?? ''), org: String(p?.org ?? ''), job: String(p?.job ?? ''), devLevel: String(p?.devLevel ?? '') });
+  },
+  settingsSaveZones(z: Record<Zone, string>): Promise<{ ok: boolean; message: string; needsRestart: boolean }> {
+    return ipcRenderer.invoke(CH_SET_ZONES, { work: String(z?.work ?? ''), personal: String(z?.personal ?? '') });
+  },
+  async openDataFolder(): Promise<void> {
+    await ipcRenderer.invoke(CH_OPEN_DATA);
   },
   setupStatus(): Promise<SetupStatus> {
     return ipcRenderer.invoke(CH_SETUP_STATUS);

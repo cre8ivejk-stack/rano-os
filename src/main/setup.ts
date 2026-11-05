@@ -34,6 +34,8 @@ function setField(text: string, key: string, value: string): string {
 
 export interface SetupApi {
   status(): Promise<SetupStatus>;
+  saveProfile(profile: SetupInput['profile']): Promise<{ ok: boolean; message: string }>;
+  saveZones(zones: Record<Zone, string>): Promise<{ ok: boolean; message: string; needsRestart: boolean }>;
   checkFolder(zone: Zone, p: string): { ok: boolean; path: string; display: string; exists: boolean; problem?: string };
   save(input: SetupInput): Promise<{ ok: boolean; message: string; needsRestart: boolean }>;
 }
@@ -91,63 +93,104 @@ export function createSetup(config: RanoConfig, memory: MemoryServiceApi): Setup
     };
   };
 
-  const save = async (input: SetupInput) => {
-    if (!input || typeof input !== 'object') return { ok: false, message: '입력 내용을 읽지 못했어요', needsRestart: false };
-    const name = String(input.profile?.name ?? '').trim();
-    if (!name) return { ok: false, message: '이름을 적어 주세요', needsRestart: false };
-
-    // 1) 구역 폴더 확인
-    const roots: Partial<Record<Zone, string>> = {};
+  /** 구역 폴더 검사. 통과하면 절대 경로 */
+  const checkRoots = (zones: Record<Zone, string> | undefined): { error: string } | { roots: Record<Zone, string> } => {
+    const roots = {} as Record<Zone, string>;
     for (const z of ['work', 'personal'] as const) {
-      const c = checkFolder(z, input.zones?.[z] ?? '');
-      if (!c.ok) return { ok: false, message: `${zoneText(config)[z].label} 폴더: ${c.problem}`, needsRestart: false };
+      const c = checkFolder(z, zones?.[z] ?? '');
+      if (!c.ok) return { error: `${zoneText(config)[z].label} 폴더: ${c.problem}` };
       roots[z] = c.path;
     }
-    if (isInside(roots.work!, roots.personal!) || isInside(roots.personal!, roots.work!))
-      return { ok: false, message: '회사 폴더와 개인 폴더는 서로 겹치지 않게 골라 주세요', needsRestart: false };
+    if (isInside(roots.work, roots.personal) || isInside(roots.personal, roots.work)) return { error: '회사 폴더와 개인 폴더는 서로 겹치지 않게 골라 주세요' };
+    return { roots };
+  };
 
-    // 2) 없는 구역 폴더는 만든다 (사용자가 고른 폴더)
-    try {
-      for (const z of ['work', 'personal'] as const) await mkdir(roots[z]!, { recursive: true });
-    } catch {
-      return { ok: false, message: '구역 폴더를 만들지 못했어요. 다른 폴더를 골라 주세요', needsRestart: false };
-    }
-
-    // 3) 기억 me.md
+  const writeProfile = async (p: SetupInput['profile']): Promise<string | null> => {
+    const name = String(p?.name ?? '').trim();
+    if (!name) return '이름을 적어 주세요';
     try {
       let me = await memory.read('me.md');
       if (!me.trim()) me = '# 나에 대한 정보 (me.md)\n\n## 기본\n';
-      const p = input.profile ?? ({} as SetupInput['profile']);
       const values: Record<MeKey, string> = {
         name,
-        callName: String(p.callName ?? '').trim() || `${name}님`,
-        org: String(p.org ?? '').trim(),
-        job: String(p.job ?? '').trim(),
-        devLevel: DEV_LEVEL_TEXT[String(p.devLevel ?? '')] ?? String(p.devLevel ?? '').trim(),
+        callName: String(p?.callName ?? '').trim() || `${name}님`,
+        org: String(p?.org ?? '').trim(),
+        job: String(p?.job ?? '').trim(),
+        devLevel: DEV_LEVEL_TEXT[String(p?.devLevel ?? '')] ?? String(p?.devLevel ?? '').trim(),
       };
-      for (const k of Object.keys(ME_FIELDS) as MeKey[]) if (values[k] || k === 'name') me = setField(me, ME_FIELDS[k], values[k]);
-      await memory.write('me.md', me, '처음 켰을 때 안내에서 사용자 정보를 적음');
+      // 칸을 비우면 비운 채로 둔다(이름은 꼭 있음). 호칭이 비면 이름+님
+      for (const k of Object.keys(ME_FIELDS) as MeKey[]) {
+        const cur = field(me, ME_FIELDS[k]);
+        if (values[k] || k === 'name' || cur) me = setField(me, ME_FIELDS[k], values[k]);
+      }
+      await memory.write('me.md', me, '사용자 정보를 앱 화면에서 적음');
     } catch {
-      return { ok: false, message: '사용자 정보를 저장하지 못했어요. 잠시 뒤 다시 해 주세요', needsRestart: false };
+      return '사용자 정보를 저장하지 못했어요. 잠시 뒤 다시 해 주세요';
     }
+    return null;
+  };
 
-    // 4) rano.json: 구역 폴더, 다른 구역 막기, 안내 끝 표시
+  const writeZones = async (roots: Record<Zone, string>, markSetupDone: boolean): Promise<string | null> => {
+    try {
+      for (const z of ['work', 'personal'] as const) await mkdir(roots[z], { recursive: true });
+    } catch {
+      return '구역 폴더를 만들지 못했어요. 다른 폴더를 골라 주세요';
+    }
     try {
       const raw = await readRaw(config.rootDir);
       raw.zones = raw.zones ?? {};
       const other: Record<Zone, Zone> = { work: 'personal', personal: 'work' };
       for (const z of ['work', 'personal'] as const) {
         raw.zones[z] = raw.zones[z] ?? {};
-        raw.zones[z].root = shrinkHome(roots[z]!);
-        raw.zones[z].denyRead = [shrinkHome(roots[other[z]]!), `missions/${other[z]}`, `pool/${other[z]}`];
+        raw.zones[z].root = shrinkHome(roots[z]);
+        raw.zones[z].denyRead = [shrinkHome(roots[other[z]]), `missions/${other[z]}`, `pool/${other[z]}`];
       }
-      raw.setup = { done: true, at: new Date().toISOString() };
+      if (markSetupDone) raw.setup = { done: true, at: new Date().toISOString() };
       await writeRaw(config.rootDir, raw);
     } catch {
-      return { ok: false, message: '설정 파일을 저장하지 못했어요. 잠시 뒤 다시 해 주세요', needsRestart: false };
+      return '설정 파일을 저장하지 못했어요. 잠시 뒤 다시 해 주세요';
     }
+    return null;
+  };
+
+  const save = async (input: SetupInput) => {
+    if (!input || typeof input !== 'object') return { ok: false, message: '입력 내용을 읽지 못했어요', needsRestart: false };
+    if (!String(input.profile?.name ?? '').trim()) return { ok: false, message: '이름을 적어 주세요', needsRestart: false };
+    const r = checkRoots(input.zones);
+    if ('error' in r) return { ok: false, message: r.error, needsRestart: false };
+    const e1 = await writeProfile(input.profile);
+    if (e1) return { ok: false, message: e1, needsRestart: false };
+    const e2 = await writeZones(r.roots, true);
+    if (e2) return { ok: false, message: e2, needsRestart: false };
     return { ok: true, message: '설정을 저장했어요. 앱을 다시 시작해 반영할게요', needsRestart: true };
   };
 
-  return { status, checkFolder, save };
+  const saveProfile = async (p: SetupInput['profile']) => {
+    const e = await writeProfile(p);
+    return e ? { ok: false, message: e } : { ok: true, message: '나에 대한 정보를 저장했어요. 라노와 리더가 다음 대화부터 이 정보를 써요' };
+  };
+
+  /** 설정 화면에서 구역 폴더 바꾸기: 미션이 있는 구역은 폴더를 바꿀 수 없다 */
+  const saveZones = async (zones: Record<Zone, string>) => {
+    const r = checkRoots(zones);
+    if ('error' in r) return { ok: false, message: r.error, needsRestart: false };
+    let raw: any;
+    try {
+      raw = await readRaw(config.rootDir);
+    } catch {
+      return { ok: false, message: '설정 파일을 읽지 못했어요', needsRestart: false };
+    }
+    const changed = (['work', 'personal'] as const).filter((z) => realOr(path.resolve(expandHome(String(raw?.zones?.[z]?.root ?? path.join(home, z))))) !== r.roots[z]);
+    if (!changed.length) return { ok: true, message: '바뀐 폴더가 없어요', needsRestart: false };
+    for (const z of changed) {
+      const used = (Array.isArray(raw?.missions) ? raw.missions : []).filter((m: any) => m?.archived !== true && (m?.zone === 'personal' ? 'personal' : 'work') === z);
+      if (used.length)
+        return { ok: false, message: `${zoneText(config)[z].label} 구역에 미션(${used.map((m: any) => m.name ?? m.id).join(', ')})이 있어서 폴더를 바꿀 수 없어요. 그 미션을 보관한 뒤 바꿔 주세요`, needsRestart: false };
+    }
+    const e = await writeZones(r.roots, false);
+    if (e) return { ok: false, message: e, needsRestart: false };
+    return { ok: true, message: '구역 폴더를 바꿨어요. 앱을 다시 시작하면 반영돼요', needsRestart: true };
+  };
+
+  return { status, checkFolder, save, saveProfile, saveZones };
 }

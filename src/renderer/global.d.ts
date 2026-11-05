@@ -96,6 +96,7 @@ interface SetupFolderCheck {
 interface AppSettings {
   roleLabels: Record<string, string>;
   zones: Record<Zone, { label: string; root: string }>;
+  version: string;
 }
 
 interface MissionProposal {
@@ -217,6 +218,9 @@ interface RanoApi {
   authUseMethod(method: 'max' | 'apiKey'): Promise<AuthResult>;
   authRemoveApiKey(): Promise<AuthResult>;
   authOpenLoginPage(url: string): Promise<void>;
+  settingsSaveProfile(profile: SetupInput['profile']): Promise<AuthResult>;
+  settingsSaveZones(zones: Record<Zone, string>): Promise<{ ok: boolean; message: string; needsRestart: boolean }>;
+  openDataFolder(): Promise<void>;
   setupStatus(): Promise<SetupStatus>;
   setupPickFolder(zone: Zone, current: string): Promise<string | null>;
   setupCheckFolder(zone: Zone, p: string): Promise<SetupFolderCheck>;
