@@ -28,6 +28,37 @@ export class OutputsView {
     this.render();
   }
 
+  /** 새 결과물 수가 바뀔 때 (결과물함 탭 배지) */
+  onUnseen: (n: number) => void = () => {};
+  private static SEEN_KEY = 'rano.outputsSeen';
+
+  /** 아직 보지 않은 끝난 결과물 수 */
+  unseen(): number {
+    let seen = '';
+    try {
+      seen = localStorage.getItem(OutputsView.SEEN_KEY) ?? '';
+    } catch {
+      seen = '';
+    }
+    // 처음 쓰는 경우: 지금까지 것은 본 것으로 둔다
+    if (!seen) {
+      this.markSeen();
+      return 0;
+    }
+    return this.items.filter((o) => o && o.status !== 'running' && (o.endedAt ?? '') > seen).length;
+  }
+
+  /** 결과물함을 봤을 때 */
+  markSeen(): void {
+    const latest = this.items.reduce((m, o) => ((o?.endedAt ?? '') > m ? (o.endedAt as string) : m), '');
+    try {
+      localStorage.setItem(OutputsView.SEEN_KEY, latest || new Date().toISOString());
+    } catch {
+      // 무시
+    }
+    this.onUnseen(0);
+  }
+
   async load(): Promise<void> {
     try {
       const list = await this.rano.outputsList();
@@ -64,9 +95,11 @@ export class OutputsView {
           ? '결과물함을 불러오지 못했어요. 앱을 다시 열어 주세요.'
           : '아직 결과물이 없어요';
       this.listEl.replaceChildren(el('p', 'board-note', text));
+      this.onUnseen(0);
       return;
     }
     this.listEl.replaceChildren(...items.map((o) => this.renderCard(o)));
+    this.onUnseen(this.unseen());
   }
 
   private renderCard(o: TaskOutput): HTMLElement {
@@ -77,10 +110,23 @@ export class OutputsView {
     top.appendChild(el('span', 'out-mission', this.missionName(o.missionId) ?? o.missionId));
     top.appendChild(el('span', `badge task-${o.status}`, STATUS_LABEL[o.status] ?? o.status));
     card.appendChild(top);
-    card.appendChild(el('h3', 'out-title', o.title));
+    const t = outputTitle(o);
+    card.appendChild(el('h3', 'out-title', t.title));
     const meta = [o.from === 'rano' ? '라노 배정' : '직접 지시', `시작 ${formatWhen(o.startedAt)}`];
     if (o.endedAt) meta.push(`끝남 ${formatWhen(o.endedAt)}`);
     card.appendChild(el('div', 'task-meta', meta.join(' · ')));
+    if (t.task) card.appendChild(el('p', 'out-task', `맡긴 일: ${t.task}`));
+
+    // ---- 결과 요약: 리더 보고 첫 부분을 바로 보여 준다 ----
+    const summary = reportSummary(o.leaderReport ?? '');
+    if (summary) {
+      const box = el('div', 'out-summary');
+      box.appendChild(el('span', 'out-summary-label', '결과'));
+      const txt = el('div', 'out-summary-text');
+      renderRich(txt, summary);
+      box.appendChild(txt);
+      card.appendChild(box);
+    }
 
     // ---- 바뀐 파일 ----
     const sec = el('section', 'card-sec');
@@ -88,7 +134,7 @@ export class OutputsView {
     sec.appendChild(el('h3', 'card-sec-title', files.length ? `바뀐 파일 ${files.length}개` : '바뀐 파일'));
     if (files.length === 0) {
       sec.appendChild(
-        el('p', 'muted', o.status === 'running' ? '과제가 끝나면 바뀐 파일을 정리해 보여 드려요' : '바뀐 파일 없음 (읽고 정리만 한 과제)'),
+        el('p', 'muted', o.status === 'running' ? '과제가 끝나면 바뀐 파일을 정리해 보여 드려요' : '바뀐 파일 없음 · 결과는 위 보고예요 (읽고 정리한 과제)'),
       );
     } else {
       const list = el('ul', 'files');
@@ -115,7 +161,7 @@ export class OutputsView {
 
     // ---- 리포 리더 보고 ----
     if (o.leaderReport && o.leaderReport.trim()) {
-      const { root, body } = foldable(`${key}:leader`, '리포 리더 보고');
+      const { root, body } = foldable(`${key}:leader`, '리포 리더 보고 전체');
       const text = el('div', 'report-text');
       renderRich(text, o.leaderReport);
       body.appendChild(text);
@@ -179,4 +225,37 @@ export class OutputsView {
     li.append(row, note);
     return li;
   }
+}
+
+/** 결과물 제목: 리더 보고의 첫 제목 → 지시의 [제목] → 지시 앞부분. task 는 맡긴 일 한 줄 */
+export function outputTitle(o: TaskOutput): { title: string; task?: string } {
+  const report = o.leaderReport ?? '';
+  const h = /^\s*#{1,3}\s+(.+)$/m.exec(report);
+  const bracket = /^\s*\[([^\]]{2,40})\]/.exec(o.title ?? '');
+  const clip = (t: string, n: number) => (t.length > n ? `${t.slice(0, n)}…` : t);
+  const task = clip((o.title ?? '').replace(/^\s*\[[^\]]*\]\s*/, '').replace(/\s+/g, ' ').trim(), 90);
+  if (h) return { title: clip(h[1].replace(/^보고\s*[:：]\s*/, '').replace(/\*\*/g, '').trim(), 70), task };
+  if (bracket) return { title: bracket[1], task };
+  return { title: clip(o.title ?? '과제', 70) };
+}
+
+/** 보고 요약: 첫 제목 뒤 첫 문단(과 바로 이어지는 목록)을 600자까지 */
+export function reportSummary(report: string): string {
+  const lines = report.replace(/\r\n?/g, '\n').split('\n');
+  const out: string[] = [];
+  let started = false;
+  for (const l of lines) {
+    if (/^\s*#{1,6}\s/.test(l)) {
+      if (started) break;
+      continue;
+    }
+    if (!l.trim()) {
+      if (started && out.length) break;
+      continue;
+    }
+    started = true;
+    out.push(l);
+  }
+  const s = out.join('\n').trim();
+  return s.length > 600 ? `${s.slice(0, 600)}…` : s;
 }

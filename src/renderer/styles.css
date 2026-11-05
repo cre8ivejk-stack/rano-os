@@ -1044,3 +1044,19 @@ button.approvals:hover { background: #efeeea; }
 .search-kind-leader { background: #eef7f0; color: #2f6a45; }
 .search-kind-output { background: #fff4e5; color: #8a5a12; }
 .search-kind-approval { background: #f6eefc; color: #6a3d8f; }
+
+/* 글 안의 표·코드·가로줄 */
+.md-table-wrap { overflow-x: auto; margin: 8px 0; }
+.md-table { border-collapse: collapse; font-size: 13.5px; line-height: 1.5; min-width: 50%; }
+.md-table th, .md-table td { border: 1px solid #e3e3dc; padding: 6px 10px; text-align: left; vertical-align: top; }
+.md-table th { background: #f6f6f1; font-weight: 600; white-space: nowrap; }
+.md-table tr:nth-child(even) td { background: #fbfbf8; }
+.md-code { background: #f6f6f1; border: 1px solid #ecece6; border-radius: 8px; padding: 10px 12px; font-size: 12.5px; overflow-x: auto; white-space: pre; margin: 8px 0; }
+.md-hr { border: 0; border-top: 1px solid #e3e3dc; margin: 12px 0; }
+
+/* 결과물 카드 요약 */
+.out-task { margin: 2px 0 0; font-size: 12.5px; color: #888; }
+.out-summary { display: grid; grid-template-columns: auto 1fr; gap: 10px; margin: 10px 0 4px; padding: 10px 12px; background: #f3f8f4; border: 1px solid #d9e6dc; border-radius: 10px; }
+.out-summary-label { font-size: 12px; font-weight: 700; color: #2f6a45; background: #e1efe5; border-radius: 6px; padding: 1px 7px; align-self: start; }
+.out-summary-text { font-size: 13.5px; line-height: 1.6; }
+.out-summary-text .md-p { margin: 0 0 4px; }

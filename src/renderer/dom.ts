@@ -71,7 +71,73 @@ export function renderRich(container: HTMLElement, text: string): void {
     para = [];
   };
 
-  for (const line of lines) {
+  // 표: | 칸 | 칸 | 줄이 이어지고 둘째 줄이 |---|---| 이면 표로 그린다
+  const cells = (row: string) => {
+    let t = row.trim();
+    if (t.startsWith('|')) t = t.slice(1);
+    if (t.endsWith('|')) t = t.slice(0, -1);
+    return t.split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|'));
+  };
+  const isSep = (row: string) => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(row);
+  const isRow = (row: string) => /^\s*\|.*\|\s*$/.test(row) || (row.includes('|') && row.trim().split('|').length > 2);
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // 코드 묶음 ``` … ```
+    if (/^\s*```/.test(line)) {
+      flushPara();
+      list = null;
+      const buf: string[] = [];
+      i++;
+      while (i < lines.length && !/^\s*```/.test(lines[i])) buf.push(lines[i++]);
+      container.appendChild(el('pre', 'md-code', buf.join('\n')));
+      continue;
+    }
+    // 가로줄
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      flushPara();
+      list = null;
+      container.appendChild(el('hr', 'md-hr'));
+      continue;
+    }
+    // 표
+    if (isRow(line) && i + 1 < lines.length && isSep(lines[i + 1])) {
+      flushPara();
+      list = null;
+      const head = cells(line);
+      const aligns = cells(lines[i + 1]).map((c) => (c.startsWith(':') && c.endsWith(':') ? 'center' : c.endsWith(':') ? 'right' : ''));
+      i += 2;
+      const wrap = el('div', 'md-table-wrap');
+      const table = el('table', 'md-table');
+      const thead = el('thead');
+      const htr = el('tr');
+      head.forEach((h, k) => {
+        const th = el('th');
+        if (aligns[k]) th.style.textAlign = aligns[k];
+        appendInline(th, h);
+        htr.appendChild(th);
+      });
+      thead.appendChild(htr);
+      table.appendChild(thead);
+      const tbody = el('tbody');
+      while (i < lines.length && isRow(lines[i]) && !isSep(lines[i])) {
+        const tr = el('tr');
+        const row = cells(lines[i]);
+        for (let k = 0; k < Math.max(head.length, row.length); k++) {
+          const td = el('td');
+          if (aligns[k]) td.style.textAlign = aligns[k];
+          appendInline(td, row[k] ?? '');
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+        i++;
+      }
+      i--;
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+      container.appendChild(wrap);
+      continue;
+    }
     const heading = /^(#{1,6})\s+(.*)$/.exec(line);
     const bullet = /^\s*[-*•]\s+(.*)$/.exec(line);
     const ordered = /^\s*(\d+)[.)]\s+(.*)$/.exec(line);

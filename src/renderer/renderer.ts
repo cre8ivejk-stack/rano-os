@@ -56,6 +56,7 @@ function showTab(name: TabName): void {
     tabViews[key].hidden = !active;
   }
   board.setTabVisible(name === 'board');
+  if (name === 'outputs') outputs.markSeen();
   if (name === 'chat') {
     chat.scrollToBottom();
     chatInput.focus();
@@ -159,6 +160,17 @@ board.office.onOutputsClick = () => showTab('outputs');
 // ---------- 승인함 · 결과물함 ----------
 const approvals = new ApprovalsView();
 const outputs = new OutputsView();
+const outputsBadge = mustGet<HTMLSpanElement>('outputs-badge');
+outputs.onUnseen = (n) => {
+  // 결과물함을 보고 있으면 바로 본 것으로 친다
+  if (n > 0 && currentTab === 'outputs') {
+    outputs.markSeen();
+    return;
+  }
+  outputsBadge.textContent = n > 0 ? String(n) : '';
+  outputsBadge.hidden = n <= 0;
+  outputsBadge.setAttribute('aria-label', n > 0 ? `새 결과물 ${n}개` : '');
+};
 approvals.missionName = outputs.missionName = (id) => board.nameOf(id);
 approvals.onPendingCount = (n) => {
   approvalsBadge.textContent = n > 0 ? String(n) : '';
