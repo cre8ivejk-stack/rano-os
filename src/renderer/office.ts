@@ -194,6 +194,11 @@ export class OfficeView {
   onLeaderClick: (missionId: string) => void = () => {};
   onApprovalsClick: () => void = () => {};
   onOutputsClick: () => void = () => {};
+  /** 빈 방의 [+ 새 미션] 을 눌렀을 때 */
+  onNewMission: () => void = () => {};
+  /** 빈 방(새 미션 자리)을 그릴지 (시연 모드에서는 끈다) */
+  showVacant = true;
+  private vacant: { x: number; y: number; index: number }[] = [];
 
   constructor(private readonly root: HTMLElement) {
     root.replaceChildren();
@@ -265,7 +270,8 @@ export class OfficeView {
   private layout() {
     const width = this.root.clientWidth || 800;
     const height = this.root.clientHeight || 600;
-    const n = Math.max(1, this.statuses.length);
+    // 미션 방 + 새 미션 자리 1칸
+    const n = Math.max(1, this.statuses.length + (this.showVacant ? 1 : 0));
     // 한 줄에 놓을 방 수를 바꿔 보며 화면에 가장 크게 들어가는 배치를 고른다 (방이 늘면 한 줄에 4개까지)
     let best = { cols: 1, scale: 0 };
     for (let cols = 1; cols <= Math.min(n, 4); cols++) {
@@ -278,6 +284,8 @@ export class OfficeView {
     this.cols = best.cols;
     this.rows = Math.ceil(n / this.cols);
     this.sceneW = Math.max(MIN_W, SHAFT + GAP + this.cols * (ROOM_W + GAP));
+    // 최소 폭 때문에 남는 자리가 있으면 그만큼 칸을 늘려 빈 방으로 채운다
+    if (this.showVacant) this.cols = Math.max(this.cols, Math.floor((this.sceneW - SHAFT - GAP) / (ROOM_W + GAP)));
     this.lobbyTop = GAP + this.rows * (ROOM_H + HALL);
     this.sceneH = this.lobbyTop + LOBBY_H;
     this.scale = Math.max(2, Math.min(4, best.scale));
@@ -297,6 +305,9 @@ export class OfficeView {
       blocked: recentlyBlocked(s, now),
       waitingWho: waitingPeople(s),
     }));
+    // 격자에서 남는 칸은 모두 빈 방으로 채운다 (회색으로 비어 보이지 않게)
+    this.vacant = [];
+    if (this.showVacant) for (let i = this.statuses.length; i < this.cols * this.rows; i++) this.vacant.push({ index: i, ...this.roomPos(i) });
     this.actors = this.buildActors();
     // 방 배치가 바뀌면(창 크기·미션 수) 걸어가지 말고 모두 제자리로 옮긴다
     const geo = `${this.cols}:${this.sceneW}:${this.statuses.map((s) => s.missionId).join(',')}`;
@@ -555,6 +566,19 @@ export class OfficeView {
       if (room.blocked) this.place(el('div', 'office-tag alert', '차단됨'), room.x + ROOM_W - 42, room.y + ROOM_H - 12);
     }
 
+    // 빈 방: 첫 칸은 [+ 새 미션], 나머지는 '빈 방' 표시
+    this.vacant.forEach((v, i) => {
+      if (i === 0) {
+        const b = el('button', 'office-vacant-btn', '+ 새 미션');
+        b.type = 'button';
+        b.title = '새 미션을 만들어요 (조직 탭 미션 추가)';
+        b.addEventListener('click', () => this.onNewMission());
+        this.place(b, v.x + Math.floor(ROOM_W / 2) - 26, v.y + Math.floor(ROOM_H / 2) - 6);
+      } else {
+        this.place(el('div', 'office-vacant-label', '빈 방'), v.x + Math.floor(ROOM_W / 2) - 12, v.y + Math.floor(ROOM_H / 2) - 4);
+      }
+    });
+
     // 로비: 승인 창구, 결과물 진열장
     const L = this.lobbyTop;
     const pending = this.rooms.reduce((n, r) => n + (r.status.pendingApprovals ?? 0), 0);
@@ -663,6 +687,7 @@ export class OfficeView {
     }
     for (let y = 6; y < this.lobbyTop; y += 12) this.px(Math.floor(SHAFT / 2) + 1, y, 1, 5, C.hallLine);
     for (const room of this.rooms) this.drawRoom(room);
+    for (const v of this.vacant) this.drawVacant(v.x, v.y, v.index);
     this.drawLobby();
     // 뒤(위)에 있는 사람부터
     const list = this.actors.map((a) => ({ a, w: this.walkers.get(a.key) })).filter((p): p is { a: Actor; w: Walker } => !!p.w);
@@ -727,6 +752,29 @@ export class OfficeView {
     this.px(x + ROOM_W - 22, y + ROOM_H - 10, 2, 3, '#3b3f46');
     // 아래 벽과 문(왼쪽)
     this.px(x, y + ROOM_H - 2, ROOM_W, 2, T.wall);
+    this.px(x + DOOR_X - 6, y + ROOM_H - 2, 12, 2, C.hall);
+  }
+
+  /** 아직 미션이 없는 빈 방: 회색 바닥, 불 꺼진 창, 이삿짐 상자 */
+  private drawVacant(x: number, y: number, index: number) {
+    for (let ty = WALL; ty < ROOM_H; ty += 6) {
+      for (let tx = 0; tx < ROOM_W; tx += 6) this.px(x + tx, y + ty, 6, 6, ((tx + ty) / 6) % 2 === 0 ? '#e3dfd6' : '#dcd8ce');
+    }
+    this.px(x, y, ROOM_W, WALL, '#cfc8b9');
+    this.px(x, y + WALL - 1, ROOM_W, 1, 'rgba(0,0,0,0.10)');
+    this.px(x + 90, y + 4, 16, 9, '#a39c8c');
+    this.px(x + 91, y + 5, 14, 7, this.isNight() ? C.windowNight : '#c9d8e2');
+    this.px(x + 97, y + 5, 1, 7, '#a39c8c');
+    // 이삿짐 상자 (칸마다 자리를 조금씩 바꾼다)
+    const bx = x + 14 + ((index * 23) % 40);
+    this.px(bx, y + 70, 14, 11, '#c49a64');
+    this.px(bx, y + 70, 14, 2, '#a97f4c');
+    this.px(bx + 6, y + 70, 2, 11, '#e6d3a8');
+    this.px(bx + 16, y + 74, 10, 7, '#b88c56');
+    this.px(bx + 16, y + 74, 10, 2, '#9c7445');
+    this.drawPlant(x + ROOM_W - 12, y + ROOM_H - 14);
+    // 아래 벽과 문
+    this.px(x, y + ROOM_H - 2, ROOM_W, 2, '#cfc8b9');
     this.px(x + DOOR_X - 6, y + ROOM_H - 2, 12, 2, C.hall);
   }
 

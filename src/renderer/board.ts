@@ -94,6 +94,8 @@ export class Board {
     this.emptyEl.appendChild(firstBtns);
     this.officeEl.before(this.emptyEl);
     this.office = new OfficeView(this.officeEl);
+    this.office.showVacant = !this.demo;
+    this.office.onNewMission = () => this.onFirstMission();
     this.office.onLeaderClick = (id) => void this.open(id);
     this.office.onApprovalsClick = () => this.onApprovalsClick();
     try {

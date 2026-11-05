@@ -907,3 +907,8 @@ button.approvals:hover { background: #efeeea; }
 .settings-zones { display: flex; flex-direction: column; gap: 6px; }
 .settings-zone-name { min-width: 40px; }
 .settings-sec .org-row { gap: 8px; flex-wrap: wrap; align-items: center; }
+
+/* 사무실 빈 방 */
+.office-vacant-btn { font-size: 12px; background: rgba(255, 255, 255, 0.92); border: 1px dashed #8a9a8f; color: #3f6150; border-radius: 8px; padding: 3px 10px; cursor: pointer; white-space: nowrap; }
+.office-vacant-btn:hover { background: #fff; border-style: solid; }
+.office-vacant-label { font-size: 11px; color: #8a8478; background: rgba(255, 255, 255, 0.6); border-radius: 6px; padding: 0 6px; pointer-events: none; }
