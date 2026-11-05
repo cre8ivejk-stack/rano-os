@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>라노 OS</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="module" src="./renderer.js"></script>
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <h1 class="brand-title">라노 OS</h1>
+          <p class="brand-sub" id="brand-sub">라노와 대화</p>
+        </div>
+        <nav class="tabs" role="tablist" aria-label="화면">
+          <button type="button" class="tab tab-active" id="tab-chat" role="tab" aria-selected="true" aria-controls="view-chat">대화</button>
+          <button type="button" class="tab" id="tab-board" role="tab" aria-selected="false" aria-controls="view-board">
+            현황판<span class="tab-dot" id="board-dot" aria-label="리더가 일하는 중" hidden></span>
+          </button>
+          <button type="button" class="tab" id="tab-approvals" role="tab" aria-selected="false" aria-controls="view-approvals">
+            승인함<span class="tab-badge" id="approvals-badge" hidden></span>
+          </button>
+          <button type="button" class="tab" id="tab-outputs" role="tab" aria-selected="false" aria-controls="view-outputs">결과물함</button>
+          <button type="button" class="tab" id="tab-org" role="tab" aria-selected="false" aria-controls="view-org">조직</button>
+        </nav>
+      </header>
+
+      <!-- 라노와 대화 -->
+      <main class="chat-wrap" id="view-chat" role="tabpanel" aria-labelledby="tab-chat">
+      <section class="chat" aria-label="라노와 대화">
+        <div class="scroll" id="scroll">
+          <div class="log" id="log" role="log" aria-live="polite" aria-label="라노와 나눈 대화">
+            <div class="empty" id="empty" hidden>
+              <p class="empty-title">라노에게 말을 걸어 보세요.</p>
+              <p class="empty-example">예) 내가 누구야? · 지금 미션은?</p>
+            </div>
+          </div>
+          <div class="thinking" id="thinking" hidden>
+            <span class="thinking-name">라노</span>
+            <span class="thinking-text">라노가 생각하고 있어요<span class="dots"><i>.</i><i>.</i><i>.</i></span></span>
+          </div>
+        </div>
+
+        <form class="composer" id="composer" autocomplete="off">
+          <textarea id="input" class="input" rows="1" placeholder="라노에게 할 말을 적어 주세요" aria-label="라노에게 할 말"></textarea>
+          <button type="submit" id="send" class="send">보내기</button>
+        </form>
+        <p class="hint">Enter 보내기 · Shift+Enter 줄바꿈</p>
+      </section>
+
+      <!-- 할 일 목록: 사용자와 라노가 함께 보는 굵직한 일 -->
+      <aside class="todo" aria-labelledby="todo-heading">
+        <div class="todo-head">
+          <h2 class="todo-heading" id="todo-heading">할 일</h2>
+          <span class="todo-count" id="todo-count"></span>
+        </div>
+        <p class="todo-rule">완료는 직접 표시해 주세요. 라노는 "확인 요청"까지만 바꿔요.</p>
+        <div class="todo-groups" id="todo-groups"></div>
+        <form class="todo-add" id="todo-add" autocomplete="off">
+          <select id="todo-mission" class="todo-mission" aria-label="어느 미션의 일인지"></select>
+          <input id="todo-title" class="todo-title-input" placeholder="할 일 추가" aria-label="새 할 일" maxlength="120" />
+          <button type="submit" id="todo-add-btn" class="todo-add-btn">추가</button>
+        </form>
+      </aside>
+      </main>
+
+      <!-- 현황판 -->
+      <main class="board" id="view-board" role="tabpanel" aria-labelledby="tab-board" hidden>
+        <div class="board-left">
+          <div class="board-toggle" role="group" aria-label="현황판 보기 방식">
+            <button type="button" class="toggle-btn" id="view-office-btn">사무실</button>
+            <button type="button" class="toggle-btn" id="view-list-btn">목록</button>
+          </div>
+          <div class="office" id="office" aria-label="라노 오피스: 미션별 사무실 그림"></div>
+          <div class="board-cards" id="board-cards" aria-label="미션 카드"></div>
+        </div>
+
+        <div class="leader-side">
+          <div class="leader-placeholder" id="leader-placeholder">
+            <p class="empty-title">미션 카드를 누르면 리포 리더와 대화할 수 있어요.</p>
+            <p class="empty-example">리포 리더는 미션 하나를 맡아 팀원들과 일하는 리더예요.</p>
+          </div>
+
+          <section class="leader-panel" id="leader-panel" aria-labelledby="leader-title" hidden>
+            <div class="leader-head">
+              <h2 class="leader-title" id="leader-title">리포 리더와 대화</h2>
+              <span class="pill pill-idle" id="leader-state">쉬는 중</span>
+              <button type="button" class="leader-close" id="leader-close">닫기</button>
+            </div>
+            <p class="leader-note">여기서 지시하면 라노를 거치지 않고 리포 리더에게 바로 전달돼요. 라노에게도 알려 드려요.</p>
+
+            <div class="scroll" id="leader-scroll">
+              <div class="log" id="leader-log" role="log" aria-live="polite" aria-label="리포 리더와 나눈 대화">
+                <div class="empty" id="leader-empty" hidden>
+                  <p class="empty-title">아직 나눈 대화가 없어요.</p>
+                  <p class="empty-example">리포 리더에게 맡길 일을 적어 보세요.</p>
+                </div>
+              </div>
+              <div class="thinking" id="leader-working" hidden>
+                <span class="thinking-text"><span id="leader-working-text">리더가 일하고 있어요</span><span class="dots"><i>.</i><i>.</i><i>.</i></span></span>
+              </div>
+            </div>
+
+            <form class="composer" id="leader-form" autocomplete="off">
+              <textarea id="leader-input" class="input" rows="1" placeholder="리포 리더에게 할 일을 적어 주세요" aria-label="리포 리더에게 할 말"></textarea>
+              <button type="submit" id="leader-send" class="send" disabled>보내기</button>
+            </form>
+            <p class="hint">Enter 보내기 · Shift+Enter 줄바꿈</p>
+          </section>
+        </div>
+      </main>
+
+      <!-- 승인함 -->
+      <main class="pane" id="view-approvals" role="tabpanel" aria-labelledby="tab-approvals" hidden>
+        <div class="pane-inner">
+          <div class="pane-head">
+            <h2 class="pane-title">기다리는 요청 <span class="pane-count" id="approvals-pending-count"></span></h2>
+            <p class="pane-sub">오래 기다린 요청부터 보여 드려요. 승인하기 전까지 그 일은 멈춰 있어요.</p>
+          </div>
+          <div class="appr-list" id="approvals-pending"></div>
+
+          <details class="done-wrap" id="approvals-done" hidden>
+            <summary class="done-summary" id="approvals-done-summary">처리한 요청</summary>
+            <div class="appr-list" id="approvals-done-list"></div>
+          </details>
+        </div>
+      </main>
+
+      <!-- 결과물함 -->
+      <main class="pane" id="view-outputs" role="tabpanel" aria-labelledby="tab-outputs" hidden>
+        <div class="pane-inner">
+          <div class="pane-head">
+            <h2 class="pane-title">결과물</h2>
+            <p class="pane-sub">과제마다 바뀐 파일과 검수 보고, 리포 리더 보고를 모아 두었어요. 최근 과제가 위에 있어요.</p>
+          </div>
+          <div class="out-list" id="outputs-list"></div>
+        </div>
+      </main>
+
+      <!-- 조직: 미션 관리 · 인재풀 -->
+      <main class="pane" id="view-org" role="tabpanel" aria-labelledby="tab-org" hidden>
+        <div class="pane-inner">
+          <p class="org-notice" id="org-notice" role="status" aria-live="polite" hidden></p>
+          <div id="org-root"></div>
+        </div>
+      </main>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "rootDir": "~/rano",
+  "auth": {
+    "method": "max",
+    "_설명": "max = 이 맥에 로그인한 본인 Claude 계정(Pro·Max). apiKey 로 바꾸면 API 키를 쓴다(키 값은 이 파일에 적지 않는다)."
+  },
+  "models": {
+    "rano": "claude-opus-5-5",
+    "repoLeader": "claude-opus-5-5",
+    "member": "claude-opus-5-5"
+  },
+  "zones": {
+    "work": {
+      "label": "회사",
+      "root": "~/work",
+      "pool": "pool/work",
+      "missionsDir": "missions/work",
+      "denyRead": [
+        "~/personal",
+        "missions/personal",
+        "pool/personal"
+      ]
+    },
+    "personal": {
+      "label": "개인",
+      "root": "~/personal",
+      "pool": "pool/personal",
+      "missionsDir": "missions/personal",
+      "denyRead": [
+        "~/work",
+        "missions/work",
+        "pool/work"
+      ]
+    }
+  },
+  "missions": [],
+  "blocked": [
+    "~/.ssh",
+    "~/.aws",
+    "~/.config/**/*credentials*",
+    "~/.config/gh",
+    "~/.config/gcloud",
+    "~/Library/Keychains",
+    "~/Library/Application Support/Google/Chrome",
+    "~/Library/Safari",
+    "~/Library/Messages",
+    "~/Library/Mail",
+    "~/Library/Containers/com.apple.mail",
+    "**/.env",
+    "**/.env.*"
+  ],
+  "memory": {
+    "dir": "memory",
+    "files": [
+      "me.md",
+      "priorities.md",
+      "missions.md"
+    ],
+    "autoCommit": true
+  },
+  "runsDir": "runs",
+  "roleLabels": {
+    "work-writer": "문서 담당",
+    "work-coder": "코드 담당",
+    "work-reviewer": "검수 담당",
+    "personal-worker": "작업 담당",
+    "personal-reviewer": "검수 담당"
+  }
+}

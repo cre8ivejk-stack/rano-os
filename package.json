@@ -1,0 +1,26 @@
+{
+  "name": "rano-os",
+  "version": "0.1.0",
+  "private": true,
+  "description": "라노 OS - 에이전트 조직 운영 데스크톱 앱",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && cp src/renderer/index.html src/renderer/styles.css dist/renderer/",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
+    "start": "npm run build && electron .",
+    "package": "npm run package:check && npm run build && electron-packager . \"라노 OS\" --platform=darwin --arch=arm64 --out=out --overwrite --asar.unpack=\"**/claude-agent-sdk-darwin-arm64/**\" --ignore=\"^/src\" --ignore=\"^/out\" --ignore=\"^/tsconfig\" --app-bundle-id=local.rano.os",
+    "package:check": "node -e \"const r=require('child_process').spawnSync('pgrep',['-f','rano/app/out/.*Contents/MacOS/']);if(r.status===0){console.error('라노 OS 앱이 켜져 있어요. 앱을 닫은 뒤 다시 포장해 주세요.');process.exit(1)}\""
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.318",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "@types/node": "^26.6.6",
+    "electron": "^45.2.2",
+    "playwright-core": "^1.64.1",
+    "typescript": "^7.0.2"
+  },
+  "type": "module"
+}

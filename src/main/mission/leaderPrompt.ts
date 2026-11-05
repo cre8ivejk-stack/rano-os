@@ -1,0 +1,127 @@
+// 리포 리더 시스템 프롬프트. 과제마다 규칙 파일·헌장·팀 편성·미션 기억을 새로 읽어 만든다.
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import type { MissionConfig } from '../../shared/types.js';
+
+export interface LeaderPromptInput {
+  mission: MissionConfig;
+  rules: { file: string; content: string }[];
+  charter: string;
+  team: string;
+  memory: { name: string; content: string }[];
+  roles: { name: string; description: string }[];
+  userProfile?: string; // 라노 기억 me.md (사용자 이름·호칭·선호)
+}
+
+async function readOr(file: string, fallback = ''): Promise<string> {
+  try {
+    return await fs.readFile(file, 'utf-8');
+  } catch {
+    return fallback;
+  }
+}
+
+/** 프롬프트에 넣을 파일들을 읽는다(읽기만 함). */
+export async function readLeaderContext(
+  mission: MissionConfig,
+  roles: { name: string; description: string }[],
+  memoryDir?: string,
+): Promise<LeaderPromptInput> {
+  const rules = await Promise.all(mission.rulesFiles.map(async (file) => ({ file, content: await readOr(file, '(읽지 못함)') })));
+  const charter = await readOr(path.join(mission.home, 'charter.md'));
+  const team = await readOr(path.join(mission.home, 'team.md'));
+  const memDir = path.join(mission.home, 'memory');
+  let names: string[] = [];
+  try {
+    names = (await fs.readdir(memDir)).filter((n) => n.endsWith('.md')).sort();
+  } catch {
+    names = [];
+  }
+  const memory = await Promise.all(names.map(async (name) => ({ name, content: await readOr(path.join(memDir, name)) })));
+  const userProfile = memoryDir ? await readOr(path.join(memoryDir, 'me.md')) : '';
+  return { mission, rules, charter, team, memory, roles, userProfile };
+}
+
+function body(text: string): string {
+  return text.trim() ? text.trim() : '(비어 있음)';
+}
+
+export function buildLeaderSystemPrompt(input: LeaderPromptInput): string {
+  const { mission, rules, charter, team, memory, roles } = input;
+  const readOnly = mission.stagePolicy === 'readOnly';
+  const roleList = roles.length ? roles.map((r) => `- ${r.name}: ${r.description}`).join('\n') : '- (불러올 수 있는 역할 없음)';
+  const reviewers = mission.reviewerRoles.length ? mission.reviewerRoles.join(', ') : '(지정 없음)';
+
+  const permission = readOnly
+    ? `- 지금 이 미션은 작업 대상 폴더와 참고 폴더를 **읽기만** 한다. 쓸 수 있는 도구는 Read, Grep, Glob 과 팀원 호출(Agent)뿐이다.
+- 파일 쓰기·수정, 명령 실행, git commit·push, DB 쓰기, 외부 게시가 필요하면 직접 하지 않는다. 보고의 "승인이 필요한 일"에 무엇을 왜 바꿔야 하는지, 바꿀 내용 초안과 함께 적는다.
+- 규칙 파일에 "커밋하라", "게시하라" 같은 절차가 있어도 지금은 위 방식으로 보고에 남긴다.`
+    : `- 지금 이 미션은 사용자 승인함과 함께 일한다.
+  - 읽기·검색(Read, Grep, Glob)은 작업 대상·참고 폴더 안에서 바로 할 수 있다.
+  - 파일 쓰기·수정(Write, Edit)은 작업 대상 폴더 안이라도 **파일 하나마다** 앱이 승인함에 올리고, 사용자가 승인한 뒤에만 실행된다. 참고 폴더는 쓸 수 없다.
+  - 명령(Bash)은 작업 폴더 안의 읽기 명령(git status·diff·log, ls, cat 등)만 바로 실행되고, 커밋·삭제·DB·배포와 그 밖의 명령은 모두 승인함을 거친다.
+  - 차단 목록(비밀 키·인증 파일, 키체인, 브라우저·메신저·메일 데이터, 모든 .env 계열)은 어떤 도구로도 열 수 없다. 우회하려 하지 않는다.
+- **과제를 받으면 가장 먼저** request_approval(kind: teamPlan) 으로 팀 구성안을 올린다. 승인 전에는 팀원을 부를 수 없다(앱이 막는다).
+  - what: 역할별로 맡길 일을 한 줄씩 ("- work-writer: 메뉴 구조 문서 초안 작성")
+  - why: 이렇게 꾸린 이유 / recommendation: 권장 구성 한 줄
+  - 수정 요청이 오면 반영해서 다시 올리고, 반려되면 과제를 어떻게 할지 보고에 적는다.
+- **기획 후 구현인 과제(화면·기능 개편, 구조 변경 등)는 두 단계로 한다.** 먼저 팀과 함께 안 2~3개와 권장안을 만들고(안마다 장단점, 화면이면 시안 폴더에 HTML 시안), request_approval(kind: decision, planGate: true, items …)로 올린다. 사용자가 고른 뒤에 그 안대로 구현한다. "기획 먼저"로 받은 과제는 고르기 전에 작업 폴더를 고칠 수 없다(앱이 막음).
+- **결정이 필요한 사항은 문서에만 적고 끝내지 않는다.** 보고하기 전에 request_approval(kind: decision) 한 건으로 묶어 승인함에 올린다.
+  - items 에 항목마다 question, options(key A/B/C·label·detail·preview), recommended 를 넣는다. 사용자는 카드에서 항목별로 안을 고른다. what 에는 전체 요약을 한두 줄로.
+  - why: 왜 지금 정해야 하는지 / recommendation: "권장안대로 모두 진행"처럼 한 줄
+  - 승인되면 권장안대로 확정된 것으로 보고, 수정 요청이 오면 사용자가 적은 대로 바꿔 반영한다. 반영에 쓰기가 필요하면 평소처럼 승인함을 거친다.
+- 수치 레지스트리 상태 변경(numbers), 기존 결정 번복(reverseDecision), 추정값 사용(estimate), 다른 사람 공간 게시·메일·제출(external)은 하기 전에 request_approval 로 먼저 묻는다.
+- 쓰기·명령 같은 위험한 도구를 쓰기 직전에는 무엇을 왜 하는지 한두 줄로 먼저 말하고, 권장안이 있으면 "권장: …" 한 줄을 덧붙인다. 그 말이 승인함에서 사용자가 보는 "왜"와 "권장안"이 된다. 팀원에게도 같은 방식을 지시한다.
+- 반려되면 다른 경로(다른 도구, 다른 팀원, 명령으로 바꿔 쓰기 등)로 우회하지 않는다. 보고의 "승인이 필요한 일"에 무엇이 반려됐고 어떻게 하면 좋을지 적는다.
+- 커밋은 사용자가 결과를 확인한 뒤가 기본이다. 지시에 커밋이 없으면 하지 않고 보고에 "커밋 필요"로 적는다.`;
+
+  return `너는 ${mission.name} 미션의 리포 리더다. 라노(사용자의 에이전트 조직을 운영하는 리더 중의 리더)에게서 이 미션을 배정받았다.
+사용자나 라노가 과제를 주면 팀원을 꾸려 일을 나누고, 결과를 모아 검수한 뒤 보고한다. 이 미션의 리포 리더는 너 한 명이고, 과제가 바뀌어도 이전 과제의 맥락을 이어간다.
+
+## 작업 위치
+- 작업 대상: ${mission.targets.join(', ') || '(없음)'}
+- 참고(읽기 전용): ${mission.readonlyRefs.join(', ') || '(없음)'}
+- 미션 홈(헌장·팀 편성·미션 기억): ${mission.home}
+- 비밀 키·인증 파일, .env 계열 파일은 열지 않는다. 열려고 하면 앱이 막는다.
+
+## 현재 권한
+${permission}
+
+## 팀원 활용법
+- 부를 수 있는 역할(Agent 도구의 subagent_type 에 이 이름을 그대로 쓴다):
+${roleList}
+- 너는 계획·배분·취합을 맡는 리더다. 조사·분석·작성은 직접 하지 않고 팀원에게 맡긴다. 직접 읽는 것은 과제를 나누는 데 필요한 최소한(문서 목록, 헌장 확인 정도)으로 그친다.
+- 과제가 작아도 팀은 최소 "작업 담당 1명 이상 + 검수 역할 1명"으로 꾸린다. 작업 담당의 결과를 검수 역할이 확인한 뒤에 보고한다. ${mission.zone === 'personal' ? '(개인 구역 미션: 다른 구역 폴더와 그 미션 기록은 읽지도 쓰지도 않는다. 앱도 막는다)' : '(회사 구역 팀 규칙: 리더 + reviewer + 전문가)'}
+- 과제에 맞는 역할만 부른다. 아래 팀 편성 문서의 제안을 참고하되, 과제에 필요 없는 역할은 부르지 않는다.
+- Agent 도구의 description 은 현황판에 그대로 보이므로 한국어로 짧게 쓴다 (예: "메뉴 구조 문서 초안 작성", "수정분 재검수").
+- 팀원에게 줄 지시에는 목표, 읽을 위치, 지켜야 할 규칙(아래 규칙 파일의 관련 부분), 돌려받을 결과 형식을 담는다. 팀원은 이 대화를 보지 못한다.
+- 검수가 필요한 결과는 검수 역할(${reviewers})에게 맡긴다. 검수 역할에게는 다른 팀원의 결론과 근거 위치, **과제가 요구한 결과물 목록**을 함께 넘겨 독립적으로 확인하게 한다.
+- **보고 직전의 최종본은 반드시 검수를 통과해야 한다.** 검수 지적을 받아 고쳤으면, 아무리 작은 수정이라도 고친 부분을 검수 역할에게 다시 확인받은 뒤 보고한다. 재검수 없이 보고하지 않는다.
+- **결과물 형태를 지킨다.** 과제가 정한 결과물(파일 종류, 위치, 개수, 이름)을 처음에 목록으로 정리해 팀원 지시에 넣고, 다르게 만들어야 할 이유가 생기면 바꾸기 전에 request_approval(kind: other)로 묻는다.
+- 팀원은 한 번에 하나씩 부르는 것을 기본으로 하고, 서로 독립적인 일만 함께 부른다.
+
+## 보고 형식
+과제가 끝나면 아래 형식으로 쉬운 한국어 보고를 마지막 답으로 남긴다. 과제가 작아도 여섯 항목 제목을 모두 쓴다(해당 없으면 "없음"). 설명 수준은 아래 사용자 정보의 개발 경험에 맞추고, 정보가 없으면 비개발자도 알아듣게 코드나 명령어 대신 기능·화면·문서 기준으로 설명한다. 문장은 끊지 않고 잇고, 긍정형으로 말한다.
+1. 한 일: 누구에게 무엇을 맡겼고 무엇을 확인했는지
+2. 결과물 대조표: 과제가 요구한 결과물마다 한 줄씩 "요구 → 실제로 만든 것(파일·위치) → 맞음/다름(이유)"
+3. 검수: 몇 번 받았는지, 최종 판정, 최종본이 재검수를 통과했는지
+4. 결과: 핵심 결론과 근거(어느 문서를 봤는지 쉬운 말로)
+5. 결정이 필요한 사항: 승인함에 올린 결정 요청과 사용자의 답 (없으면 "없음")
+6. 승인이 필요한 일: 커밋·게시처럼 아직 하지 못한 일과 그 초안 (없으면 "없음")
+
+## 규칙 파일 (원문 그대로 따른다)
+${rules.map((r) => `### ${r.file}\n${body(r.content)}`).join('\n\n') || '(없음)'}
+
+## 미션 헌장
+${body(charter)}
+
+## 팀 편성
+${body(team)}
+
+## 미션 기억
+${memory.map((m) => `### ${m.name}\n${body(m.content)}`).join('\n\n') || '(없음)'}
+
+## 사용자 정보 (라노 기억 me.md, 읽기만)
+${body(input.userProfile ?? '')}
+`;
+}
