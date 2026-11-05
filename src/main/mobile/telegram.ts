@@ -4,7 +4,7 @@
 import { randomInt } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { safeStorage } from 'electron';
+import { powerSaveBlocker, safeStorage } from 'electron';
 import type { ApprovalQueueApi, ApprovalRequest, MobileStatus, NewAttachment, RanoConfig, RanoUiEvent } from '../../shared/types.js';
 
 // 시험할 때만 가짜 텔레그램 주소(이 맥 안)로 바꿀 수 있다. 평소에는 늘 텔레그램 공식 주소
@@ -18,12 +18,13 @@ interface Saved {
   botName?: string;
   allRano?: boolean; // 라노의 답을 모두 휴대폰으로도 보내기
   approvals?: boolean; // 승인 요청 알림
+  keepAwake?: boolean; // 휴대폰 연결 중에는 맥이 스스로 잠들지 않게
 }
 
 export interface MobileDeps {
   config: RanoConfig;
   approvals: ApprovalQueueApi & { list(): ApprovalRequest[] };
-  sendToRano: (text: string, attachments: NewAttachment[]) => Promise<{ ok: boolean; message?: string }>;
+  sendToRano: (text: string, attachments: NewAttachment[]) => Promise<{ ok: boolean; message?: string }>; // 휴대폰에서 온 말로 보냄
   activity: (text: string) => void; // 앱 대화창에 한 줄
 }
 
@@ -60,6 +61,17 @@ export class TelegramBridge {
   private mobileTurn = false; // 휴대폰에서 보낸 말에 대한 라노 답을 기다리는 중
   private sentApprovals = new Map<string, number>(); // 승인 요청 id → 텔레그램 메시지 id
   private seenAtStart = new Set<string>();
+  private blockerId: number | null = null;
+
+  /** 잠자기 막기: 짝지은 연결이 있고 켜 두었을 때만. 화면은 꺼져도 되고 맥만 깨어 있게 한다 */
+  private applyKeepAwake(): void {
+    const want = !!(this.running && this.saved?.chatId && this.saved.keepAwake);
+    if (want && this.blockerId === null) this.blockerId = powerSaveBlocker.start('prevent-app-suspension');
+    else if (!want && this.blockerId !== null) {
+      if (powerSaveBlocker.isStarted(this.blockerId)) powerSaveBlocker.stop(this.blockerId);
+      this.blockerId = null;
+    }
+  }
 
   constructor(private readonly deps: MobileDeps) {
     this.saved = this.load();
@@ -124,6 +136,8 @@ export class TelegramBridge {
       pairCode: this.saved?.chatId ? undefined : this.pairCode ?? undefined,
       allRano: this.saved?.allRano !== false,
       approvals: this.saved?.approvals !== false,
+      keepAwake: !!this.saved?.keepAwake,
+      keepingAwake: this.blockerId !== null && powerSaveBlocker.isStarted(this.blockerId),
       error: this.lastError || undefined,
     };
   }
@@ -159,11 +173,13 @@ export class TelegramBridge {
     return { ok: true, message: '텔레그램 연결을 끊었어요' };
   }
 
-  setOptions(o: { allRano?: boolean; approvals?: boolean }): void {
+  setOptions(o: { allRano?: boolean; approvals?: boolean; keepAwake?: boolean }): void {
     if (!this.saved) return;
+    if (typeof o.keepAwake === 'boolean') this.saved.keepAwake = o.keepAwake;
     if (typeof o.allRano === 'boolean') this.saved.allRano = o.allRano;
     if (typeof o.approvals === 'boolean') this.saved.approvals = o.approvals;
     this.persist();
+    this.applyKeepAwake();
   }
 
   // ---------- 받기 ----------
@@ -172,6 +188,7 @@ export class TelegramBridge {
     this.running = true;
     // 연결 전부터 있던 승인 요청은 다시 보내지 않는다
     this.seenAtStart = new Set(this.deps.approvals.list().filter((a) => a.status === 'pending').map((a) => a.id));
+    this.applyKeepAwake();
     void this.loop();
   }
 
@@ -179,6 +196,7 @@ export class TelegramBridge {
     this.running = false;
     this.abort?.abort();
     this.abort = null;
+    this.applyKeepAwake();
   }
 
   private async loop(): Promise<void> {
@@ -238,6 +256,7 @@ export class TelegramBridge {
         saved.name = [m.from?.first_name, m.from?.last_name].filter(Boolean).join(' ') || m.from?.username || '';
         this.persist();
         this.pairCode = null;
+        this.applyKeepAwake();
         this.deps.activity(`휴대폰 텔레그램(${saved.name})과 연결했어요`);
         await this.say('라노 OS 와 연결했어요. 이제 여기서 라노에게 말을 걸 수 있어요. 승인 요청이 오면 여기서도 승인·반려할 수 있어요.');
       } else {
@@ -272,7 +291,7 @@ export class TelegramBridge {
     if (!text && !attachments.length) return;
     this.mobileTurn = true;
     await this.call('sendChatAction', { chat_id: saved.chatId, action: 'typing' }).catch(() => undefined);
-    const r = await this.deps.sendToRano(text ? `${text}\n\n(휴대폰에서 보냄)` : '(휴대폰에서 사진만 보냄)', attachments);
+    const r = await this.deps.sendToRano(text || '(사진)', attachments);
     if (!r.ok) {
       this.mobileTurn = false;
       await this.say(r.message ?? '라노에게 전하지 못했어요.');
@@ -282,6 +301,15 @@ export class TelegramBridge {
   // ---------- 앱에서 일어난 일 → 휴대폰 ----------
   onEvent(e: RanoUiEvent): void {
     if (!this.saved?.chatId) return;
+    // 맥에서 한 말도 함께 보낸다 (라노 답을 모두 받는 설정일 때). 휴대폰에서 보낸 말은 이미 휴대폰에 있으니 건너뛴다
+    if (e.kind === 'message' && e.message.role === 'user') {
+      const t = e.message.text ?? '';
+      if (this.saved.allRano !== false && e.message.via !== 'mobile' && !/\(휴대폰에서 (보냄|사진만 보냄)\)\s*$/.test(t)) {
+        const pics = e.message.attachments?.length ? ` (그림 ${e.message.attachments.length}개)` : '';
+        void this.say(`💻 ${t}${pics}`);
+      }
+      return;
+    }
     if (e.kind === 'message' && e.message.role === 'rano') {
       if (this.mobileTurn || this.saved.allRano !== false) void this.say(e.message.text);
     } else if (e.kind === 'error' && !('missionId' in e && e.missionId) && this.mobileTurn) {

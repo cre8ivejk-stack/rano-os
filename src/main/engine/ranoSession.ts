@@ -136,8 +136,8 @@ export class RanoSession implements RanoSessionApi {
     this.permissionsLog = path.join(deps.config.runsDir, 'permissions.jsonl');
   }
 
-  send(text: string, attachments: ChatAttachment[] = []): Promise<void> {
-    return this.enqueue(() => this.handle(text, false, attachments));
+  send(text: string, attachments: ChatAttachment[] = [], via?: 'mobile'): Promise<void> {
+    return this.enqueue(() => this.handle(text, false, attachments, via));
   }
 
   // 앱이 라노에게 알린다(리포 리더 보고 등). 사용자 말풍선은 만들지 않고 대화 기록에도 사용자 말로 남기지 않는다.
@@ -164,11 +164,11 @@ export class RanoSession implements RanoSessionApi {
     this.emit({ kind: 'error', text, at: new Date().toISOString() });
   }
 
-  private async handle(text: string, fromApp: boolean, attachments: ChatAttachment[] = []): Promise<void> {
+  private async handle(text: string, fromApp: boolean, attachments: ChatAttachment[] = [], via?: 'mobile'): Promise<void> {
     if (fromApp) {
       this.emit({ kind: 'activity', text: `앱 알림이 도착했어요: ${firstLine(text.replace(/^\[앱 알림\]\s*/, ''), 60)}`, at: new Date().toISOString() });
     } else {
-      const userMsg: ChatMessage = { id: randomUUID(), role: 'user', text, at: new Date().toISOString(), ...(attachments.length ? { attachments } : {}) };
+      const userMsg: ChatMessage = { id: randomUUID(), role: 'user', text, at: new Date().toISOString(), ...(attachments.length ? { attachments } : {}), ...(via ? { via } : {}) };
       try {
         await this.store.append(userMsg);
       } catch {
@@ -178,6 +178,8 @@ export class RanoSession implements RanoSessionApi {
     }
     this.emit({ kind: 'status', status: 'thinking' });
     let prompt = fromApp ? `[앱 알림] ${text}` : text;
+    // 휴대폰에서 온 말: 대화 기록에는 아이콘으로만 보이고, 라노에게는 짧게 답하라는 표시를 붙인다
+    if (via === 'mobile') prompt += '\n\n(휴대폰에서 보냄)';
     if (attachments.length) {
       const marked = attachments.filter((a) => a.marked).length;
       prompt += `\n\n[앱 안내] 사용자가 그림 ${attachments.length}개를 붙였어요 (위 그림, 순서대로 id: ${attachments.map((a) => `${a.id}(${a.name}${a.marked ? ', 표시함' : ''})`).join(', ')}). 리더에게 일을 맡길 때 이 그림이 필요하면 assign_to_mission 의 attachments 에 id 를 넣으세요.`;

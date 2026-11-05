@@ -67,6 +67,16 @@ export class ChatView {
     const row = el('div', `item msg ${style.side === 'right' ? 'msg-right' : 'msg-left'} ${style.className}`);
     const meta = el('div', 'msg-meta');
     if (style.name) meta.appendChild(el('span', 'msg-name', style.name));
+    // 휴대폰(텔레그램)에서 보낸 말은 📱 아이콘으로 표시 (예전 기록의 "(휴대폰에서 보냄)" 글도 아이콘으로 바꿔 보여 줌)
+    const oldMobile = /\n*\(휴대폰에서 (보냄|사진만 보냄)\)\s*$/;
+    const fromPhone = m.via === 'mobile' || (m.role === 'user' && oldMobile.test(m.text ?? ''));
+    if (fromPhone) {
+      const icon = el('span', 'msg-via', '📱');
+      icon.title = '휴대폰(텔레그램)에서 보냄';
+      icon.setAttribute('aria-label', '휴대폰에서 보냄');
+      meta.appendChild(icon);
+      m = { ...m, text: (m.text ?? '').replace(oldMobile, '') || '(사진)' };
+    }
     meta.appendChild(el('span', 'msg-time', formatTime(m.at)));
 
     const bubble = el('div', 'bubble');

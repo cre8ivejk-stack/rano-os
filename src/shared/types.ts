@@ -64,6 +64,8 @@ export interface MobileStatus {
   pairCode?: string; // 짝짓기 전에만
   allRano: boolean; // 라노의 답을 모두 휴대폰으로도
   approvals: boolean; // 승인 요청 알림
+  keepAwake: boolean; // 잠자기 막기 설정
+  keepingAwake: boolean; // 지금 실제로 막고 있는지
   error?: string;
 }
 
@@ -185,6 +187,7 @@ export interface ChatMessage {
   text: string;
   at: string; // ISO 시각
   attachments?: ChatAttachment[]; // 사용자가 붙인 그림
+  via?: 'mobile'; // 휴대폰(텔레그램)에서 보낸 말
 }
 /** 대화 첨부 그림 */
 export interface ChatAttachment {
@@ -330,7 +333,7 @@ export interface RanoApi {
   mobileStatus(): Promise<MobileStatus>;
   mobileConnect(token: string): Promise<{ ok: boolean; message: string }>;
   mobileDisconnect(): Promise<{ ok: boolean; message: string }>;
-  mobileOptions(o: { allRano?: boolean; approvals?: boolean }): Promise<void>;
+  mobileOptions(o: { allRano?: boolean; approvals?: boolean; keepAwake?: boolean }): Promise<void>;
   mobileNewCode(): Promise<void>;
   usageSummary(): Promise<UsageSummary>;
   search(query: string): Promise<SearchHit[]>;
@@ -404,7 +407,7 @@ export interface ConversationStoreApi {
 // 엔진 담당이 구현: src/main/engine/ranoSession.ts
 //   export class RanoSession { constructor(deps: { config; memory: MemoryServiceApi; store: ConversationStoreApi; emit: Emit; memoryMcp: unknown }) }
 export interface RanoSessionApi {
-  send(text: string, attachments?: ChatAttachment[]): Promise<void>; // 사용자 말 저장·emit → 라노 답 저장·emit. 동시에 두 번 오면 앞의 것이 끝난 뒤 처리
+  send(text: string, attachments?: ChatAttachment[], via?: 'mobile'): Promise<void>; // 사용자 말 저장·emit → 라노 답 저장·emit. 동시에 두 번 오면 앞의 것이 끝난 뒤 처리
   // 2단계: 앱이 라노에게 알림(리포 리더 보고, 사용자의 직접 지시 사실). 사용자 말풍선은 만들지 않고
   // activity 한 줄을 emit 한 뒤 라노 차례를 돌린다. 라노 답은 평소처럼 저장·emit. send 와 같은 큐를 쓴다.
   notify(text: string): Promise<void>;

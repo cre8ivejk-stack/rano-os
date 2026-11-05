@@ -266,8 +266,8 @@ const api: RanoApi = {
   mobileDisconnect(): Promise<{ ok: boolean; message: string }> {
     return ipcRenderer.invoke('mobile:disconnect');
   },
-  async mobileOptions(o: { allRano?: boolean; approvals?: boolean }): Promise<void> {
-    await ipcRenderer.invoke('mobile:options', { ...(typeof o?.allRano === 'boolean' ? { allRano: o.allRano } : {}), ...(typeof o?.approvals === 'boolean' ? { approvals: o.approvals } : {}) });
+  async mobileOptions(o: { allRano?: boolean; approvals?: boolean; keepAwake?: boolean }): Promise<void> {
+    await ipcRenderer.invoke('mobile:options', { ...(typeof o?.allRano === 'boolean' ? { allRano: o.allRano } : {}), ...(typeof o?.approvals === 'boolean' ? { approvals: o.approvals } : {}), ...(typeof o?.keepAwake === 'boolean' ? { keepAwake: o.keepAwake } : {}) });
   },
   async mobileNewCode(): Promise<void> {
     await ipcRenderer.invoke('mobile:new-code');

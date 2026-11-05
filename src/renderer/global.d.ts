@@ -9,6 +9,7 @@ interface ChatMessage {
   text: string;
   at: string; // ISO 시각
   attachments?: ChatAttachment[];
+  via?: 'mobile'; // 휴대폰(텔레그램)에서 보낸 말
 }
 
 type MemberState = 'idle' | 'working' | 'reviewing' | 'done';
@@ -140,6 +141,8 @@ interface MobileStatus {
   pairCode?: string; // 짝짓기 전에만
   allRano: boolean; // 라노의 답을 모두 휴대폰으로도
   approvals: boolean; // 승인 요청 알림
+  keepAwake: boolean; // 잠자기 막기 설정
+  keepingAwake: boolean; // 지금 실제로 막고 있는지
   error?: string;
 }
 
@@ -315,7 +318,7 @@ interface RanoApi {
   mobileStatus(): Promise<MobileStatus>;
   mobileConnect(token: string): Promise<{ ok: boolean; message: string }>;
   mobileDisconnect(): Promise<{ ok: boolean; message: string }>;
-  mobileOptions(o: { allRano?: boolean; approvals?: boolean }): Promise<void>;
+  mobileOptions(o: { allRano?: boolean; approvals?: boolean; keepAwake?: boolean }): Promise<void>;
   mobileNewCode(): Promise<void>;
   usageSummary(): Promise<UsageSummary>;
   search(query: string): Promise<SearchHit[]>;

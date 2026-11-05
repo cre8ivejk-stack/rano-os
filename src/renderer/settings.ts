@@ -259,17 +259,23 @@ export class SettingsButton {
       }
       host.appendChild(el('p', 'org-ok', `연결됨 · ${m.pairedName || '휴대폰'} ↔ @${m.botName ?? ''}${m.running ? '' : ' (멈춤)'}`));
       for (const [key, label, on] of [
-        ['allRano', '라노의 답을 휴대폰으로도 모두 받기 (끄면 휴대폰에서 보낸 말의 답만)', m.allRano],
+        ['allRano', '맥에서 한 대화(내 말과 라노 답)도 휴대폰으로 받기 (끄면 휴대폰에서 보낸 말의 답만)', m.allRano],
         ['approvals', '승인 요청을 휴대폰으로 받고 승인·반려하기', m.approvals],
+        ['keepAwake', '휴대폰 연결 중에는 맥이 잠들지 않게 하기 (화면은 꺼져도 돼요)', m.keepAwake],
       ] as const) {
         const lab = el('label', 'org-check');
         const cb = el('input');
         cb.type = 'checkbox';
         cb.checked = on;
-        cb.addEventListener('change', () => void window.rano.mobileOptions({ [key]: cb.checked }));
+        cb.addEventListener('change', async () => {
+          await window.rano.mobileOptions({ [key]: cb.checked });
+          if (key === 'keepAwake') void draw();
+        });
         lab.append(cb, document.createTextNode(` ${label}`));
         host.appendChild(lab);
       }
+      if (m.keepAwake)
+        host.appendChild(el('p', m.keepingAwake ? 'org-ok' : 'org-hint', m.keepingAwake ? '지금 맥이 잠들지 않게 막고 있어요. 덮개를 닫으면 맥은 그래도 잠들어요(전원·외부 모니터를 연결했다면 깨어 있어요). 배터리를 더 써요.' : '연결이 다시 이어지면 잠자기를 막아요.'));
       host.appendChild(el('p', 'org-hint', '맥이 켜져 있고 라노 OS 가 실행 중일 때만 답해요. 회사 일 내용도 텔레그램 서버를 거쳐요.'));
       if (m.error) host.appendChild(note(m.error, false));
       const off = button('연결 끊기', 'btn btn-small btn-plain');

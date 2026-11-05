@@ -1066,3 +1066,4 @@ button.approvals:hover { background: #efeeea; }
 .mobile-steps { margin: 0; padding-left: 20px; font-size: 13px; color: #555; line-height: 1.7; }
 .mobile-code { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .mobile-code-num { font-size: 26px; font-weight: 700; letter-spacing: 6px; background: #f3f8f4; border: 1px solid #d9e6dc; border-radius: 10px; padding: 4px 14px; margin-left: 6px; font-variant-numeric: tabular-nums; }
+.msg-via { font-size: 12px; margin-right: 4px; }

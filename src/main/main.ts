@@ -308,7 +308,7 @@ async function boot() {
     sendToRano: async (text, list) => {
       const saved = saveAttachments(config.runsDir, list);
       if (!saved.ok) return { ok: false, message: saved.message };
-      void rano.send(text, saved.saved);
+      void rano.send(text, saved.saved, 'mobile');
       return { ok: true };
     },
   });
@@ -317,7 +317,7 @@ async function boot() {
   ipcMain.handle(IPC.mobileStatus, () => mobile!.status());
   ipcMain.handle(IPC.mobileConnect, (_e, t: unknown) => mobile!.connect(String(t ?? '')));
   ipcMain.handle(IPC.mobileDisconnect, () => mobile!.disconnect());
-  ipcMain.handle(IPC.mobileOptions, (_e, o: any) => mobile!.setOptions({ ...(typeof o?.allRano === 'boolean' ? { allRano: o.allRano } : {}), ...(typeof o?.approvals === 'boolean' ? { approvals: o.approvals } : {}) }));
+  ipcMain.handle(IPC.mobileOptions, (_e, o: any) => mobile!.setOptions({ ...(typeof o?.allRano === 'boolean' ? { allRano: o.allRano } : {}), ...(typeof o?.approvals === 'boolean' ? { approvals: o.approvals } : {}), ...(typeof o?.keepAwake === 'boolean' ? { keepAwake: o.keepAwake } : {}) }));
   ipcMain.handle(IPC.mobileNewCode, () => mobile!.newPairCode());
   ipcMain.handle(IPC.usageSummary, () => usageSummary(Object.fromEntries(config.missions.map((m) => [m.id, m.name]))));
   ipcMain.handle(IPC.updateCheck, () => {
