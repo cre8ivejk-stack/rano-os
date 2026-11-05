@@ -94,6 +94,7 @@ export interface ToolsStatus {
   installing: boolean;
   packages: { name: string; version?: string }[];
   python?: string;
+  browser?: boolean; // 웹 화면 확인 도구(playwright·chromium)
   log?: string; // 설치 중 마지막 줄
 }
 
@@ -371,7 +372,9 @@ export interface RanoApi {
   skillInstall(token: string): Promise<{ ok: boolean; message: string; name?: string }>;
   skillRemove(name: string): Promise<{ ok: boolean; message: string }>;
   toolsStatus(): Promise<ToolsStatus>;
-  toolsInstall(): Promise<{ ok: boolean; message: string }>;
+  skillsAuto(): Promise<boolean>;
+  setSkillsAuto(on: boolean): Promise<{ ok: boolean; message: string }>;
+  toolsInstall(kind?: 'docs' | 'browser'): Promise<{ ok: boolean; message: string }>;
   usageSummary(): Promise<UsageSummary>;
   search(query: string): Promise<SearchHit[]>;
   missionDocs(missionId: string): Promise<MissionDoc[]>;

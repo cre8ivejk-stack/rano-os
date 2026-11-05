@@ -27,7 +27,7 @@ import { buildLeaderSystemPrompt, readLeaderContext } from './leaderPrompt.js';
 import { APPROVAL_STAGE_TOOLS, loadRoles, READ_ONLY_TOOLS } from './roles.js';
 import { shareWithMission } from '../engine/attachments.js';
 import { recordLimit, recordResult } from '../engine/usage.js';
-import { roleSkills } from '../skills/skills.js';
+import { roleSkills, skillCatalog } from '../skills/skills.js';
 
 export interface MissionLeaderDeps {
   config: RanoConfig;
@@ -287,7 +287,7 @@ export class MissionLeader implements MissionLeaderApi {
       }),
       config.memoryDir,
     );
-    const systemPrompt = buildLeaderSystemPrompt(ctx);
+    const systemPrompt = buildLeaderSystemPrompt(ctx) + (mission.stagePolicy === 'approval' ? skillCatalog([], true) : '');
 
     // 팀원도 같은 규칙을 따르도록 역할 프롬프트 끝에 규칙 파일을 붙인다(설정 파일은 불러오지 않으므로)
     const rulesBlock = ctx.rules.map((r) => `### ${r.file}\n${r.content.trim()}`).join('\n\n');

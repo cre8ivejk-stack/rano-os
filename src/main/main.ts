@@ -29,7 +29,7 @@ import { checkForUpdate } from './engine/update.js';
 import { initUsage, usageSummary } from './engine/usage.js';
 import { searchAll } from './engine/search.js';
 import { TelegramBridge } from './mobile/telegram.js';
-import { initSkills, installSkill, installTools, listSkills, previewSkill, readSkill, removeSkill, roleSkills, setRoleSkills, toolsStatus } from './skills/skills.js';
+import { autoSkills, setAutoSkills, initSkills, installSkill, installTools, listSkills, previewSkill, readSkill, removeSkill, roleSkills, setRoleSkills, toolsStatus } from './skills/skills.js';
 import { attachmentDataUrl, saveAttachments } from './engine/attachments.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -330,7 +330,9 @@ async function boot() {
   ipcMain.handle('skills:install', (_e, t: unknown) => installSkill(String(t ?? '')));
   ipcMain.handle('skills:remove', (_e, n: unknown) => removeSkill(String(n ?? '')));
   ipcMain.handle('tools:status', () => toolsStatus());
-  ipcMain.handle('tools:install', () => installTools(() => undefined));
+  ipcMain.handle('skills:auto', () => autoSkills());
+  ipcMain.handle('skills:set-auto', (_e, on: unknown) => setAutoSkills(on === true));
+  ipcMain.handle('tools:install', (_e, kind: unknown) => installTools(() => undefined, kind === 'browser' ? 'browser' : 'docs'));
   ipcMain.handle(IPC.usageSummary, () => usageSummary(Object.fromEntries(config.missions.map((m) => [m.id, m.name]))));
   ipcMain.handle(IPC.updateCheck, () => {
     if ((config.raw as any)?.updates?.check === false) return { current: app.getVersion(), newer: false, error: '새 버전 확인을 꺼 두었어요 (rano.json updates.check)' };

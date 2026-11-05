@@ -1076,3 +1076,4 @@ button.approvals:hover { background: #efeeea; }
 .skill-md { border: 1px solid #ecece6; border-radius: 10px; padding: 12px 16px; background: #fff; max-height: 420px; overflow: auto; }
 .skill-script { color: #9a5512; }
 .skill-picks { flex-wrap: wrap; gap: 10px 16px; }
+.skill-tools-row { display: flex; gap: 10px; align-items: center; flex-basis: 100%; flex-wrap: wrap; }

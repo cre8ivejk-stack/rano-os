@@ -296,8 +296,14 @@ const api: RanoApi = {
   toolsStatus(): Promise<any> {
     return ipcRenderer.invoke('tools:status');
   },
-  toolsInstall(): Promise<any> {
-    return ipcRenderer.invoke('tools:install');
+  toolsInstall(kind?: 'docs' | 'browser'): Promise<any> {
+    return ipcRenderer.invoke('tools:install', kind === 'browser' ? 'browser' : 'docs');
+  },
+  skillsAuto(): Promise<boolean> {
+    return ipcRenderer.invoke('skills:auto');
+  },
+  setSkillsAuto(on: boolean): Promise<{ ok: boolean; message: string }> {
+    return ipcRenderer.invoke('skills:set-auto', on === true);
   },
   usageSummary(): Promise<UsageSummary> {
     return ipcRenderer.invoke('usage:summary');

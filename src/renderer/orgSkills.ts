@@ -133,7 +133,23 @@ export function skillsSection(notice: Notice, roleNames: () => string[], reload:
   add.addEventListener('click', () => openSkillImport(reload));
   head.appendChild(add);
   sec.appendChild(head);
-  sec.appendChild(el('p', 'pane-sub', '스킬은 역할에게 주는 일하는 법이에요. 역할 카드에서 어떤 스킬을 쓸지 골라요. 엑셀·워드·파워포인트·PDF 스킬은 문서 도구가 있어야 해요.'));
+  sec.appendChild(el('p', 'pane-sub', '스킬은 일하는 법이에요. 리더와 팀원이 일에 맞는 스킬을 골라 쓰고, 역할 카드에서 늘 쓸 스킬을 정해 둘 수도 있어요. 엑셀·워드·파워포인트·PDF 스킬은 문서 도구가 있어야 해요.'));
+
+  // 스스로 골라 쓰기
+  const autoRow = el('label', 'org-check skill-auto');
+  const autoCb = el('input');
+  autoCb.type = 'checkbox';
+  autoCb.disabled = true;
+  autoRow.append(autoCb, document.createTextNode(' 리더와 팀원이 일에 맞는 스킬을 스스로 골라 쓰기 (끄면 역할에 체크한 스킬만 써요)'));
+  sec.appendChild(autoRow);
+  void window.rano.skillsAuto().then((on) => {
+    autoCb.checked = on;
+    autoCb.disabled = false;
+  });
+  autoCb.addEventListener('change', async () => {
+    const r = await window.rano.setSkillsAuto(autoCb.checked);
+    notice.show(r.message, r.ok);
+  });
 
   // 문서 도구
   const tools = el('div', 'skill-tools');
@@ -144,6 +160,24 @@ export function skillsSection(notice: Notice, roleNames: () => string[], reload:
     if (!t) return;
     if (t.installed) {
       tools.appendChild(el('span', 'org-ok', `문서 도구 설치됨 · ${t.packages.map((p) => `${p.name} ${p.version}`).join(', ')}`));
+      const br = el('div', 'skill-tools-row');
+      if (t.browser) br.appendChild(el('span', 'org-ok', '웹 화면 확인 도구 설치됨 (playwright·Chromium)'));
+      else {
+        br.appendChild(el('span', 'org-hint', t.installing ? `설치하는 중… ${t.log ?? ''}` : '웹 화면 확인 도구(webapp-testing 스킬용 브라우저)는 아직 없어요. 데이터 폴더 안에만 설치해요 (약 150MB).'));
+        if (!t.installing) {
+          const gb = button('웹 화면 확인 도구 설치', 'btn btn-small');
+          gb.addEventListener('click', async () => {
+            gb.disabled = true;
+            const timer = window.setInterval(() => void drawTools(), 2000);
+            const r = await window.rano.toolsInstall('browser').catch(() => ({ ok: false, message: '설치하지 못했어요' }));
+            window.clearInterval(timer);
+            notice.show(r.message, r.ok);
+            void drawTools();
+          });
+          br.appendChild(gb);
+        }
+      }
+      tools.appendChild(br);
       return;
     }
     tools.appendChild(el('span', 'org-warning', t.installing ? `설치하는 중… ${t.log ?? ''}` : '문서 도구(파이썬 openpyxl·python-docx·python-pptx·pypdf·reportlab)가 아직 없어요. 라노 데이터 폴더 안에만 설치하고, 인터넷에서 받아요.'));
@@ -178,7 +212,7 @@ export function skillsSection(notice: Notice, roleNames: () => string[], reload:
       if (s.hasScripts) top.appendChild(el('span', 'kind', '실행 파일 있음'));
       card.appendChild(top);
       card.appendChild(el('p', 'org-role-desc', s.description || '설명 없음'));
-      card.appendChild(el('p', 'org-role-meta', s.usedBy.length ? `쓰는 역할: ${s.usedBy.join(', ')}` : '아직 쓰는 역할 없음 · 역할 카드에서 골라 주세요'));
+      card.appendChild(el('p', 'org-role-meta', s.usedBy.length ? `늘 쓰는 역할: ${s.usedBy.join(', ')}` : '필요할 때 리더·팀원이 골라 써요'));
       const acts = el('div', 'org-row');
       const view = button('보기', 'btn btn-small btn-plain');
       view.addEventListener('click', () => void openSkillView(s.name));

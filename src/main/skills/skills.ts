@@ -30,6 +30,18 @@ export function skillsRoot(config: RanoConfig): string {
 function toolsDir(): string {
   return path.join(cfg!.rootDir, 'tools', 'python');
 }
+/** 웹 화면 확인용 브라우저 보관 위치 (데이터 폴더 안) */
+export function browsersDir(config: RanoConfig): string {
+  return path.join(config.rootDir, 'tools', 'browsers');
+}
+function browserInstalled(config: RanoConfig): boolean {
+  try {
+    return readdirSync(browsersDir(config)).some((n) => n.startsWith('chromium'));
+  } catch {
+    return false;
+  }
+}
+
 /** 문서 도구 파이썬 경로 (설치돼 있으면) */
 export function ranoPython(config: RanoConfig): string | null {
   const p = path.join(config.rootDir, 'tools', 'python', 'bin', 'python3');
@@ -66,7 +78,8 @@ export function initSkills(config: RanoConfig, defaultsDir: string): void {
       }
     }
   }
-  const raw = (config.raw ?? {}) as { roleSkills?: unknown };
+  const raw = (config.raw ?? {}) as { roleSkills?: unknown; skills?: { auto?: unknown } };
+  autoPick = raw.skills?.auto !== false;
   roleMap = {};
   if (raw.roleSkills && typeof raw.roleSkills === 'object')
     for (const [k, v] of Object.entries(raw.roleSkills as Record<string, unknown>))
@@ -140,6 +153,36 @@ export async function setRoleSkills(role: string, names: string[]): Promise<{ ok
   if (clean.length) roleMap[role] = clean;
   else delete roleMap[role];
   return { ok: true, message: clean.length ? `${role} 역할이 쓸 스킬: ${clean.join(', ')}` : `${role} 역할의 스킬을 모두 뺐어요` };
+}
+
+/** 역할이 스스로 골라 쓰기 켜짐 여부 (rano.json skills.auto, 기본 켜짐) */
+let autoPick = true;
+export function autoSkills(): boolean {
+  return autoPick;
+}
+export async function setAutoSkills(on: boolean): Promise<{ ok: boolean; message: string }> {
+  if (!cfg) return { ok: false, message: '준비되지 않았어요' };
+  try {
+    const raw = await readRaw(cfg.rootDir);
+    raw.skills = { ...(raw.skills && typeof raw.skills === 'object' ? raw.skills : {}), auto: !!on };
+    await writeRaw(cfg.rootDir, raw);
+  } catch {
+    return { ok: false, message: '설정 파일을 저장하지 못했어요' };
+  }
+  autoPick = !!on;
+  return { ok: true, message: on ? '리더와 팀원이 필요한 스킬을 스스로 골라 써요' : '역할에 체크한 스킬만 써요' };
+}
+
+/** 스스로 골라 쓸 수 있는 스킬 목록(이름·설명·안내 위치). exclude 는 이미 붙은 스킬 */
+export function skillCatalog(exclude: string[] = [], forLeader = false): string {
+  if (!cfg || !autoPick) return '';
+  const list = listSkills().filter((s) => !exclude.includes(s.name));
+  if (!list.length) return '';
+  const lines = list.map((s) => `- ${s.name}: ${s.description} — 안내: ${path.join(skillsDir(), s.name, 'SKILL.md')}`);
+  const py = ranoPython(cfg);
+  return forLeader
+    ? `\n\n## 스킬 목록 (팀원이 필요할 때 골라 씀)\n${lines.join('\n')}\n- 팀원에게 일을 맡길 때 맞는 스킬이 있으면 "○○ 스킬 안내를 읽고 따라 하라"고 이름과 안내 위치를 함께 적는다. 엑셀·워드·PPT·PDF 같은 파일 결과물이나 디버깅·검증처럼 일하는 법이 정해진 일에 쓴다.${py ? '' : '\n- 문서 도구(파이썬)가 아직 설치되지 않아 문서 스킬은 쓸 수 없다. 필요하면 보고에 "라노 OS 조직 탭에서 문서 도구 설치 필요"라고 적는다.'}`
+    : `\n\n## 골라 쓸 수 있는 스킬\n- 일에 맞는 스킬이 아래에 있으면 먼저 그 안내(SKILL.md)를 Read 로 열어 읽고 그대로 따른다. 맞는 스킬이 없으면 쓰지 않는다.\n- 스킬을 썼으면 보고에 어떤 스킬을 썼는지 적는다.\n${lines.join('\n')}`;
 }
 
 /** 역할 지침 끝에 붙일 스킬 안내. 없으면 '' */
@@ -289,10 +332,15 @@ export async function toolsStatus(): Promise<ToolsStatus> {
     const [name, ver] = l.split(' ');
     return { name, version: ver && ver !== '-' ? ver : undefined };
   });
-  return { installed: packages.length > 0 && packages.every((p) => p.version), installing, packages, python: py, log: lastLog || undefined };
+  const bp = await (async () => {
+    const l: string[] = [];
+    await run(py, ['-c', 'import importlib.metadata as m; print(m.version("playwright"))'], (x) => l.push(x));
+    return /^\d/.test(l[0] ?? '');
+  })();
+  return { installed: packages.length > 0 && packages.every((p) => p.version), installing, packages, python: py, browser: bp && browserInstalled(cfg), log: lastLog || undefined };
 }
 
-export async function installTools(onLine: (s: string) => void): Promise<{ ok: boolean; message: string }> {
+export async function installTools(onLine: (s: string) => void, kind: 'docs' | 'browser' = 'docs'): Promise<{ ok: boolean; message: string }> {
   if (!cfg) return { ok: false, message: '준비되지 않았어요' };
   if (installing) return { ok: false, message: '이미 설치하는 중이에요' };
   installing = true;
@@ -307,6 +355,17 @@ export async function installTools(onLine: (s: string) => void): Promise<{ ok: b
       log('파이썬 작업 공간 만드는 중…');
       const c = await run('/usr/bin/python3', ['-m', 'venv', toolsDir()], log);
       if (c !== 0 || !ranoPython(cfg)) return { ok: false, message: '파이썬 작업 공간을 만들지 못했어요 (맥에 python3 가 있어야 해요. 없으면 "개발자 도구"를 설치해 주세요)' };
+    }
+    if (kind === 'browser') {
+      log('웹 화면 확인 도구(playwright) 받는 중…');
+      const c1 = await run(ranoPython(cfg)!, ['-m', 'pip', 'install', '--upgrade', 'playwright'], log);
+      if (c1 !== 0) return { ok: false, message: '웹 화면 확인 도구를 받지 못했어요 (인터넷 연결을 확인해 주세요)' };
+      log('브라우저(Chromium) 받는 중… 몇 분 걸릴 수 있어요');
+      process.env.PLAYWRIGHT_BROWSERS_PATH = browsersDir(cfg);
+      const c2 = await run(ranoPython(cfg)!, ['-m', 'playwright', 'install', 'chromium'], log);
+      if (c2 !== 0) return { ok: false, message: '브라우저를 받지 못했어요 (인터넷 연결을 확인해 주세요)' };
+      log('설치를 마쳤어요');
+      return { ok: true, message: '웹 화면 확인 도구를 설치했어요. webapp-testing 스킬을 쓸 수 있어요' };
     }
     log(`문서 도구 받는 중… (${TOOL_PACKAGES.join(', ')})`);
     const c = await run(ranoPython(cfg)!, ['-m', 'pip', 'install', '--upgrade', ...TOOL_PACKAGES], log);

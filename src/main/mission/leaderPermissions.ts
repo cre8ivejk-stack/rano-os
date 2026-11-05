@@ -791,6 +791,11 @@ export class LeaderGuard {
               const toolInput = (input.tool_input && typeof input.tool_input === 'object' ? input.tool_input : {}) as Record<string, unknown>;
               const cwd = input.cwd || mission.targets[0] || mission.home;
               const d = this.decide(input.tool_name, toolInput, cwd, isSub, input.mcp_server);
+              // 스킬을 꺼내 쓰는지: 스킬 보관함의 SKILL.md 를 읽으면 대화창에 알린다
+              if (d.type === 'allow' && input.tool_name === 'Read' && typeof toolInput.file_path === 'string') {
+                const sk = /\/skills\/([a-z0-9][a-z0-9-]{1,60})\/SKILL\.md$/.exec(toolInput.file_path);
+                if (sk && toolInput.file_path.startsWith(path.join(this.deps.config.rootDir, 'skills'))) this.activity(whoInfo.label, `스킬을 꺼내 씀: ${sk[1]}`);
+              }
               if (d.type === 'ask') {
                 // 승인함은 canUseTool 에서 기다린다(훅에는 시간 제한이 있음)
                 return {
