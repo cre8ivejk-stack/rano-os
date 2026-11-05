@@ -244,7 +244,7 @@ export interface RanoApi {
   // ---- 2단계 ----
   missionList(): Promise<MissionStatus[]>;
   missionHistory(missionId: string): Promise<ChatMessage[]>;
-  missionSend(missionId: string, text: string): Promise<void>;
+  missionSend(missionId: string, text: string, attachments?: NewAttachment[]): Promise<{ ok: boolean; message?: string }>;
   // ---- 3단계 ----
   approvalsList(): Promise<ApprovalRequest[]>;
   approvalDecide(id: string, decision: ApprovalDecision): Promise<void>;
@@ -387,7 +387,7 @@ export interface MissionTrackerApi {
 //   run 은 큐로 하나씩 처리. 시작 시 tracker.taskStart, 팀원 호출 시 memberStart/End, 끝나면 tracker.taskEnd.
 //   대화 기록(store)과 emit({kind:'leaderMessage'}) 로 지시(role rano/user)와 리더 답(role leader)을 남긴다.
 export interface MissionLeaderApi {
-  run(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; planFirst?: boolean }): Promise<{ ok: boolean; report: string }>; // planFirst: 기획(안 선택) 먼저, 고른 뒤 구현 // onStart: 앞 과제가 끝나고 이 과제를 실제로 시작할 때
+  run(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; planFirst?: boolean; attachments?: ChatAttachment[] }): Promise<{ ok: boolean; report: string }>; // planFirst: 기획(안 선택) 먼저, 고른 뒤 구현 // onStart: 앞 과제가 끝나고 이 과제를 실제로 시작할 때
   busy(): boolean;
   close?(): void; // 3단계: 앱을 끌 때 진행 중인 일과 승인 대기를 정리
 }

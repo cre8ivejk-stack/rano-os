@@ -330,9 +330,14 @@ async function boot() {
     app.quit();
   });
 
-  ipcMain.handle(IPC.missionSend, async (_e, missionId: unknown, text: unknown) => {
-    if (typeof missionId !== 'string' || typeof text !== 'string' || !text.trim()) return;
-    await dispatcher.userSend(missionId, text.trim());
+  ipcMain.handle(IPC.missionSend, async (_e, missionId: unknown, text: unknown, attachments: unknown) => {
+    const t = typeof text === 'string' ? text.trim() : '';
+    const list = Array.isArray(attachments) ? (attachments as NewAttachment[]) : [];
+    if (typeof missionId !== 'string' || (!t && !list.length)) return { ok: false, message: '보낼 내용이 없어요' };
+    const saved = saveAttachments(config.runsDir, list);
+    if (!saved.ok) return { ok: false, message: saved.message };
+    await dispatcher.userSend(missionId, t || '(그림만 보냈어요)', saved.saved);
+    return { ok: true };
   });
 
   win = new BrowserWindow({

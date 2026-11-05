@@ -1,6 +1,7 @@
 // 현황판: 미션 카드와 리포 리더 대화 패널.
 import { ChatView, type SpeakerStyle } from './chatView.js';
 import { demoStatuses, OfficeView } from './office.js';
+import { ImageTray } from './attach.js';
 import { bindComposer, el, formatTime, formatWhen, mustGet, roleLabel, toDate } from './dom.js';
 
 const MEMBER_STATE_LABEL: Record<MemberState, string> = {
@@ -53,6 +54,7 @@ export class Board {
   private workingEl = mustGet<HTMLDivElement>('leader-working');
   private workingTextEl = mustGet<HTMLSpanElement>('leader-working-text');
   private formEl = mustGet<HTMLFormElement>('leader-form');
+  private tray: ImageTray | null = null;
   private inputEl = mustGet<HTMLTextAreaElement>('leader-input');
   private sendBtn = mustGet<HTMLButtonElement>('leader-send');
   private view: ChatView;
@@ -78,6 +80,9 @@ export class Board {
       onSubmit: () => void this.submit(),
       onInput: () => this.refreshComposer(),
     }).autosize;
+    // 리더에게 직접 보내는 말에도 그림(캡처·표시)을 붙일 수 있다
+    this.tray = new ImageTray(this.formEl, this.inputEl, mustGet('leader-panel'));
+    this.tray.onChange = () => this.refreshComposer();
     this.closeBtn.addEventListener('click', () => this.close());
     // 미션이 하나도 없을 때 사무실 위에 보이는 첫 미션 안내
     this.emptyEl.hidden = true;
@@ -450,28 +455,34 @@ export class Board {
   }
 
   private refreshComposer(): void {
-    this.sendBtn.disabled = this.sending || !this.openId || !this.inputEl.value.trim();
+    this.sendBtn.disabled = this.sending || !this.openId || (!this.inputEl.value.trim() && !this.tray?.count);
   }
 
   private async submit(): Promise<void> {
     const missionId = this.openId;
     const text = this.inputEl.value.trim();
-    if (!missionId || !text || this.sending) return;
+    if (!missionId || (!text && !this.tray?.count) || this.sending) return;
 
     this.sending = true;
+    const images = this.tray?.items() ?? [];
     this.inputEl.value = '';
+    this.tray?.clear();
     this.autosize();
     this.refreshComposer();
-    try {
-      await this.rano.missionSend(missionId, text);
-    } catch {
-      if (this.openId === missionId) {
-        this.view.addError('리포 리더에게 지시를 전하지 못했어요. 잠시 뒤 다시 보내 주세요.', new Date().toISOString());
-        if (!this.inputEl.value.trim()) {
-          this.inputEl.value = text;
-          this.autosize();
-        }
+    const giveBack = (msg: string) => {
+      if (this.openId !== missionId) return;
+      this.view.addError(msg, new Date().toISOString());
+      if (!this.inputEl.value.trim()) {
+        this.inputEl.value = text;
+        this.autosize();
       }
+      this.tray?.restore(images);
+    };
+    try {
+      const r = await this.rano.missionSend(missionId, text, images);
+      if (r && r.ok === false) giveBack(r.message ?? '리포 리더에게 지시를 전하지 못했어요.');
+    } catch {
+      giveBack('리포 리더에게 지시를 전하지 못했어요. 잠시 뒤 다시 보내 주세요.');
     } finally {
       this.sending = false;
       this.refreshComposer();

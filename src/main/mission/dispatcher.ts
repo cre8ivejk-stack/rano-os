@@ -9,6 +9,7 @@ import type {
   MissionTrackerApi,
   RanoConfig,
   TodoStoreApi,
+  ChatAttachment,
 } from '../../shared/types.js';
 import { autoCommit } from '../memory/autoCommit.js';
 import { oneLine } from './tracker.js';
@@ -76,7 +77,7 @@ export class MissionDispatcher implements MissionDispatcherApi {
           const t = todos.get(e.todoId);
           if (t && t.status !== 'done') this.safeTodo(() => todos.update(e.todoId!, { status: 'active', queued: busy, note: busy ? '앞 과제가 끝나면 시작' : '' }, 'app'));
         }
-        this.runInBackground(mission, leader, e.text, e.from, e.todoId, true, !!e.planFirst);
+        this.runInBackground(mission, leader, e.text, e.from, e.todoId, true, !!e.planFirst, e.attachments ?? []);
       }
       if (waiting.length) tracker?.activity('앱', `앱을 다시 켜서 기다리던 과제 ${waiting.length}건을 이어서 맡겼어요`);
       this.pushQueue(mission.id);
@@ -127,14 +128,14 @@ export class MissionDispatcher implements MissionDispatcherApi {
       : `${mission.name} 리더에게 배정했어요. 진행 상황은 현황판에서 볼 수 있어요. 끝나면 보고가 도착해요.`;
   }
 
-  async userSend(missionId: string, text: string): Promise<void> {
+  async userSend(missionId: string, text: string, attachments: ChatAttachment[] = []): Promise<void> {
     const found = this.find(missionId);
     if (typeof found === 'string') throw new Error(found);
     const { mission, leader } = found;
     this.deps
-      .notifyRano(`[앱 알림] 사용자가 ${mission.name} 리더에게 직접 지시했습니다: ${text}`)
+      .notifyRano(`[앱 알림] 사용자가 ${mission.name} 리더에게 직접 지시했습니다: ${text}${attachments.length ? ` (그림 ${attachments.length}개 첨부)` : ''}`)
       .catch((e) => console.error('[dispatcher] 라노 알림 실패:', e));
-    this.runInBackground(mission, leader, text, 'user');
+    this.runInBackground(mission, leader, text, 'user', undefined, false, false, attachments);
   }
 
   private safeTodo(fn: () => void) {
@@ -149,10 +150,10 @@ export class MissionDispatcher implements MissionDispatcherApi {
     return [...this.deps.trackers.values()].map((t) => t.status());
   }
 
-  private runInBackground(mission: MissionConfig, leader: MissionLeaderApi, text: string, from: 'rano' | 'user', todoId?: string, resumed = false, planFirst = false) {
+  private runInBackground(mission: MissionConfig, leader: MissionLeaderApi, text: string, from: 'rano' | 'user', todoId?: string, resumed = false, planFirst = false, attachments: ChatAttachment[] = []) {
     const todos = this.deps.todos;
     const queue = this.queues.get(mission.id);
-    const entry = queue?.add({ text, from, todoId, resumed, planFirst });
+    const entry = queue?.add({ text, from, todoId, resumed, planFirst, attachments });
     this.pushQueue(mission.id);
     const onStart = () => {
       if (this.closing) return;
@@ -164,7 +165,7 @@ export class MissionDispatcher implements MissionDispatcherApi {
       }
     };
     leader
-      .run({ text, from, onStart, planFirst })
+      .run({ text, from, onStart, planFirst, ...(attachments.length ? { attachments } : {}) })
       .catch((e) => ({ ok: false, report: `리더 실행 중 오류가 났어요: ${e instanceof Error ? e.message : String(e)}` }))
       .then((result) => {
         if (this.closing) return; // 앱이 꺼지며 멈춘 과제는 다음 실행 때 이어 간다

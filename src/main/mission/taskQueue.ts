@@ -4,7 +4,7 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import type { QueuedTaskView } from '../../shared/types.js';
+import type { ChatAttachment, QueuedTaskView } from '../../shared/types.js';
 import { oneLine } from './tracker.js';
 
 export interface QueueEntry {
@@ -16,6 +16,7 @@ export interface QueueEntry {
   queuedAt: string;
   resumed?: boolean;
   planFirst?: boolean; // 기획(안 선택) 먼저
+  attachments?: ChatAttachment[]; // 사용자가 직접 지시하며 붙인 그림
 }
 
 export class TaskQueueStore {
@@ -42,8 +43,8 @@ export class TaskQueueStore {
     return this.entries.map((e) => ({ ...e }));
   }
 
-  add(e: { text: string; from: 'rano' | 'user'; todoId?: string; resumed?: boolean; planFirst?: boolean }): QueueEntry {
-    const entry: QueueEntry = { id: randomUUID(), text: e.text, from: e.from, state: 'queued', queuedAt: new Date().toISOString(), ...(e.todoId ? { todoId: e.todoId } : {}), ...(e.resumed ? { resumed: true } : {}), ...(e.planFirst ? { planFirst: true } : {}) };
+  add(e: { text: string; from: 'rano' | 'user'; todoId?: string; resumed?: boolean; planFirst?: boolean; attachments?: ChatAttachment[] }): QueueEntry {
+    const entry: QueueEntry = { id: randomUUID(), text: e.text, from: e.from, state: 'queued', queuedAt: new Date().toISOString(), ...(e.todoId ? { todoId: e.todoId } : {}), ...(e.resumed ? { resumed: true } : {}), ...(e.planFirst ? { planFirst: true } : {}), ...(e.attachments?.length ? { attachments: e.attachments } : {}) };
     this.entries.push(entry);
     this.save();
     return { ...entry };

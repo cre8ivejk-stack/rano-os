@@ -18,12 +18,14 @@ import {
   type PermissionLogEntry,
   type RanoConfig,
   type RanoUiEvent,
+  type ChatAttachment,
 } from '../../shared/types.js';
 import { appendJsonl, buildSdkEnv, friendlyError, looksLikeMissingSession } from '../engine/ranoSession.js';
 import { LeaderGuard, SUBAGENT_TOOL } from './leaderPermissions.js';
 import { createLeaderMcpServer } from './leaderTools.js';
 import { buildLeaderSystemPrompt, readLeaderContext } from './leaderPrompt.js';
 import { APPROVAL_STAGE_TOOLS, loadRoles, READ_ONLY_TOOLS } from './roles.js';
+import { shareWithMission } from '../engine/attachments.js';
 
 export interface MissionLeaderDeps {
   config: RanoConfig;
@@ -147,7 +149,7 @@ export class MissionLeader implements MissionLeaderApi {
     return this.pending > 0;
   }
 
-  run(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; planFirst?: boolean }): Promise<{ ok: boolean; report: string }> {
+  run(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; planFirst?: boolean; attachments?: ChatAttachment[] }): Promise<{ ok: boolean; report: string }> {
     this.pending++;
     const work = () => this.handle(task);
     const next = this.queue.then(work, work).finally(() => {
@@ -166,8 +168,8 @@ export class MissionLeader implements MissionLeaderApi {
     }
   }
 
-  private async saveMessage(role: ChatMessage['role'], text: string) {
-    const message: ChatMessage = { id: randomUUID(), role, text, at: new Date().toISOString() };
+  private async saveMessage(role: ChatMessage['role'], text: string, attachments?: ChatAttachment[]) {
+    const message: ChatMessage = { id: randomUUID(), role, text, at: new Date().toISOString(), ...(attachments?.length ? { attachments } : {}) };
     try {
       await this.store.append(message);
     } catch {
@@ -184,11 +186,11 @@ export class MissionLeader implements MissionLeaderApi {
     }
   }
 
-  private async handle(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; planFirst?: boolean }): Promise<{ ok: boolean; report: string }> {
+  private async handle(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; planFirst?: boolean; attachments?: ChatAttachment[] }): Promise<{ ok: boolean; report: string }> {
     // 앱이 꺼지는 중이면 줄 서 있던 과제는 시작하지 않는다 (대화·현황판에 흔적을 남기지 않고, 다음 실행 때 이어 간다)
     if (this.closed) return { ok: false, report: '앱이 종료되는 중이라 시작하지 않았어요' };
     this.safe(() => task.onStart?.());
-    await this.saveMessage(task.from === 'rano' ? 'rano' : 'user', task.text);
+    await this.saveMessage(task.from === 'rano' ? 'rano' : 'user', task.text, task.attachments);
     let started: MissionTask | null = null;
     this.safe(() => {
       started = this.tracker.taskStart({ title: clip(task.text, 60), from: task.from });
@@ -215,7 +217,14 @@ export class MissionLeader implements MissionLeaderApi {
         ? '- 이 과제는 "기획 먼저"예요. 안 2~3개와 권장안을 request_approval(kind: decision, planGate: true, items …)로 올려 사용자가 고르기 전에는 작업 폴더를 고칠 수 없어요(앱이 막음). 고른 뒤 그 안대로 구현하세요.'
         : '- 기획 후 구현이 필요한 과제(화면·기능 개편 등)라고 판단되면, 구현 전에 request_approval(kind: decision, planGate: true)로 안을 먼저 고르게 하세요.',
     ].join('\n');
-    const prompt = `${task.text}${appNote}`;
+    // 사용자가 직접 붙인 그림: 이 미션 시안 폴더로 복사해 경로를 알려 준다(이 미션 리더·팀원만 읽기 가능)
+    let pics = '';
+    if (task.attachments?.length) {
+      const shared = shareWithMission(this.config.runsDir, this.mission.id, task.attachments.map((a) => a.id));
+      if (shared.paths.length)
+        pics = `\n\n[첨부 그림] 사용자가 붙인 그림이에요. Read 도구로 열어 보세요(팀원에게도 이 경로를 넘기세요).${task.attachments.some((a) => a.marked) ? ' 그림 위의 펜·네모·화살표·번호는 사용자가 고치고 싶은 곳을 직접 표시한 거예요. 번호는 지시 글의 "1번 …"과 짝지으세요.' : ''}\n${shared.paths.map((p) => `- ${p}`).join('\n')}`;
+    }
+    const prompt = `${task.text}${pics}${appNote}`;
     if (this.outputs) await this.outputs.taskStarted(this.mission, mt).catch(() => undefined);
 
     let ok = false;
