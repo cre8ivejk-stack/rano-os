@@ -97,7 +97,7 @@ export function buildSdkEnv(config: RanoConfig): Record<string, string | undefin
     if (key) env.ANTHROPIC_API_KEY = key;
     delete env.ANTHROPIC_AUTH_TOKEN;
   }
-  env.CLAUDE_AGENT_SDK_CLIENT_APP = 'rano-os/0.4.0';
+  env.CLAUDE_AGENT_SDK_CLIENT_APP = 'rano-os/0.5.0';
   return env;
 }
 
