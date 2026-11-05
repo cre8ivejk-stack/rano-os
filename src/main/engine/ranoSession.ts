@@ -103,7 +103,7 @@ export function buildSdkEnv(config: RanoConfig): Record<string, string | undefin
   const py = ranoPython(config);
   if (py) env.RANO_PY = py;
   env.PLAYWRIGHT_BROWSERS_PATH = browsersDir(config); // 웹 화면 확인 브라우저도 데이터 폴더 안
-  env.CLAUDE_AGENT_SDK_CLIENT_APP = 'rano-os/0.6.0';
+  env.CLAUDE_AGENT_SDK_CLIENT_APP = 'rano-os/0.7.0';
   return env;
 }
 
