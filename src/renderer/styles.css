@@ -917,3 +917,39 @@ button.approvals:hover { background: #efeeea; }
 .update-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 28px; background: #eef5ef; border-bottom: 1px solid #d6e6da; font-size: 13.5px; color: #2f4d3c; }
 .update-actions { margin-left: auto; display: flex; gap: 6px; }
 .update-notes { flex-basis: 100%; white-space: pre-wrap; font-family: inherit; font-size: 13px; background: #fff; border: 1px solid #d6e6da; border-radius: 8px; padding: 10px 12px; margin: 4px 0 0; max-height: 240px; overflow: auto; }
+
+/* 그림 첨부 */
+.attach-btn { flex: none; align-self: flex-end; width: 38px; height: 38px; border: 1px solid #e3e3dc; background: #fff; border-radius: 10px; cursor: pointer; font-size: 17px; }
+.attach-btn:hover { background: #f4f4ef; }
+.attach-tray { display: flex; gap: 8px; flex-wrap: wrap; padding: 8px 4px 0; }
+.attach-item { position: relative; width: 72px; height: 72px; border-radius: 10px; overflow: hidden; border: 1px solid #e3e3dc; background: #fff; }
+.attach-item img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.attach-del { position: absolute; top: 3px; right: 3px; width: 20px; height: 20px; border-radius: 50%; border: 0; background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 13px; line-height: 20px; padding: 0; cursor: pointer; }
+.attach-note { margin: 4px 4px 0; font-size: 12.5px; color: var(--error); }
+.drop-on { outline: 2px dashed #7aa38a; outline-offset: -8px; }
+.msg-images { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.msg-right .msg-images { justify-content: flex-end; }
+.msg-image { display: block; width: 120px; height: 90px; padding: 0; border: 1px solid #e3e3dc; border-radius: 10px; overflow: hidden; background: #fff; cursor: zoom-in; }
+.msg-image img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.msg-image-missing { font-size: 12px; color: #999; }
+.image-viewer { position: fixed; inset: 0; z-index: 80; background: rgba(20, 22, 20, 0.82); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; cursor: zoom-out; padding: 24px; }
+.image-viewer img { max-width: 100%; max-height: calc(100vh - 90px); border-radius: 8px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4); }
+.image-viewer-name { color: #eee; font-size: 13px; margin: 0; }
+.msg-image img { width: 120px; height: 90px; max-width: none; }
+.attach-item img { width: 72px; height: 72px; max-width: none; }
+
+/* 캡처에 표시하기 */
+.attach-item img { cursor: pointer; }
+.attach-pen { position: absolute; bottom: 3px; right: 3px; width: 24px; height: 24px; border-radius: 50%; border: 0; background: rgba(255, 255, 255, 0.92); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25); font-size: 12px; line-height: 24px; padding: 0; cursor: pointer; }
+.attach-marked { position: absolute; left: 3px; bottom: 3px; font-size: 10px; background: #e5383b; color: #fff; border-radius: 4px; padding: 0 4px; }
+.anno-overlay { position: fixed; inset: 0; z-index: 90; background: rgba(20, 22, 20, 0.78); display: flex; align-items: center; justify-content: center; padding: 20px; }
+.anno-box { background: #fff; border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 10px; max-width: 100%; max-height: 100%; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.3); }
+.anno-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.anno-tool.on { background: #2f4d3c; color: #fff; border-color: #2f4d3c; }
+.anno-sep { width: 1px; height: 22px; background: #e3e3dc; margin: 0 4px; }
+.anno-color { width: 24px; height: 24px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px #ccc; cursor: pointer; padding: 0; }
+.anno-color.on { box-shadow: 0 0 0 2px #2f4d3c; }
+.anno-right { margin-left: auto; display: flex; gap: 6px; }
+.anno-stage { overflow: auto; display: flex; justify-content: center; max-height: calc(100vh - 150px); }
+.anno-canvas { max-width: min(1400px, calc(100vw - 64px)); max-height: calc(100vh - 150px); cursor: crosshair; touch-action: none; border-radius: 6px; }
+.anno-hint { margin: 0; font-size: 12.5px; color: #666; }

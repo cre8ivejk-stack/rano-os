@@ -143,7 +143,23 @@ export interface ChatMessage {
   role: ChatRole;
   text: string;
   at: string; // ISO 시각
+  attachments?: ChatAttachment[]; // 사용자가 붙인 그림
 }
+/** 대화 첨부 그림 */
+export interface ChatAttachment {
+  id: string; // 12자리
+  name: string; // 원래 파일 이름 (없으면 '캡처')
+  mime: string; // image/png 등
+  marked?: boolean; // 사용자가 펜·네모·화살표·번호로 표시한 그림
+}
+/** 화면에서 보낼 새 그림 (base64) */
+export interface NewAttachment {
+  name: string;
+  mime: string;
+  data: string;
+  marked?: boolean;
+}
+
 
 // 화면으로 보내는 이벤트
 export type RanoUiEvent =
@@ -193,6 +209,7 @@ export const IPC = {
   orgRestart: 'org:restart', // invoke → void (앱 다시 시작: 설정 다시 읽기)
   appSettings: 'app:settings', // invoke → AppSettings (역할 쉬운 이름, 구역 이름·폴더)
   setupStatus: 'setup:status', // invoke → SetupStatus
+  attachmentData: 'rano:attachment-data', // invoke(ChatAttachment) → data URL | null
   updateCheck: 'update:check', // invoke → UpdateInfo (GitHub Releases 최신 버전)
   openReleasePage: 'update:open-page', // github.com 주소만 연다
   settingsSaveProfile: 'settings:save-profile', // invoke(profile) → me.md
@@ -221,7 +238,8 @@ export const IPC = {
 // 화면(window.rano)에 노출되는 API
 export interface RanoApi {
   loadHistory(): Promise<ChatMessage[]>;
-  send(text: string): Promise<void>;
+  send(text: string, attachments?: NewAttachment[]): Promise<{ ok: boolean; message?: string }>;
+  attachmentData(a: ChatAttachment): Promise<string | null>; // 미리보기 data URL
   onEvent(cb: (e: RanoUiEvent) => void): () => void; // 해제 함수 반환
   // ---- 2단계 ----
   missionList(): Promise<MissionStatus[]>;
@@ -329,7 +347,7 @@ export interface ConversationStoreApi {
 // 엔진 담당이 구현: src/main/engine/ranoSession.ts
 //   export class RanoSession { constructor(deps: { config; memory: MemoryServiceApi; store: ConversationStoreApi; emit: Emit; memoryMcp: unknown }) }
 export interface RanoSessionApi {
-  send(text: string): Promise<void>; // 사용자 말 저장·emit → 라노 답 저장·emit. 동시에 두 번 오면 앞의 것이 끝난 뒤 처리
+  send(text: string, attachments?: ChatAttachment[]): Promise<void>; // 사용자 말 저장·emit → 라노 답 저장·emit. 동시에 두 번 오면 앞의 것이 끝난 뒤 처리
   // 2단계: 앱이 라노에게 알림(리포 리더 보고, 사용자의 직접 지시 사실). 사용자 말풍선은 만들지 않고
   // activity 한 줄을 emit 한 뒤 라노 차례를 돌린다. 라노 답은 평소처럼 저장·emit. send 와 같은 큐를 쓴다.
   notify(text: string): Promise<void>;

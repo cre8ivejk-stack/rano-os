@@ -1,5 +1,5 @@
 // 라노 세션: 사용자 말을 받아 Claude Agent SDK 로 라노 답을 만들고, 저장·화면 전송·기록을 맡는다.
-import { query, type McpServerConfig, type Options, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, type McpServerConfig, type Options, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -9,6 +9,7 @@ import {
   MISSION_MCP_NAME,
   TODO_MCP_NAME,
   ORG_MCP_NAME,
+  type ChatAttachment,
   type ChatMessage,
   type ConversationStoreApi,
   type Emit,
@@ -22,6 +23,7 @@ import { createPermissionGate } from './permissions.js';
 import { buildRanoSystemPrompt } from './ranoPrompt.js';
 import { zoneText } from '../admin/paths.js';
 import { storedApiKey } from './auth.js';
+import { imageBlocks } from './attachments.js';
 
 export interface RanoSessionDeps {
   config: RanoConfig;
@@ -133,8 +135,8 @@ export class RanoSession implements RanoSessionApi {
     this.permissionsLog = path.join(deps.config.runsDir, 'permissions.jsonl');
   }
 
-  send(text: string): Promise<void> {
-    return this.enqueue(() => this.handle(text, false));
+  send(text: string, attachments: ChatAttachment[] = []): Promise<void> {
+    return this.enqueue(() => this.handle(text, false, attachments));
   }
 
   // 앱이 라노에게 알린다(리포 리더 보고 등). 사용자 말풍선은 만들지 않고 대화 기록에도 사용자 말로 남기지 않는다.
@@ -161,11 +163,11 @@ export class RanoSession implements RanoSessionApi {
     this.emit({ kind: 'error', text, at: new Date().toISOString() });
   }
 
-  private async handle(text: string, fromApp: boolean): Promise<void> {
+  private async handle(text: string, fromApp: boolean, attachments: ChatAttachment[] = []): Promise<void> {
     if (fromApp) {
       this.emit({ kind: 'activity', text: `앱 알림이 도착했어요: ${firstLine(text.replace(/^\[앱 알림\]\s*/, ''), 60)}`, at: new Date().toISOString() });
     } else {
-      const userMsg: ChatMessage = { id: randomUUID(), role: 'user', text, at: new Date().toISOString() };
+      const userMsg: ChatMessage = { id: randomUUID(), role: 'user', text, at: new Date().toISOString(), ...(attachments.length ? { attachments } : {}) };
       try {
         await this.store.append(userMsg);
       } catch {
@@ -174,15 +176,21 @@ export class RanoSession implements RanoSessionApi {
       this.emit({ kind: 'message', message: userMsg });
     }
     this.emit({ kind: 'status', status: 'thinking' });
-    const prompt = fromApp ? `[앱 알림] ${text}` : text;
+    let prompt = fromApp ? `[앱 알림] ${text}` : text;
+    if (attachments.length) {
+      const marked = attachments.filter((a) => a.marked).length;
+      prompt += `\n\n[앱 안내] 사용자가 그림 ${attachments.length}개를 붙였어요 (위 그림, 순서대로 id: ${attachments.map((a) => `${a.id}(${a.name}${a.marked ? ', 표시함' : ''})`).join(', ')}). 리더에게 일을 맡길 때 이 그림이 필요하면 assign_to_mission 의 attachments 에 id 를 넣으세요.`;
+      if (marked)
+        prompt += ' "표시함" 그림에는 사용자가 펜·네모·화살표·번호(①②③)로 고치고 싶은 곳을 직접 표시했어요. 표시한 곳이 무엇인지 그림에서 정확히 짚고, 번호가 있으면 사용자 글의 "1번 …" 설명과 짝지으세요. 리더에게 넘길 때도 표시의 뜻을 task 에 적으세요.';
+    }
 
     try {
       const { sessionId } = await this.store.load();
-      let result = await this.attempt(prompt, sessionId ?? undefined);
+      let result = await this.attempt(prompt, sessionId ?? undefined, attachments);
 
       // 이어가기에 실패하면(세션 기록이 없어졌을 때 등) 새 세션으로 한 번 다시 시도한다
       if (sessionId && result.errorText !== null && !result.text && (!result.gotInit || looksLikeMissingSession(result.errorText))) {
-        result = await this.attempt(prompt, undefined);
+        result = await this.attempt(prompt, undefined, attachments);
       }
 
       if (result.text) {
@@ -206,7 +214,7 @@ export class RanoSession implements RanoSessionApi {
     }
   }
 
-  private async attempt(prompt: string, resume: string | undefined): Promise<AttemptResult> {
+  private async attempt(prompt: string, resume: string | undefined, attachments: ChatAttachment[] = []): Promise<AttemptResult> {
     const memoryFiles = await this.memory.readAll();
     let todoText: string | undefined;
     try {
@@ -246,7 +254,14 @@ export class RanoSession implements RanoSessionApi {
     const textById = new Map<string, number>(); // message.id → segments 위치
 
     try {
-      for await (const msg of query({ prompt, options }) as AsyncIterable<SDKMessage>) {
+      // 그림이 있으면 그림 + 글을 한 메시지로 보낸다 (입력은 그 한 메시지로 끝)
+      const images = attachments.length ? imageBlocks(this.config.runsDir, attachments) : [];
+      const input: string | AsyncIterable<SDKUserMessage> = images.length
+        ? (async function* () {
+            yield { type: 'user', message: { role: 'user', content: [...images, { type: 'text', text: prompt }] }, parent_tool_use_id: null } as unknown as SDKUserMessage;
+          })()
+        : prompt;
+      for await (const msg of query({ prompt: input, options }) as AsyncIterable<SDKMessage>) {
         if (msg.type === 'system' && msg.subtype === 'init') {
           out.gotInit = true;
           if (msg.session_id) await this.store.setSessionId(msg.session_id).catch(() => undefined);

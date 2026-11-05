@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defaultRootDir, loadConfig } from './config.js';
 import { defaultsDir, ensureDataHome } from './dataHome.js';
-import { IPC, type MissionLeaderApi, type MissionTrackerApi, type RanoUiEvent } from '../shared/types.js';
+import { IPC, type NewAttachment, type MissionLeaderApi, type MissionTrackerApi, type RanoUiEvent } from '../shared/types.js';
 import { MemoryService } from './memory/memoryService.js';
 import { createMemoryMcpServer } from './memory/memoryTools.js';
 import { ConversationStore } from './engine/conversationStore.js';
@@ -26,6 +26,7 @@ import { zoneText } from './admin/paths.js';
 import { createSetup } from './setup.js';
 import { createAuth } from './engine/auth.js';
 import { checkForUpdate } from './engine/update.js';
+import { attachmentDataUrl, saveAttachments } from './engine/attachments.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -124,10 +125,16 @@ async function boot() {
   dispatcherForQuit = dispatcher;
 
   ipcMain.handle(IPC.loadHistory, async () => (await store.load()).messages);
-  ipcMain.handle(IPC.send, async (_e, text: unknown) => {
-    if (typeof text !== 'string' || !text.trim()) return;
-    await rano.send(text.trim());
+  ipcMain.handle(IPC.send, async (_e, text: unknown, attachments: unknown) => {
+    const t = typeof text === 'string' ? text.trim() : '';
+    const list = Array.isArray(attachments) ? (attachments as NewAttachment[]) : [];
+    if (!t && !list.length) return { ok: false, message: '보낼 내용이 없어요' };
+    const saved = saveAttachments(config.runsDir, list);
+    if (!saved.ok) return { ok: false, message: saved.message };
+    await rano.send(t || '(그림만 보냈어요)', saved.saved);
+    return { ok: true };
   });
+  ipcMain.handle(IPC.attachmentData, (_e, a: any) => attachmentDataUrl(config.runsDir, { id: String(a?.id ?? ''), mime: String(a?.mime ?? '') }));
   ipcMain.handle(IPC.missionList, async () => dispatcher.statuses());
   ipcMain.handle(IPC.missionHistory, async (_e, missionId: unknown) => {
     const s = typeof missionId === 'string' ? leaderStores.get(missionId) : undefined;

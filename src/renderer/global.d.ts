@@ -8,6 +8,7 @@ interface ChatMessage {
   role: ChatRole;
   text: string;
   at: string; // ISO 시각
+  attachments?: ChatAttachment[];
 }
 
 type MemberState = 'idle' | 'working' | 'reviewing' | 'done';
@@ -84,6 +85,21 @@ interface UpdateInfo {
   notes?: string; // 바뀐 내용 (배포본 설명)
   publishedAt?: string;
   error?: string;
+}
+
+/** 대화 첨부 그림 */
+interface ChatAttachment {
+  id: string; // 12자리
+  name: string; // 원래 파일 이름 (없으면 '캡처')
+  mime: string; // image/png 등
+  marked?: boolean; // 사용자가 펜·네모·화살표·번호로 표시한 그림
+}
+/** 화면에서 보낼 새 그림 (base64) */
+interface NewAttachment {
+  name: string;
+  mime: string;
+  data: string;
+  marked?: boolean;
 }
 
 interface SetupStatus {
@@ -198,7 +214,8 @@ interface TaskOutput {
 
 interface RanoApi {
   loadHistory(): Promise<ChatMessage[]>;
-  send(text: string): Promise<void>;
+  send(text: string, attachments?: NewAttachment[]): Promise<{ ok: boolean; message?: string }>;
+  attachmentData(a: ChatAttachment): Promise<string | null>;
   onEvent(cb: (e: RanoUiEvent) => void): () => void;
   missionList(): Promise<MissionStatus[]>;
   missionHistory(missionId: string): Promise<ChatMessage[]>;

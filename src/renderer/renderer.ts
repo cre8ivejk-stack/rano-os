@@ -9,6 +9,7 @@ import { proposalCard } from './orgProposal.js';
 import { ChatView, type SpeakerStyle } from './chatView.js';
 import { bindComposer, mustGet, setRoleLabels, setZoneInfo } from './dom.js';
 import { SetupGuide } from './setup.js';
+import { ImageTray } from './attach.js';
 import { AccountButton } from './account.js';
 import { SettingsButton } from './settings.js';
 import { startUpdateNotice } from './update.js';
@@ -69,6 +70,9 @@ for (const name of TAB_NAMES) tabButtons[name].addEventListener('click', () => s
 
 // ---------- 라노 대화 ----------
 const chatInput = mustGet<HTMLTextAreaElement>('input');
+// 그림 첨부(붙여 넣기·끌어다 놓기·📎)
+const tray = new ImageTray(mustGet('composer'), chatInput, mustGet('view-chat'));
+tray.onChange = () => refreshBusy();
 const chatSendBtn = mustGet<HTMLButtonElement>('send');
 const thinkingEl = mustGet<HTMLDivElement>('thinking');
 
@@ -86,7 +90,7 @@ function refreshBusy(): void {
   const stick = chat.isNearBottom();
   thinkingEl.hidden = !busy;
   if (busy && stick) chat.scrollToBottom();
-  chatSendBtn.disabled = busy || !chatInput.value.trim();
+  chatSendBtn.disabled = busy || (!chatInput.value.trim() && !tray.count);
   chatSendBtn.textContent = busy ? '답을 기다리는 중' : '보내기';
 }
 
@@ -99,21 +103,31 @@ const { autosize } = bindComposer({
 
 async function submit(): Promise<void> {
   const text = chatInput.value.trim();
-  if (!text || thinking || sending) return;
+  if ((!text && !tray.count) || thinking || sending) return;
 
   sending = true;
+  const images = tray.items();
   chatInput.value = '';
+  tray.clear();
   autosize();
   refreshBusy();
-  try {
-    await rano.send(text);
-  } catch {
-    chat.addError('라노에게 말을 전하지 못했어요. 잠시 뒤 다시 보내 주세요.', new Date().toISOString());
-    // 아직 새로 적은 글이 없으면 보냈던 글을 되돌려 놓는다.
+  const giveBack = () => {
+    // 아직 새로 적은 글이 없으면 보냈던 글과 그림을 되돌려 놓는다.
     if (!chatInput.value.trim()) {
       chatInput.value = text;
       autosize();
     }
+    tray.restore(images);
+  };
+  try {
+    const r = await rano.send(text, images);
+    if (r && r.ok === false) {
+      chat.addError(r.message ?? '라노에게 말을 전하지 못했어요.', new Date().toISOString());
+      giveBack();
+    }
+  } catch {
+    chat.addError('라노에게 말을 전하지 못했어요. 잠시 뒤 다시 보내 주세요.', new Date().toISOString());
+    giveBack();
   } finally {
     sending = false;
     refreshBusy();

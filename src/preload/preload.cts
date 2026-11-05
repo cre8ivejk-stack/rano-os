@@ -25,6 +25,8 @@ import type {
   AuthStatus,
   AuthResult,
   UpdateInfo,
+  ChatAttachment,
+  NewAttachment,
 } from '../shared/types.js' with { 'resolution-mode': 'import' };
 
 const CH_LOAD_HISTORY = 'rano:load-history';
@@ -115,8 +117,12 @@ const api: RanoApi = {
   loadHistory(): Promise<ChatMessage[]> {
     return ipcRenderer.invoke(CH_LOAD_HISTORY);
   },
-  async send(text: string): Promise<void> {
-    await ipcRenderer.invoke(CH_SEND, String(text));
+  send(text: string, attachments?: NewAttachment[]): Promise<{ ok: boolean; message?: string }> {
+    const list = Array.isArray(attachments) ? attachments.slice(0, 6).map((x) => ({ name: String(x?.name ?? ''), mime: String(x?.mime ?? ''), data: String(x?.data ?? ''), ...(x?.marked === true ? { marked: true } : {}) })) : [];
+    return ipcRenderer.invoke(CH_SEND, String(text), list);
+  },
+  attachmentData(a: ChatAttachment): Promise<string | null> {
+    return ipcRenderer.invoke('rano:attachment-data', { id: String(a?.id ?? ''), mime: String(a?.mime ?? '') });
   },
   onEvent(cb: (e: RanoUiEvent) => void): () => void {
     // 화면에 ipcRenderer 이벤트 객체를 넘기지 않고 내용만 넘긴다.

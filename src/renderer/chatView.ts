@@ -1,5 +1,6 @@
 // 대화 목록 하나를 그리는 부품. 라노 대화와 리포 리더 대화가 함께 쓴다.
 import { dayKey, el, formatDay, formatTime, renderRich } from './dom.js';
+import { messageImages } from './attach.js';
 
 export interface SpeakerStyle {
   side: 'left' | 'right';
@@ -75,6 +76,7 @@ export class ChatView {
 
     row.appendChild(meta);
     row.appendChild(bubble);
+    if (Array.isArray(m.attachments) && m.attachments.length) row.appendChild(messageImages(m.attachments));
     this.append(row, m.at, forceScroll || style.side === 'right');
   }
 

@@ -3,6 +3,7 @@ import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { MISSION_MCP_NAME, type MemberState, type MissionDispatcherApi, type MissionStatus, type RanoConfig } from '../../shared/types.js';
 import { zoneText } from '../admin/paths.js';
+import { shareWithMission } from '../engine/attachments.js';
 
 const STATE_LABEL: Record<MemberState, string> = { idle: '대기', working: '작업 중', reviewing: '검수 중', done: '완료' };
 const TASK_LABEL = { running: '진행 중', done: '완료', failed: '중단' } as const;
@@ -58,10 +59,19 @@ export function createMissionMcpServer(dispatcher: MissionDispatcherApi, config:
       task: z.string().describe('리포 리더에게 넘길 지시: 목적·범위·결과물 형태 포함'),
       todoId: z.string().optional().describe('이 과제와 연결할 할 일 id (할 일 목록에 있는 일이면 넘김)'),
       planFirst: z.boolean().optional().describe('화면·기능 개편처럼 "기획 후 구현"인 과제면 true: 리더가 안 2~3개와 권장안을 먼저 올려 사용자가 고른 뒤에 구현한다'),
+      attachments: z.array(z.string()).optional().describe('사용자가 대화에 붙인 그림 id (앱 안내에 나온 id). 리더와 팀원이 그 그림을 열어 볼 수 있게 함께 넘긴다'),
     },
-    async ({ missionId, task, todoId, planFirst }) => {
+    async ({ missionId, task, todoId, planFirst, attachments }) => {
       try {
-        return text(await dispatcher.assign(missionId, task, todoId, planFirst));
+        let body = task;
+        if (attachments?.length) {
+          if (!config.missions.some((m) => m.id === missionId)) return text(`"${missionId}" 미션을 찾지 못했어요.`, true);
+          const shared = shareWithMission(config.runsDir, missionId, attachments);
+          if (shared.missing.length && !shared.paths.length) return text(`그림 id 를 찾지 못했어요: ${shared.missing.join(', ')}`, true);
+          if (shared.paths.length)
+            body += `\n\n[첨부 그림] 사용자가 붙인 그림이에요. Read 도구로 열어 보세요(팀원에게도 이 경로를 넘기세요). 그림 위의 빨강·파랑·노랑 펜·네모·화살표·번호는 사용자가 고치고 싶은 곳을 직접 표시한 거예요:\n${shared.paths.map((p) => `- ${p}`).join('\n')}`;
+        }
+        return text(await dispatcher.assign(missionId, body, todoId, planFirst));
       } catch (e) {
         return text(`배정하지 못했어요: ${e instanceof Error ? e.message : String(e)}`, true);
       }
