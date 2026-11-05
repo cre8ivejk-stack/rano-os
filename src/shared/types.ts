@@ -98,6 +98,16 @@ export interface ToolsStatus {
   log?: string; // 설치 중 마지막 줄
 }
 
+/** 추천 스킬 하나 */
+export interface SkillSuggestion {
+  name: string;
+  url: string;
+  license: string;
+  why: string;
+  installed: boolean;
+  matched: string[]; // 하려는 일에서 맞은 낱말
+}
+
 /** 처음 켰을 때 안내 */
 export interface SetupStatus {
   needed: boolean; // 안내를 띄워야 하는지 (처음 쓰는 사람)
@@ -251,7 +261,8 @@ export type RanoUiEvent =
   | { kind: 'todos'; items: TodoItem[] } // 할 일 전체 목록 (바뀔 때마다)
   // ---- 조직: 라노의 미션 구성안 ----
   | { kind: 'orgProposal'; proposal: MissionProposal; at: string } // 라노가 구성안을 만들었다 → 대화에 카드로 보인다
-  | { kind: 'orgOpenProposal'; proposal: MissionProposal }; // 사용자가 동의 → 조직 탭 미션 추가 화면을 채워서 연다
+  | { kind: 'orgOpenProposal'; proposal: MissionProposal }
+  | { kind: 'skillSuggest'; need: string; items: SkillSuggestion[]; at: string } // 라노의 스킬 추천 카드; // 사용자가 동의 → 조직 탭 미션 추가 화면을 채워서 연다
 
 // ---------- IPC 채널 이름 (preload 는 샌드박스라 이 파일을 불러올 수 없으니 같은 문자열을 그대로 적는다) ----------
 export const IPC = {
@@ -372,6 +383,7 @@ export interface RanoApi {
   skillInstall(token: string): Promise<{ ok: boolean; message: string; name?: string }>;
   skillRemove(name: string): Promise<{ ok: boolean; message: string }>;
   toolsStatus(): Promise<ToolsStatus>;
+  skillRegistry(): Promise<SkillSuggestion[]>;
   skillsAuto(): Promise<boolean>;
   setSkillsAuto(on: boolean): Promise<{ ok: boolean; message: string }>;
   toolsInstall(kind?: 'docs' | 'browser'): Promise<{ ok: boolean; message: string }>;

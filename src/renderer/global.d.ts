@@ -61,7 +61,8 @@ type RanoUiEvent =
   | { kind: 'navigate'; tab: 'chat' | 'board' | 'approvals' | 'outputs' }
   | { kind: 'todos'; items: TodoItem[] }
   | { kind: 'orgProposal'; proposal: MissionProposal; at: string }
-  | { kind: 'orgOpenProposal'; proposal: MissionProposal };
+  | { kind: 'orgOpenProposal'; proposal: MissionProposal }
+  | { kind: 'skillSuggest'; need: string; items: SkillSuggestion[]; at: string };
 
 type Zone = 'work' | 'personal';
 
@@ -173,6 +174,16 @@ interface ToolsStatus {
   python?: string;
   browser?: boolean; // 웹 화면 확인 도구(playwright·chromium)
   log?: string; // 설치 중 마지막 줄
+}
+
+/** 추천 스킬 하나 */
+interface SkillSuggestion {
+  name: string;
+  url: string;
+  license: string;
+  why: string;
+  installed: boolean;
+  matched: string[]; // 하려는 일에서 맞은 낱말
 }
 
 interface SetupStatus {
@@ -357,6 +368,7 @@ interface RanoApi {
   skillInstall(token: string): Promise<{ ok: boolean; message: string; name?: string }>;
   skillRemove(name: string): Promise<{ ok: boolean; message: string }>;
   toolsStatus(): Promise<ToolsStatus>;
+  skillRegistry(): Promise<SkillSuggestion[]>;
   skillsAuto(): Promise<boolean>;
   setSkillsAuto(on: boolean): Promise<{ ok: boolean; message: string }>;
   toolsInstall(kind?: 'docs' | 'browser'): Promise<{ ok: boolean; message: string }>;

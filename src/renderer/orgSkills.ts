@@ -44,7 +44,7 @@ export async function openSkillView(name: string): Promise<void> {
 }
 
 /** 가져오기: 주소·폴더 → 미리 보기 → 승인하면 넣기 */
-export function openSkillImport(onDone: () => void): void {
+export function openSkillImport(onDone: () => void, initial?: string): void {
   const m = modal('스킬 가져오기', true);
   m.body.appendChild(el('p', 'org-hint', 'GitHub 의 스킬 폴더 주소(…/tree/main/skills/이름)나 이 맥의 스킬 폴더(SKILL.md 가 있는 폴더)를 넣어 주세요. 넣기 전에 파일과 내용을 먼저 보여 드려요.'));
   const row = el('div', 'org-row');
@@ -110,6 +110,10 @@ export function openSkillImport(onDone: () => void): void {
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') look.click();
   });
+  if (initial) {
+    input.value = initial;
+    look.click();
+  }
   install.addEventListener('click', async () => {
     install.disabled = true;
     const r = await window.rano.skillInstall(token).catch(() => ({ ok: false, message: '넣지 못했어요' }));
@@ -198,6 +202,19 @@ export function skillsSection(notice: Notice, roleNames: () => string[], reload:
 
   const list = el('div', 'org-roles');
   sec.appendChild(list);
+
+  // 추천 스킬 (라이선스를 확인해 둔 공개 스킬 중 아직 없는 것)
+  const recSec = el('div', 'skill-rec');
+  sec.appendChild(recSec);
+  void window.rano.skillRegistry().then((reg) => {
+    const rest = reg.filter((r) => !r.installed);
+    if (!rest.length) return;
+    recSec.appendChild(el('h4', 'settings-title', `추천 스킬 ${rest.length}개`));
+    recSec.appendChild(el('p', 'org-hint', '라이선스를 확인해 둔 공개 스킬이에요. 라노도 새 일을 들으면 이 중에서 맞는 것을 대화에서 추천해요.'));
+    const ul = el('div', 'skill-rec-list');
+    for (const r of rest) ul.appendChild(suggestionRow(r, reload));
+    recSec.appendChild(ul);
+  });
   void (async () => {
     const skills = await window.rano.skillsList().catch(() => [] as SkillInfo[]);
     if (!skills.length) {
@@ -263,4 +280,38 @@ export function roleSkillPicker(role: string): HTMLElement {
     }
   })();
   return box;
+}
+
+/** 추천 스킬 한 줄: 이름·이유·라이선스 + [미리 보고 넣기] */
+export function suggestionRow(r: SkillSuggestion, onDone: () => void): HTMLElement {
+  const row = el('div', 'skill-rec-row');
+  const info = el('div', 'skill-rec-info');
+  info.appendChild(el('strong', undefined, r.name));
+  info.appendChild(el('span', 'org-hint', ` · ${r.license}`));
+  info.appendChild(el('p', 'skill-rec-why', r.why + (r.matched.length ? ` (맞은 말: ${r.matched.join(', ')})` : '')));
+  row.appendChild(info);
+  if (r.installed) row.appendChild(el('span', 'org-ok', '넣음'));
+  else {
+    const b = button('미리 보고 넣기', 'btn btn-small btn-confirm');
+    b.addEventListener('click', () =>
+      openSkillImport(() => {
+        b.replaceWith(el('span', 'org-ok', '넣음'));
+        onDone();
+      }, r.url),
+    );
+    row.appendChild(b);
+  }
+  return row;
+}
+
+/** 대화 속 "라노의 스킬 추천" 카드 */
+export function skillSuggestCard(need: string, items: SkillSuggestion[], onDone: () => void): HTMLElement {
+  const card = el('article', 'proposal-card skill-suggest');
+  const head = el('div', 'proposal-head');
+  head.appendChild(el('span', 'proposal-tag', '스킬 추천'));
+  head.appendChild(el('span', 'proposal-name', need.length > 60 ? `${need.slice(0, 60)}…` : need));
+  card.appendChild(head);
+  for (const it of items) card.appendChild(suggestionRow(it, onDone));
+  card.appendChild(el('p', 'proposal-note', '넣기 전에 파일·내용·라이선스를 먼저 보여 드려요. 넣은 스킬은 리더·팀원이 필요할 때 골라 써요.'));
+  return card;
 }

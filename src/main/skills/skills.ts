@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { RanoConfig, SkillInfo, SkillPreview, ToolsStatus } from '../../shared/types.js';
+import type { RanoConfig, SkillInfo, SkillPreview, SkillSuggestion, ToolsStatus } from '../../shared/types.js';
 import { readRaw, writeRaw } from '../admin/paths.js';
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{1,60}$/;
@@ -66,6 +66,7 @@ function builtinNames(): string[] {
 export function initSkills(config: RanoConfig, defaultsDir: string): void {
   cfg = config;
   defaultsSkills = path.join(defaultsDir, 'skills');
+  registryDir = defaultsDir;
   // 기본 스킬: 데이터 폴더에 없을 때만 복사
   mkdirSync(skillsDir(), { recursive: true });
   for (const n of builtinNames()) {
@@ -203,6 +204,47 @@ export function skillPromptFor(role: string, draftsHint = '이 과제의 시안 
   return `\n\n## 쓸 수 있는 스킬\n- 결과 파일과 스크립트는 ${draftsHint}에 먼저 만든다. 명령 실행은 승인함을 거친다.\n- 문서 도구 파이썬: ${py ? `$RANO_PY (${py})` : '아직 설치되지 않음 — 파일 만들기가 필요하면 보고에 "라노 OS 설정에서 문서 도구 설치 필요"라고 적는다'}\n\n${parts.join('\n\n')}`;
 }
 
+// ---------- 추천 목록 ----------
+interface RegEntry {
+  name: string;
+  url: string;
+  license: string;
+  licenseUrl?: string;
+  why: string;
+  tags: string[];
+}
+let registryDir = '';
+function registry(): RegEntry[] {
+  try {
+    const j = JSON.parse(readFileSync(path.join(registryDir, 'skill-registry.json'), 'utf-8'));
+    return (Array.isArray(j?.skills) ? j.skills : []).filter((e: RegEntry) => e && NAME_RE.test(e.name) && /^https:\/\/github\.com\//.test(e.url));
+  } catch {
+    return [];
+  }
+}
+
+/** 추천 목록 전체 (설치 여부 포함) */
+export function registryList(): SkillSuggestion[] {
+  const have = new Set(listSkills().map((s) => s.name));
+  return registry().map((e) => ({ name: e.name, url: e.url, license: e.license, why: e.why, installed: have.has(e.name), matched: [] }));
+}
+
+/** 하려는 일(글)에 맞는, 아직 없는 스킬을 고른다 */
+export function recommendSkills(need: string, limit = 5): SkillSuggestion[] {
+  const text = String(need ?? '').toLowerCase();
+  const have = new Set(listSkills().map((s) => s.name));
+  const scored = registry()
+    .filter((e) => !have.has(e.name))
+    .map((e) => {
+      const matched = e.tags.filter((t) => text.includes(t.toLowerCase()));
+      return { e, matched, score: matched.length * 2 + (text.includes(e.name) ? 3 : 0) };
+    })
+    .filter((x) => !text.trim() || x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+  return scored.map(({ e, matched }) => ({ name: e.name, url: e.url, license: e.license, why: e.why, installed: false, matched }));
+}
+
 // ---------- 가져오기 ----------
 async function fetchJson(url: string): Promise<any> {
   const r = await fetch(url, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'rano-os' }, signal: AbortSignal.timeout(20_000) });
@@ -254,6 +296,16 @@ export async function previewSkill(source: string): Promise<{ ok: true; preview:
     }
     const skillMd = path.join(dir, 'SKILL.md');
     if (!existsSync(skillMd)) throw new Error('SKILL.md 가 없어요');
+    // 추천 목록에 있는 스킬인데 폴더에 라이선스 파일이 없으면 원 저장소 라이선스를 함께 넣는다(MIT 등 저작권 표시)
+    const reg = registry().find((e) => e.url === src);
+    if (reg?.licenseUrl && !['LICENSE', 'LICENSE.txt', 'LICENSE.md'].some((f) => existsSync(path.join(dir, f)))) {
+      try {
+        const r = await fetch(reg.licenseUrl, { signal: AbortSignal.timeout(15_000) });
+        if (r.ok) writeFileSync(path.join(dir, 'LICENSE'), Buffer.from(await r.arrayBuffer()));
+      } catch {
+        // 라이선스를 못 받아도 미리 보기는 이어 간다
+      }
+    }
     const text = readFileSync(skillMd, 'utf-8');
     const fm = frontmatter(text);
     const name = (fm.name ?? path.basename(src)).toLowerCase();

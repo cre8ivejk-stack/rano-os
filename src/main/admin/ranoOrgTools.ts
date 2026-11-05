@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { ORG_MCP_NAME, type Emit, type MissionProposal, type RanoConfig, type RoleDraft, type Zone } from '../../shared/types.js';
 import type { OrgAdminApi } from './orgAdmin.js';
 import { shrinkHome, zonePath, zoneRoot, zoneText } from './paths.js';
+import { listSkills, recommendSkills } from '../skills/skills.js';
 
 function text(t: string, isError = false) {
   return { content: [{ type: 'text' as const, text: t }], ...(isError ? { isError: true } : {}) };
@@ -177,5 +178,29 @@ export function createOrgMcpServer(org: OrgAdminApi, emit: Emit, config: RanoCon
     },
   );
 
-  return createSdkMcpServer({ name: ORG_MCP_NAME, version: '0.1.0', tools: [overview, propose, open] });
+  const recommend = tool(
+    'recommend_skills',
+    [
+      '사용자가 새로운 종류의 일을 말하거나(새 미션, 처음 하는 작업, 새 결과물 형식) 리더 보고에 "필요한 스킬"이 나오면,',
+      '라이선스를 확인해 둔 공개 스킬 목록에서 그 일에 맞고 아직 설치되지 않은 스킬을 골라 대화에 추천 카드로 보여 줍니다.',
+      '설치는 하지 않습니다. 사용자가 카드에서 내용을 미리 보고 직접 넣습니다. need 에는 하려는 일을 구체적으로 적으세요(예: "PYLON 화면을 브라우저로 확인하고 캡처", "사내 공지 글").',
+    ].join('\n'),
+    { need: z.string().describe('하려는 일 (구체적으로)') },
+    async ({ need }) => {
+      const items = recommendSkills(need, 5);
+      const installed = listSkills().map((s) => s.name);
+      if (!items.length) return text(`추천할 새 스킬이 없어요. 지금 있는 스킬로 하면 돼요: ${installed.join(', ')}`);
+      emit({ kind: 'skillSuggest', need, items, at: new Date().toISOString() });
+      return text(
+        [
+          `추천 카드를 대화에 보여 줬어요: ${items.map((i) => `${i.name}(${i.why})`).join(', ')}.`,
+          '사용자에게 왜 도움이 되는지 짧게 말하고, 카드의 [미리 보고 넣기]로 내용을 확인한 뒤 넣으면 된다고 안내하세요. 직접 설치하지 마세요.',
+          `이미 있는 스킬: ${installed.join(', ')}`,
+        ].join('\n'),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  return createSdkMcpServer({ name: ORG_MCP_NAME, version: '0.1.0', tools: [overview, propose, open, recommend] });
 }

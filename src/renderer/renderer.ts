@@ -10,6 +10,7 @@ import { ChatView, type SpeakerStyle } from './chatView.js';
 import { bindComposer, mustGet, setRoleLabels, setZoneInfo } from './dom.js';
 import { SetupGuide } from './setup.js';
 import { ImageTray } from './attach.js';
+import { skillSuggestCard } from './orgSkills.js';
 import { AccountButton } from './account.js';
 import { SettingsButton } from './settings.js';
 import { SearchButton } from './search.js';
@@ -205,6 +206,9 @@ function handleChatEvent(e: RanoUiEvent): void {
       break;
     case 'activity':
       chat.addActivity(e.text, e.at);
+      break;
+    case 'skillSuggest':
+      chat.addCard(skillSuggestCard(e.need, e.items, () => void org.load()), e.at);
       break;
     case 'orgProposal':
       chat.addCard(

@@ -305,6 +305,9 @@ const api: RanoApi = {
   setSkillsAuto(on: boolean): Promise<{ ok: boolean; message: string }> {
     return ipcRenderer.invoke('skills:set-auto', on === true);
   },
+  skillRegistry(): Promise<any> {
+    return ipcRenderer.invoke('skills:registry');
+  },
   usageSummary(): Promise<UsageSummary> {
     return ipcRenderer.invoke('usage:summary');
   },

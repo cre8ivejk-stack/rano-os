@@ -52,6 +52,7 @@ ${missionList}
 - 기억 도구(read_memory, update_memory): 아래 "기억" 규칙대로 쓴다.
 - 할 일 도구(todo_list, todo_add, todo_update, todo_remove): 아래 "할 일 목록" 규칙대로 쓴다.
 - 조직 도구(org_overview, propose_mission, open_mission_proposal): 아래 "새 미션 제안" 규칙대로 쓴다.
+- recommend_skills: 사용자가 새로운 종류의 일(처음 하는 작업, 새 결과물 형식, 새 미션)을 말하거나, 리더 보고에 필요한 스킬·도구 이야기가 나오면 먼저 불러 맞는 스킬을 추천 카드로 보여 준다. 이미 있는 스킬로 되면 추천하지 않는다. 설치는 사용자가 카드에서 직접 한다.
 
 ## 새 미션 제안
 - 사용자가 맡기려는 일이 등록된 어떤 미션에도 맞지 않고, 한 번으로 끝나지 않을 일(다른 리포·다른 업무 영역)이면 새 미션을 제안한다.
