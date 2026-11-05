@@ -27,7 +27,18 @@
 - Node.js 20 이상, git
 - Claude 계정(Pro·Max) 또는 Anthropic API 키
 
-## 설치
+## 받아서 바로 쓰기 (권장)
+
+1. 이 저장소의 **Releases** 에서 `rano-os-<버전>-mac-arm64.zip` 을 받아요
+2. 압축을 풀고 `라노 OS.app` 을 `응용 프로그램` 폴더로 옮겨요
+3. 처음 한 번은 맥이 "확인되지 않은 개발자" 경고를 띄워요 (Apple 개발자 인증서로 서명하지 않은 앱이라서예요)
+   - 앱을 더블클릭 → 경고 창에서 **완료** → **시스템 설정 › 개인정보 보호 및 보안** 맨 아래 "라노 OS" 옆 **그래도 열기** → 암호 입력
+   - 또는 터미널에서 한 번: `xattr -dr com.apple.quarantine "/Applications/라노 OS.app"`
+4. 앱이 켜지면 처음 설정 안내를 따라가요
+
+git 이 없다는 창이 뜨면 안내대로 "개발자 도구"를 설치해 주세요 (기억 자동 저장과 리포 작업에 써요).
+
+## 직접 만들기
 
 ```bash
 git clone <이 저장소 주소> rano-os
@@ -37,6 +48,7 @@ npm run package        # out/라노 OS-darwin-arm64/라노 OS.app 이 만들어�
 ```
 
 만든 앱을 `응용 프로그램` 폴더로 옮겨 실행합니다. 개발 중에는 `npm start` 로 바로 켤 수 있습니다.
+배포용 zip 은 `npm run release` 로 만들어요 (`out/rano-os-<버전>-mac-arm64.zip`).
 
 ## 처음 켰을 때
 
