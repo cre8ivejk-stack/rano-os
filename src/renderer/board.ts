@@ -2,6 +2,7 @@
 import { ChatView, type SpeakerStyle } from './chatView.js';
 import { demoStatuses, OfficeView } from './office.js';
 import { ImageTray } from './attach.js';
+import { UsageView } from './usage.js';
 import { bindComposer, el, formatTime, formatWhen, mustGet, roleLabel, toDate } from './dom.js';
 
 const MEMBER_STATE_LABEL: Record<MemberState, string> = {
@@ -42,7 +43,9 @@ export class Board {
   /** 첫 미션 안내 버튼 */
   onFirstMission: () => void = () => {};
   onAskRano: () => void = () => {};
-  private mode: 'office' | 'list' = 'office';
+  private mode: 'office' | 'list' | 'usage' = 'office';
+  private usageBtn = mustGet<HTMLButtonElement>('view-usage-btn');
+  private usage = new UsageView();
   private readonly demo = location.hash === '#office-demo';
   private demoStage = 0;
   private tabVisible = false;
@@ -105,12 +108,14 @@ export class Board {
     this.office.onApprovalsClick = () => this.onApprovalsClick();
     try {
       const saved = localStorage.getItem('rano.boardMode');
-      if (saved === 'list' || saved === 'office') this.mode = saved;
+      if (saved === 'list' || saved === 'office' || saved === 'usage') this.mode = saved;
     } catch {
       // 저장소를 못 쓰면 기본값
     }
     this.officeBtn.addEventListener('click', () => this.setMode('office'));
     this.listBtn.addEventListener('click', () => this.setMode('list'));
+    this.usageBtn.addEventListener('click', () => this.setMode('usage'));
+    this.cardsEl.after(this.usage.root);
     this.boardEl.classList.add('leader-closed');
     this.applyMode();
     this.renderCards();
@@ -122,7 +127,7 @@ export class Board {
   }
 
   // ---------- 사무실 / 목록 전환 ----------
-  private setMode(mode: 'office' | 'list') {
+  private setMode(mode: 'office' | 'list' | 'usage') {
     this.mode = mode;
     try {
       localStorage.setItem('rano.boardMode', mode);
@@ -134,13 +139,17 @@ export class Board {
 
   private applyMode() {
     const office = this.mode === 'office';
-    this.boardEl.classList.toggle('office-mode', office);
+    const list = this.mode === 'list';
+    const usage = this.mode === 'usage';
+    this.boardEl.classList.toggle('office-mode', office || usage);
     this.officeEl.hidden = !office;
-    this.cardsEl.hidden = office;
-    this.officeBtn.classList.toggle('on', office);
-    this.listBtn.classList.toggle('on', !office);
-    this.officeBtn.setAttribute('aria-pressed', String(office));
-    this.listBtn.setAttribute('aria-pressed', String(!office));
+    this.cardsEl.hidden = !list;
+    this.usage.root.hidden = !usage;
+    if (usage) void this.usage.load();
+    for (const [b, on] of [[this.officeBtn, office], [this.listBtn, list], [this.usageBtn, usage]] as const) {
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', String(on));
+    }
     this.refreshOffice();
   }
 
@@ -390,7 +399,8 @@ export class Board {
   }
 
   // ---------- 리포 리더 대화 ----------
-  private async open(missionId: string): Promise<void> {
+  /** 그 미션의 리포 리더 대화창을 연다 */
+  async open(missionId: string): Promise<void> {
     if (this.openId === missionId) {
       this.inputEl.focus();
       return;

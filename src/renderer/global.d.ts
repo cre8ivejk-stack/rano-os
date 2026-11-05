@@ -102,6 +102,34 @@ interface NewAttachment {
   marked?: boolean;
 }
 
+/** 현황판 사용량 보기 */
+interface UsageSummary {
+  weekStart: string;
+  rows: { who: string; name: string; weekRuns: number; weekTokens: number; weekCost: number; todayRuns: number; todayTokens: number; todayCost: number }[];
+  days: { date: string; tokens: number }[]; // 최근 7일
+  limits: { type: string; status?: string; utilization?: number; resetsAt?: string; at?: string }[]; // 구독 사용 한도 (엔진이 알려 준 최신값)
+}
+
+/** 미션 기록 보기: 미션 홈의 문서 하나 */
+interface MissionDoc {
+  file: string; // 미션 홈 기준 (charter.md, memory/결정로그.md …)
+  label: string; // 화면 이름
+  content: string;
+  updatedAt?: string;
+}
+
+/** 지난 일 찾기 결과 하나 */
+interface SearchHit {
+  kind: 'rano' | 'leader' | 'output' | 'approval';
+  missionId?: string;
+  missionName?: string;
+  who: string;
+  title: string;
+  snippet: string; // 찾은 낱말 주변
+  text: string; // 전체 (펼쳐 보기)
+  at?: string;
+}
+
 interface SetupStatus {
   needed: boolean; // 안내를 띄워야 하는지 (처음 쓰는 사람)
   dataDir: string; // 데이터 폴더 (~ 로 줄임)
@@ -155,7 +183,23 @@ type ApprovalKind =
   | 'reverseDecision'
   | 'estimate'
   | 'command'
+  | 'bundle'
   | 'other';
+
+interface BundleFile {
+  rel: string;
+  abs: string;
+  draft: string;
+  change?: FileChange;
+}
+
+/** 파일 쓰기 승인: 바뀌기 전·후 내용 (비밀로 보이는 줄은 가림) */
+interface FileChange {
+  before: string; // 지금 내용 (새 파일이면 '')
+  after: string; // 바뀐 뒤 내용
+  isNew: boolean;
+  truncated?: boolean; // 너무 커서 앞부분만
+}
 
 interface ApprovalRequest {
   id: string;
@@ -169,6 +213,9 @@ interface ApprovalRequest {
   recommendation: string;
   detail?: string;
   filePath?: string;
+  change?: FileChange;
+  bundle?: BundleFile[];
+  picked?: string[];
   status: 'pending' | 'approved' | 'rejected' | 'revise' | 'expired';
   decisionNote?: string;
   rememberFile?: boolean;
@@ -184,6 +231,7 @@ interface ApprovalDecision {
   note?: string;
   rememberFile?: boolean;
   choices?: Record<string, string>;
+  picked?: string[];
 }
 
 interface DecisionOption {
@@ -251,6 +299,9 @@ interface RanoApi {
   openDataFolder(): Promise<void>;
   updateCheck(): Promise<UpdateInfo>;
   openReleasePage(url: string): Promise<void>;
+  usageSummary(): Promise<UsageSummary>;
+  search(query: string): Promise<SearchHit[]>;
+  missionDocs(missionId: string): Promise<MissionDoc[]>;
   setupStatus(): Promise<SetupStatus>;
   setupPickFolder(zone: Zone, current: string): Promise<string | null>;
   setupCheckFolder(zone: Zone, p: string): Promise<SetupFolderCheck>;

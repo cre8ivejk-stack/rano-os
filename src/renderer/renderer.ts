@@ -12,6 +12,7 @@ import { SetupGuide } from './setup.js';
 import { ImageTray } from './attach.js';
 import { AccountButton } from './account.js';
 import { SettingsButton } from './settings.js';
+import { SearchButton } from './search.js';
 import { startUpdateNotice } from './update.js';
 
 const rano = window.rano;
@@ -253,6 +254,15 @@ async function start(): Promise<void> {
     const right = document.createElement('div');
     right.className = 'topbar-right';
     topbar.appendChild(right);
+    const finder = new SearchButton(right);
+    finder.onGo = (h) => {
+      if (h.kind === 'rano') showTab('chat');
+      else if (h.kind === 'leader' && h.missionId) {
+        showTab('board');
+        void board.open(h.missionId);
+      } else if (h.kind === 'output') showTab('outputs');
+      else showTab('approvals');
+    };
     new SettingsButton(right);
     new AccountButton(right);
   }

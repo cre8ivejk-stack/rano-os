@@ -1,11 +1,12 @@
 // 리포 리더 전용 도구(MCP): request_approval — 팀 구성안·수치 변경·결정 번복·추정값·외부 게시 등을 승인함에 올린다.
+// propose_changes — 여러 파일 고치기를 한 장의 승인 카드로 올리고, 사용자가 고른 파일만 앱이 반영한다.
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { existsSync, realpathSync } from 'node:fs';
-import { LEADER_MCP_NAME, type ApprovalQueueApi, type DecisionItem, type MissionConfig, type MissionTrackerApi } from '../../shared/types.js';
-import type { LeaderGuard } from './leaderPermissions.js';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { LEADER_MCP_NAME, type ApprovalQueueApi, type BundleFile, type DecisionItem, type MissionConfig, type MissionTrackerApi } from '../../shared/types.js';
+import { fileChangeFor, type LeaderGuard } from './leaderPermissions.js';
 
 export const LEADER_APPROVAL_KINDS = ['teamPlan', 'decision', 'numbers', 'reverseDecision', 'estimate', 'external', 'other'] as const;
 
@@ -214,5 +215,150 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
     },
   );
 
-  return createSdkMcpServer({ name: LEADER_MCP_NAME, version: '0.1.0', tools: [requestApproval] });
+  // 묶음 승인: 고친 파일들을 시안 폴더에 만든 뒤 한 장의 승인 카드로 올리고, 사용자가 고른 파일만 앱이 반영한다
+  const proposeChanges = tool(
+    'propose_changes',
+    [
+      '작업 폴더의 파일 여러 개(2개 이상)를 고칠 때 한 번에 승인받는 도구입니다. 파일 하나만 고치면 평소처럼 Edit·Write 를 쓰세요.',
+      '방법: ① 고친 뒤의 "전체 내용"을 이 과제의 시안 폴더에 파일로 만듭니다(시안 폴더 쓰기는 승인이 필요 없어요. 팀원에게도 시안 폴더에 쓰라고 지시할 수 있어요).',
+      '② files 에 [작업 폴더 기준 경로(target), 시안 폴더의 새 내용 파일(draft)] 짝을 넣어 이 도구를 부릅니다.',
+      '사용자는 카드에서 파일마다 바뀐 부분을 보고 골라서 승인합니다. 고른 파일만 앱이 작업 폴더에 반영하고, 결과로 반영한 파일과 빠진 파일을 알려 줍니다. 빠진 파일은 다시 시도하지 말고 보고에 적으세요.',
+      '커밋은 하지 않습니다(필요하면 따로 승인). 비밀 값은 넣지 않습니다.',
+    ].join('\n'),
+    {
+      title: z.string().describe('한 줄 제목 (예: "리뉴얼 문서 4개 고치기")'),
+      why: z.string().describe('왜 고치는지'),
+      recommendation: z.string().describe('권장안 한 줄 (예: "모두 반영")'),
+      files: z
+        .array(
+          z.object({
+            target: z.string().describe('반영할 파일: 작업 폴더 기준 경로 (예: docs/menu.md) 또는 절대 경로'),
+            draft: z.string().describe('고친 뒤 전체 내용이 든 파일: 시안 폴더 안 파일 이름(또는 절대 경로)'),
+          }),
+        )
+        .min(1)
+        .max(30),
+    },
+    async (args, extra) => {
+      const task = guard.currentTask();
+      if (!deps.approvals) return text('지금은 승인함이 연결되지 않았어요. 보고에 "승인이 필요한 일"로 적어 주세요.', true);
+      if (!task) return text('진행 중인 과제가 없어 승인을 올릴 수 없어요.', true);
+      if (guard.planBlocked()) return text('"기획 먼저" 과제라 안을 고르기 전에는 작업 폴더를 고칠 수 없어요.', true);
+      const root = mission.targets[0];
+      const dir = guard.draftsDir(task.id);
+      if (!root || !dir) return text('작업 폴더나 시안 폴더를 찾지 못했어요.', true);
+      const realDir = existsSync(dir) ? realpathSync(dir) : dir;
+      const problems: string[] = [];
+      const files: BundleFile[] = [];
+      for (const f of args.files) {
+        const abs = path.resolve(root, f.target.replace(/^~(?=\/)/, process.env.HOME ?? '~'));
+        const draftRaw = path.isAbsolute(f.draft) ? f.draft : path.join(dir, f.draft);
+        let draft = '';
+        try {
+          draft = realpathSync(draftRaw);
+        } catch {
+          problems.push(`${f.target}: 시안 파일(${f.draft})이 없어요`);
+          continue;
+        }
+        if (!(draft === realDir || draft.startsWith(realDir + path.sep))) {
+          problems.push(`${f.target}: 새 내용 파일은 이 과제의 시안 폴더 안에 있어야 해요`);
+          continue;
+        }
+        const bad = guard.bundleTargetProblem(abs);
+        if (bad) {
+          problems.push(`${f.target}: ${bad}`);
+          continue;
+        }
+        if (files.some((x) => x.abs === abs)) continue;
+        let content: string;
+        try {
+          content = readFileSync(draft, 'utf-8');
+        } catch {
+          problems.push(`${f.target}: 시안 파일을 읽지 못했어요`);
+          continue;
+        }
+        const change = fileChangeFor('Write', { content }, abs);
+        files.push({ rel: path.relative(root, abs) || path.basename(abs), abs, draft, ...(change ? { change } : {}) });
+      }
+      if (!files.length) return text(`올릴 파일이 없어요:\n- ${problems.join('\n- ')}`, true);
+      const extraSignal = (extra as { signal?: AbortSignal } | undefined)?.signal;
+      const signal = extraSignal && deps.signal ? AbortSignal.any([extraSignal, deps.signal]) : extraSignal ?? deps.signal;
+      deps.emitActivity?.(`${guard.leaderLabel}: 승인을 기다리는 중: ${args.title} (파일 ${files.length}개)`);
+      try {
+        deps.tracker?.activity(guard.leaderLabel, `승인을 기다리는 중: ${args.title}`);
+      } catch {
+        // 무시
+      }
+      let d;
+      try {
+        d = await deps.approvals.request(
+          {
+            missionId: mission.id,
+            taskId: task.id,
+            who: guard.leaderLabel,
+            kind: 'bundle',
+            title: args.title,
+            what: `${mission.name} 리포 파일 ${files.length}개를 한 번에 ${files.some((f) => f.change?.isNew) ? '만들거나 ' : ''}고쳐요: ${files.map((f) => f.rel).join(', ')}`,
+            why: args.why,
+            recommendation: args.recommendation,
+            detail: files.map((f) => `- ${f.rel}${f.change?.isNew ? ' (새 파일)' : ''}`).join('\n') + (problems.length ? `\n\n올리지 못한 파일:\n- ${problems.join('\n- ')}` : ''),
+            bundle: files,
+          },
+          signal,
+        );
+      } catch {
+        return text('승인을 기다리던 중에 작업이 멈췄어요. 아무 파일도 바꾸지 않았어요.', true);
+      }
+      const note = d.note?.trim();
+      if (d.decision !== 'approve') {
+        const said = d.decision === 'revise' ? '수정 요청' : '반려됨';
+        try {
+          deps.tracker?.activity(guard.leaderLabel, `${said}: ${args.title}`);
+        } catch {
+          // 무시
+        }
+        return text(d.decision === 'revise' ? `사용자가 수정을 요청했어요: ${note || '사유 없음'}. 시안을 고쳐 다시 올리세요.` : `사용자가 반려했어요: ${note || '사유 없음'}. 아무 파일도 바꾸지 않았어요.`);
+      }
+      // 고른 파일만 반영 (그 사이에 시안이 바뀌었으면 승인한 내용과 달라지므로 다시 읽어 비교)
+      const picked = new Set(d.picked ?? files.map((f) => f.rel));
+      const done: string[] = [];
+      const failed: string[] = [];
+      for (const f of files) {
+        if (!picked.has(f.rel)) continue;
+        try {
+          const content = readFileSync(f.draft, 'utf-8');
+          const again = fileChangeFor('Write', { content }, f.abs);
+          if (f.change && again && again.after !== f.change.after) {
+            failed.push(`${f.rel} (승인한 뒤 시안이 바뀜)`);
+            continue;
+          }
+          await fs.mkdir(path.dirname(f.abs), { recursive: true });
+          const tmp = `${f.abs}.${process.pid}.${Date.now()}.tmp`;
+          await fs.writeFile(tmp, content, 'utf-8');
+          await fs.rename(tmp, f.abs);
+          done.push(f.rel);
+        } catch {
+          failed.push(`${f.rel} (쓰지 못함)`);
+        }
+      }
+      const skipped = files.filter((f) => !picked.has(f.rel)).map((f) => f.rel);
+      try {
+        deps.tracker?.activity(guard.leaderLabel, `승인됨: ${args.title} (반영 ${done.length}개)`);
+      } catch {
+        // 무시
+      }
+      deps.emitActivity?.(`${guard.leaderLabel}: 묶음 승인 반영 ${done.length}개${skipped.length ? `, 빠짐 ${skipped.length}개` : ''}`);
+      return text(
+        [
+          `사용자가 승인했어요${note ? ` (메모: ${note})` : ''}. 앱이 작업 폴더에 반영했어요.`,
+          `- 반영한 파일: ${done.join(', ') || '없음'}`,
+          ...(skipped.length ? [`- 사용자가 빼서 반영하지 않은 파일: ${skipped.join(', ')} (다시 시도하지 말고 보고에 적으세요)`] : []),
+          ...(failed.length ? [`- 반영하지 못한 파일: ${failed.join(', ')}`] : []),
+          ...(problems.length ? [`- 처음부터 올리지 못한 파일: ${problems.join(' / ')}`] : []),
+        ].join('\n'),
+      );
+    },
+  );
+
+  return createSdkMcpServer({ name: LEADER_MCP_NAME, version: '0.1.0', tools: [requestApproval, proposeChanges] });
 }

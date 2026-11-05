@@ -15,7 +15,7 @@ export interface ApprovalQueueDeps {
   notify?: (title: string, body: string) => void;
 }
 
-type NewRequest = Omit<ApprovalRequest, 'id' | 'status' | 'createdAt' | 'decidedAt' | 'decisionNote' | 'rememberFile' | 'choices'>;
+type NewRequest = Omit<ApprovalRequest, 'id' | 'status' | 'createdAt' | 'decidedAt' | 'decisionNote' | 'rememberFile' | 'choices' | 'picked'>;
 type Waiter = { resolve: (d: ApprovalDecision & { id: string }) => void; reject: (e: Error) => void; cleanup: () => void };
 
 const STATUS_OF: Record<ApprovalDecision['decision'], ApprovalRequest['status']> = {
@@ -98,8 +98,19 @@ export class ApprovalQueue implements ApprovalQueueApi {
   decide(id: string, d: ApprovalDecision): void {
     const item = this.items.find((r) => r.id === id);
     if (!item || item.status !== 'pending') return;
-    const status = STATUS_OF[d?.decision];
+    let status = STATUS_OF[d?.decision];
     if (!status) return;
+    // 묶음 승인: 고른 파일만 반영. 하나도 고르지 않았으면 반려로 본다
+    let picked: string[] | undefined;
+    if (d.decision === 'approve' && item.bundle?.length) {
+      const rels = new Set(item.bundle.map((f) => f.rel));
+      picked = Array.isArray(d.picked) ? [...new Set(d.picked.filter((r) => rels.has(r)))] : [...rels];
+      if (!picked.length) {
+        status = STATUS_OF.reject;
+        d = { ...d, decision: 'reject', note: d.note || '반영할 파일을 고르지 않았어요' };
+        picked = undefined;
+      }
+    }
 
     const note = typeof d.note === 'string' && d.note.trim() ? d.note.trim() : undefined;
     const remember = d.decision === 'approve' && !!d.rememberFile && !!item.filePath && !!item.taskId;
@@ -114,6 +125,7 @@ export class ApprovalQueue implements ApprovalQueueApi {
     }
     Object.assign(item, {
       ...(choices ? { choices } : {}),
+      ...(picked ? { picked } : {}),
       status,
       decidedAt: new Date().toISOString(),
       ...(note ? { decisionNote: note } : {}),
@@ -130,7 +142,8 @@ export class ApprovalQueue implements ApprovalQueueApi {
     this.changed('decide', item);
     if (w) {
       w.cleanup();
-      w.resolve({ id, decision: d.decision, ...(note ? { note } : {}), ...(remember ? { rememberFile: true } : {}), ...(choices ? { choices } : {}) });
+      const n2 = typeof d.note === 'string' && d.note.trim() ? d.note.trim() : undefined;
+      w.resolve({ id, decision: d.decision, ...(n2 ? { note: n2 } : {}), ...(remember ? { rememberFile: true } : {}), ...(choices ? { choices } : {}), ...(picked ? { picked } : {}) });
     }
   }
 

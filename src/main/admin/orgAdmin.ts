@@ -1,6 +1,6 @@
 // 조직 화면(미션 관리·인재풀)의 본체. 앱이 쓰는 곳은 ~/rano 안(config/rano.json, missions/<구역>/<id>/, pool/<구역>/, memory/missions.md)뿐이다.
 // ~/work·~/personal 아래는 읽기만 한다(폴더 점검은 이름·목록만).
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type {
@@ -13,6 +13,7 @@ import type {
   RoleDraft,
   RoleInfo,
   Zone,
+  MissionDoc,
 } from '../../shared/types.js';
 import { expandHome } from '../config.js';
 import { inspectFolder, type InspectContext } from './folderInspect.js';
@@ -34,6 +35,7 @@ export interface OrgAdminApi {
   roles(): RoleInfo[];
   role(name: string): RoleInfo | null;
   saveRole(draft: RoleDraft, originalName?: string): Promise<AdminResult>;
+  missionDocs(id: string): MissionDoc[];
 }
 
 const WRITE_LABEL = { readOnly: '읽기만', approval: '승인함을 거쳐 쓰기' } as const;
@@ -485,6 +487,33 @@ export function createOrgAdmin(deps: OrgAdminDeps): OrgAdminApi {
     archiveMission,
     roles,
     role: (name) => scanRoles(rootDir, rawSync(), true).find((r) => r.info.name === name)?.info ?? null,
+    missionDocs: (id) => {
+      const m = rawMissions(rawSync()).find((x) => x?.id === id);
+      if (!m) return [];
+      const home = summarize(rawSync(), m).home;
+      const LABEL: Record<string, string> = { 'charter.md': '헌장', 'team.md': '팀 편성', 'outputs.md': '결과물 목록' };
+      const out: MissionDoc[] = [];
+      const add = (rel: string, label: string) => {
+        const f = path.join(home, rel);
+        try {
+          const st = statSync(f);
+          if (!st.isFile() || st.size > 400_000) return;
+          out.push({ file: rel, label, content: readFileSync(f, 'utf-8'), updatedAt: st.mtime.toISOString() });
+        } catch {
+          // 없는 파일은 건너뛴다
+        }
+      };
+      for (const f of ['charter.md', 'team.md']) add(f, LABEL[f]);
+      let mem: string[] = [];
+      try {
+        mem = readdirSync(path.join(home, 'memory')).filter((n) => n.endsWith('.md')).sort();
+      } catch {
+        mem = [];
+      }
+      for (const n of mem) add(`memory/${n}`, n.replace(/\.md$/, ''));
+      add('outputs.md', LABEL['outputs.md']);
+      return out;
+    },
     saveRole: (draft, originalName) => serial(() => savePoolRole(rootDir, rawSync(), draft, originalName)),
   };
 }

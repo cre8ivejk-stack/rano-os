@@ -26,6 +26,34 @@ export interface UpdateInfo {
   error?: string;
 }
 
+/** 현황판 사용량 보기 */
+export interface UsageSummary {
+  weekStart: string;
+  rows: { who: string; name: string; weekRuns: number; weekTokens: number; weekCost: number; todayRuns: number; todayTokens: number; todayCost: number }[];
+  days: { date: string; tokens: number }[]; // 최근 7일
+  limits: { type: string; status?: string; utilization?: number; resetsAt?: string; at?: string }[]; // 구독 사용 한도 (엔진이 알려 준 최신값)
+}
+
+/** 미션 기록 보기: 미션 홈의 문서 하나 */
+export interface MissionDoc {
+  file: string; // 미션 홈 기준 (charter.md, memory/결정로그.md …)
+  label: string; // 화면 이름
+  content: string;
+  updatedAt?: string;
+}
+
+/** 지난 일 찾기 결과 하나 */
+export interface SearchHit {
+  kind: 'rano' | 'leader' | 'output' | 'approval';
+  missionId?: string;
+  missionName?: string;
+  who: string;
+  title: string;
+  snippet: string; // 찾은 낱말 주변
+  text: string; // 전체 (펼쳐 보기)
+  at?: string;
+}
+
 /** 처음 켰을 때 안내 */
 export interface SetupStatus {
   needed: boolean; // 안내를 띄워야 하는지 (처음 쓰는 사람)
@@ -209,6 +237,9 @@ export const IPC = {
   orgRestart: 'org:restart', // invoke → void (앱 다시 시작: 설정 다시 읽기)
   appSettings: 'app:settings', // invoke → AppSettings (역할 쉬운 이름, 구역 이름·폴더)
   setupStatus: 'setup:status', // invoke → SetupStatus
+  usageSummary: 'usage:summary', // invoke → UsageSummary
+  search: 'search:all', // invoke(query) → SearchHit[]
+  missionDocs: 'org:mission-docs', // invoke(missionId) → MissionDoc[] (미션 홈 문서 읽기만)
   attachmentData: 'rano:attachment-data', // invoke(ChatAttachment) → data URL | null
   updateCheck: 'update:check', // invoke → UpdateInfo (GitHub Releases 최신 버전)
   openReleasePage: 'update:open-page', // github.com 주소만 연다
@@ -278,6 +309,9 @@ export interface RanoApi {
   openDataFolder(): Promise<void>;
   updateCheck(): Promise<UpdateInfo>;
   openReleasePage(url: string): Promise<void>;
+  usageSummary(): Promise<UsageSummary>;
+  search(query: string): Promise<SearchHit[]>;
+  missionDocs(missionId: string): Promise<MissionDoc[]>;
   setupStatus(): Promise<SetupStatus>;
   setupPickFolder(zone: Zone, current: string): Promise<string | null>;
   setupCheckFolder(zone: Zone, p: string): Promise<SetupFolderCheck>;
@@ -423,7 +457,24 @@ export type ApprovalKind =
   | 'reverseDecision' // 기존 결정 번복
   | 'estimate' // 추정값 사용
   | 'command' // 그 밖에 판단이 필요한 실행 명령
+  | 'bundle' // 여러 파일 쓰기를 한 번에 (파일마다 골라서 승인)
   | 'other';
+
+/** 묶음 승인의 파일 하나 */
+export interface BundleFile {
+  rel: string; // 작업 폴더 기준 경로 (화면 표시·고르기용)
+  abs: string; // 반영할 절대 경로
+  draft: string; // 시안 폴더의 새 내용 파일 절대 경로
+  change?: FileChange;
+}
+
+/** 파일 쓰기 승인: 바뀌기 전·후 내용 (비밀로 보이는 줄은 가림) */
+export interface FileChange {
+  before: string; // 지금 내용 (새 파일이면 '')
+  after: string; // 바뀐 뒤 내용
+  isNew: boolean;
+  truncated?: boolean; // 너무 커서 앞부분만
+}
 
 export interface ApprovalRequest {
   id: string;
@@ -437,6 +488,9 @@ export interface ApprovalRequest {
   recommendation: string; // 리포 리더의 권장안 (없으면 '')
   detail?: string; // 자세히: 파일 위치, 바뀌는 내용 미리보기, 명령 원문 등 (화면에서 접어서 보여줌, 비밀 값 금지)
   filePath?: string; // 쓰기·삭제 대상 절대 경로
+  change?: FileChange; // 파일 쓰기면 바뀌기 전·후 (승인함에서 색으로 비교)
+  bundle?: BundleFile[]; // 묶음 승인: 파일 여러 개
+  picked?: string[]; // 묶음 승인에서 사용자가 반영하기로 고른 파일(rel)
   status: 'pending' | 'approved' | 'rejected' | 'revise' | 'expired';
   decisionNote?: string; // 반려·수정 요청 때 사용자가 남긴 말
   rememberFile?: boolean; // 승인하면서 "이번 과제 동안 이 파일은 다시 묻지 않기"를 골랐는지
@@ -466,6 +520,7 @@ export interface ApprovalDecision {
   note?: string; // 반려·수정 요청 사유
   rememberFile?: boolean; // write/outsideWrite 승인 때만 의미
   choices?: Record<string, string>; // decision 카드 승인 때 고른 안 (항목 id → 안 key). 없으면 권장안대로
+  picked?: string[]; // 묶음 승인 때 고른 파일(rel). 없으면 모두
 }
 
 // 승인함·결과물 담당이 구현: src/main/approvals/approvalQueue.ts

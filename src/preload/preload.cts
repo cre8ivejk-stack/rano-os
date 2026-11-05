@@ -25,6 +25,9 @@ import type {
   AuthStatus,
   AuthResult,
   UpdateInfo,
+  UsageSummary,
+  MissionDoc,
+  SearchHit,
   ChatAttachment,
   NewAttachment,
 } from '../shared/types.js' with { 'resolution-mode': 'import' };
@@ -150,6 +153,7 @@ const api: RanoApi = {
     const clean: ApprovalDecision = { decision: decision.decision };
     if (typeof decision.note === 'string') clean.note = decision.note;
     if (typeof decision.rememberFile === 'boolean') clean.rememberFile = decision.rememberFile;
+    if (Array.isArray(decision.picked)) clean.picked = decision.picked.filter((x): x is string => typeof x === 'string').slice(0, 50);
     if (decision.choices && typeof decision.choices === 'object') {
       const c: Record<string, string> = {};
       for (const [k, v] of Object.entries(decision.choices)) if (typeof v === 'string') c[String(k)] = v;
@@ -245,6 +249,15 @@ const api: RanoApi = {
   },
   async openReleasePage(url: string): Promise<void> {
     await ipcRenderer.invoke(CH_UPDATE_OPEN, String(url ?? ''));
+  },
+  missionDocs(missionId: string): Promise<MissionDoc[]> {
+    return ipcRenderer.invoke('org:mission-docs', String(missionId));
+  },
+  search(query: string): Promise<SearchHit[]> {
+    return ipcRenderer.invoke('search:all', String(query ?? '').slice(0, 200));
+  },
+  usageSummary(): Promise<UsageSummary> {
+    return ipcRenderer.invoke('usage:summary');
   },
   setupStatus(): Promise<SetupStatus> {
     return ipcRenderer.invoke(CH_SETUP_STATUS);

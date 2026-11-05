@@ -26,6 +26,8 @@ import { zoneText } from './admin/paths.js';
 import { createSetup } from './setup.js';
 import { createAuth } from './engine/auth.js';
 import { checkForUpdate } from './engine/update.js';
+import { initUsage, usageSummary } from './engine/usage.js';
+import { searchAll } from './engine/search.js';
 import { attachmentDataUrl, saveAttachments } from './engine/attachments.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -46,6 +48,7 @@ async function boot() {
   const home = ensureDataHome(defaultRootDir(), defaultsDir(app.getAppPath()));
   if (home.created) console.log(`[rano] 새 데이터 폴더를 만들었어요: ${defaultRootDir()} (${home.copied}개 파일)`);
   const config = loadConfig();
+  initUsage(config.runsDir);
   const memory = new MemoryService(config, emit);
   const store = new ConversationStore(config);
 
@@ -148,6 +151,7 @@ async function boot() {
       note: typeof d.note === 'string' ? d.note.slice(0, 2000) : undefined,
       rememberFile: d.rememberFile === true,
       // 결정 카드에서 고른 안 (항목 id → 안 key). 승인함이 항목에 있는 안인지 다시 확인한다
+      ...(Array.isArray(d.picked) ? { picked: d.picked.filter((x: unknown): x is string => typeof x === 'string').slice(0, 50) } : {}),
       ...(d.choices && typeof d.choices === 'object'
         ? { choices: Object.fromEntries(Object.entries(d.choices).filter(([k, v]) => typeof k === 'string' && typeof v === 'string').slice(0, 20)) as Record<string, string> }
         : {}),
@@ -281,6 +285,9 @@ async function boot() {
   app.on('before-quit', () => auth.cancelLogin());
   const setup = createSetup(config, memory);
   ipcMain.handle(IPC.setupStatus, () => setup.status());
+  ipcMain.handle(IPC.missionDocs, (_e, id: unknown) => (typeof id === 'string' ? org.missionDocs(id) : []));
+  ipcMain.handle(IPC.search, (_e, q: unknown) => searchAll(config, typeof q === 'string' ? q : ''));
+  ipcMain.handle(IPC.usageSummary, () => usageSummary(Object.fromEntries(config.missions.map((m) => [m.id, m.name]))));
   ipcMain.handle(IPC.updateCheck, () => {
     if ((config.raw as any)?.updates?.check === false) return { current: app.getVersion(), newer: false, error: '새 버전 확인을 꺼 두었어요 (rano.json updates.check)' };
     return checkForUpdate(app.getAppPath(), app.getVersion());

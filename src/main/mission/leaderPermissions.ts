@@ -14,13 +14,14 @@ import type {
   PostToolUseHookInput,
   PreToolUseHookInput,
 } from '@anthropic-ai/claude-agent-sdk';
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import {
   LEADER_MCP_NAME,
   type ApprovalKind,
   type ApprovalQueueApi,
+  type FileChange,
   type MissionConfig,
   type MissionTrackerApi,
   type PermissionLogEntry,
@@ -223,6 +224,7 @@ export interface ApprovalAsk {
   what: string;
   detail?: string;
   filePath?: string;
+  change?: FileChange;
 }
 
 export interface StageDecision {
@@ -236,6 +238,46 @@ export interface StageDecision {
 
 const SECRET_LINE = /(secret|token|passw(or)?d|api[_-]?key|private[_-]?key|BEGIN [A-Z ]*PRIVATE KEY|authorization|bearer\s|aws_access|client_secret)/i;
 const LONG_RANDOM = /[A-Za-z0-9+/_\-]{32,}/;
+
+const CHANGE_MAX_CHARS = 200_000; // 승인함에 담을 전·후 내용 한도(각각)
+
+function maskSecrets(text: string): string {
+  return text
+    .split('\n')
+    .map((l) => (SECRET_LINE.test(l) || LONG_RANDOM.test(l) ? '(비밀로 보여 가림)' : l))
+    .join('\n');
+}
+
+/** Write·Edit 가 파일을 어떻게 바꾸는지 전·후 내용을 만든다. 알 수 없으면 undefined */
+export function fileChangeFor(toolName: string, input: Record<string, unknown>, abs: string): FileChange | undefined {
+  if (toolName !== 'Write' && toolName !== 'Edit') return undefined;
+  let before = '';
+  const exists = existsSync(abs);
+  try {
+    if (exists) {
+      if (statSync(abs).size > CHANGE_MAX_CHARS * 2) return undefined;
+      before = readFileSync(abs, 'utf-8');
+    }
+  } catch {
+    return undefined;
+  }
+  if (before.includes('\u0000')) return undefined; // 글이 아닌 파일
+  let after: string;
+  if (toolName === 'Write') after = String(input.content ?? '');
+  else {
+    const oldS = String(input.old_string ?? '');
+    const newS = String(input.new_string ?? '');
+    if (!oldS || !before.includes(oldS)) return undefined;
+    after = input.replace_all ? before.split(oldS).join(newS) : before.replace(oldS, () => newS);
+  }
+  const truncated = before.length > CHANGE_MAX_CHARS || after.length > CHANGE_MAX_CHARS;
+  return {
+    before: maskSecrets(before.slice(0, CHANGE_MAX_CHARS)),
+    after: maskSecrets(after.slice(0, CHANGE_MAX_CHARS)),
+    isNew: !exists,
+    ...(truncated ? { truncated: true } : {}),
+  };
+}
 
 /** 미리보기용: 비밀로 보이는 줄은 가리고 앞부분만 남긴다. */
 export function redactPreview(text: string, maxLines = 30, maxChars = 1500): string {
@@ -354,6 +396,7 @@ export function decideApprovalStage(
           what: `${mission.name} 리포의 ${rel} 문서를 ${verb} 해요`,
           detail: `파일: ${displayPath(abs)}\n도구: ${toolName}${input.replace_all ? ' (모두 바꾸기)' : ''}\n\n${preview}`,
           filePath: abs,
+          change: fileChangeFor(toolName, input, abs),
         },
       };
     }
@@ -366,6 +409,7 @@ export function decideApprovalStage(
         what: `${mission.name} 작업 폴더 밖에 있는 ${displayPath(abs)} 파일을 ${verb} 해요`,
         detail: `파일: ${displayPath(abs)}\n도구: ${toolName}\n\n${preview}`,
         filePath: abs,
+        change: fileChangeFor(toolName, input, abs),
       },
     };
   }
@@ -523,6 +567,16 @@ export class LeaderGuard {
     return this.task;
   }
 
+  /** 묶음 승인으로 반영할 파일 위치가 괜찮은지. 문제가 있으면 쉬운 말로 */
+  bundleTargetProblem(abs: string): string | null {
+    const { config, mission } = this.deps;
+    if (blockedHit(config, abs)) return '차단 목록에 걸린 위치예요';
+    const candidates = [...new Set([abs, real(abs)])];
+    if (candidates.some((c) => inAny(c, mission.readonlyRefs))) return '참고(읽기 전용) 폴더예요';
+    if (!candidates.every((c) => inAny(c, mission.targets))) return '작업 폴더 밖이에요';
+    return null;
+  }
+
   /** 이 과제의 시안 폴더 (작업 리포 밖, 승인 없이 쓰기) */
   draftsDir(taskId?: string): string | undefined {
     const id = taskId ?? this.task?.id;
@@ -676,6 +730,7 @@ export class LeaderGuard {
           recommendation: said.rec,
           detail: ask.detail,
           filePath: ask.filePath,
+          ...(ask.change ? { change: ask.change } : {}),
         },
         signal,
       );

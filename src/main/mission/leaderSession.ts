@@ -26,6 +26,7 @@ import { createLeaderMcpServer } from './leaderTools.js';
 import { buildLeaderSystemPrompt, readLeaderContext } from './leaderPrompt.js';
 import { APPROVAL_STAGE_TOOLS, loadRoles, READ_ONLY_TOOLS } from './roles.js';
 import { shareWithMission } from '../engine/attachments.js';
+import { recordLimit, recordResult } from '../engine/usage.js';
 
 export interface MissionLeaderDeps {
   config: RanoConfig;
@@ -457,7 +458,12 @@ export class MissionLeader implements MissionLeaderApi {
           continue;
         }
 
+        if ((msg as { type: string }).type === 'rate_limit_event') {
+          recordLimit((msg as { rate_limit_info?: unknown }).rate_limit_info);
+          continue;
+        }
         if (msg.type === 'result') {
+          recordResult(this.mission.id, msg, !!resume);
           if (msg.subtype === 'success') {
             if (msg.is_error) out.errorText = msg.result || 'error';
             else if (!segments.length && msg.result?.trim()) segments = [msg.result.trim()];

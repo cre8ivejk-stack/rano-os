@@ -24,6 +24,7 @@ import { buildRanoSystemPrompt } from './ranoPrompt.js';
 import { zoneText } from '../admin/paths.js';
 import { storedApiKey } from './auth.js';
 import { imageBlocks } from './attachments.js';
+import { fetchPlanLimits, recordLimit, recordResult } from './usage.js';
 
 export interface RanoSessionDeps {
   config: RanoConfig;
@@ -261,7 +262,8 @@ export class RanoSession implements RanoSessionApi {
             yield { type: 'user', message: { role: 'user', content: [...images, { type: 'text', text: prompt }] }, parent_tool_use_id: null } as unknown as SDKUserMessage;
           })()
         : prompt;
-      for await (const msg of query({ prompt: input, options }) as AsyncIterable<SDKMessage>) {
+      const q = query({ prompt: input, options });
+      for await (const msg of q as AsyncIterable<SDKMessage>) {
         if (msg.type === 'system' && msg.subtype === 'init') {
           out.gotInit = true;
           if (msg.session_id) await this.store.setSessionId(msg.session_id).catch(() => undefined);
@@ -300,7 +302,14 @@ export class RanoSession implements RanoSessionApi {
           }
           continue;
         }
+        if ((msg as { type: string }).type === 'rate_limit_event') {
+          recordLimit((msg as { rate_limit_info?: unknown }).rate_limit_info);
+          continue;
+        }
         if (msg.type === 'result') {
+          recordResult('rano', msg, !!resume);
+          // 구독 계정이면 사용 한도(5시간·주간 %)도 받아 둔다 (엔진의 시험 기능이라 실패해도 그냥 넘어간다)
+          void fetchPlanLimits(q);
           if (msg.subtype === 'success') {
             if (msg.is_error) out.errorText = msg.result || 'error';
             else if (!segments.length && msg.result?.trim()) segments = [msg.result.trim()];

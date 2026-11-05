@@ -1,5 +1,6 @@
 // 승인함: 기다리는 요청을 빠르게 훑고 승인·수정 요청·반려를 고른다.
 import { el, foldable, formatWhen, mustGet, roleLabel, splitWorkPath, toDate } from './dom.js';
+import { changeView, lineDiff } from './diff.js';
 
 const KIND_LABEL: Record<ApprovalKind, string> = {
   teamPlan: '팀 구성안',
@@ -15,6 +16,7 @@ const KIND_LABEL: Record<ApprovalKind, string> = {
   reverseDecision: '결정 번복',
   estimate: '추정값 사용',
   command: '명령 실행',
+  bundle: '파일 묶음 쓰기',
   other: '기타',
 };
 const STATUS_LABEL: Record<ApprovalRequest['status'], string> = {
@@ -150,7 +152,7 @@ export class ApprovalsView {
   }
 
   private renderDetail(a: ApprovalRequest, card: HTMLElement): void {
-    if (!a.detail && !a.filePath) return;
+    if (!a.detail && !a.filePath && !a.change) return;
     const { root, body } = foldable(`appr:${a.id}`, '자세히');
     if (a.filePath) {
       const p = splitWorkPath(a.filePath);
@@ -159,6 +161,7 @@ export class ApprovalsView {
       line.appendChild(el('code', 'mono', p.rel));
       body.appendChild(line);
     }
+    if (a.change && a.status !== 'pending') body.appendChild(changeView(a.change));
     if (a.detail) body.appendChild(el('pre', 'raw', a.detail));
     card.appendChild(root);
   }
@@ -178,6 +181,72 @@ export class ApprovalsView {
     addRow('무엇을', a.what);
     addRow('왜', a.why);
     card.appendChild(rows);
+
+    // 파일 쓰기: 바뀌기 전·후를 색으로 비교 (지운 줄 빨강, 더한 줄 초록)
+    if (a.change) card.appendChild(changeView(a.change));
+
+    // 묶음 승인: 파일마다 고르고, 눌러서 바뀐 부분을 본다
+    const picked = new Set((a.bundle ?? []).map((f) => f.rel));
+    const refreshBundle = () => {
+      if (!a.bundle?.length) return;
+      approveBtn.textContent = picked.size === a.bundle.length ? `${picked.size}개 모두 반영` : `고른 ${picked.size}개 반영`;
+      approveBtn.disabled = picked.size === 0 || this.submitting.has(a.id);
+    };
+    if (a.bundle?.length) {
+      const list = el('div', 'bundle');
+      const head = el('div', 'bundle-head');
+      head.appendChild(el('strong', undefined, `파일 ${a.bundle.length}개`));
+      head.appendChild(el('span', 'org-hint', '반영할 파일을 고르고, 파일 이름을 누르면 바뀐 부분을 볼 수 있어요.'));
+      const all = el('button', 'btn btn-small btn-plain', '모두 고르기/풀기');
+      all.type = 'button';
+      head.appendChild(all);
+      list.appendChild(head);
+      const boxes: HTMLInputElement[] = [];
+      for (const f of a.bundle) {
+        const item = el('details', 'bundle-file');
+        const sum = el('summary', 'bundle-sum');
+        const cb = el('input');
+        cb.type = 'checkbox';
+        cb.checked = true;
+        cb.setAttribute('aria-label', `${f.rel} 반영`);
+        cb.addEventListener('click', (e) => e.stopPropagation());
+        cb.addEventListener('change', () => {
+          if (cb.checked) picked.add(f.rel);
+          else picked.delete(f.rel);
+          item.classList.toggle('off', !cb.checked);
+          refreshBundle();
+        });
+        boxes.push(cb);
+        sum.appendChild(cb);
+        sum.appendChild(el('code', 'mono bundle-name', f.rel));
+        if (f.change) {
+          const ops = lineDiff(f.change.before, f.change.after);
+          const add = ops.filter((o) => o.t === 'add').length;
+          const del = ops.filter((o) => o.t === 'del').length;
+          if (f.change.isNew) sum.appendChild(el('span', 'org-hint', '새 파일'));
+          sum.appendChild(el('span', 'df-add-count', `+${add}`));
+          if (!f.change.isNew) sum.appendChild(el('span', 'df-del-count', `−${del}`));
+        } else sum.appendChild(el('span', 'org-hint', '(비교할 수 없는 파일)'));
+        item.appendChild(sum);
+        item.addEventListener('toggle', () => {
+          if (item.open && f.change && item.childElementCount === 1) item.appendChild(changeView(f.change));
+        });
+        list.appendChild(item);
+      }
+      all.addEventListener('click', () => {
+        const on = picked.size !== a.bundle!.length;
+        for (const [i, cb] of boxes.entries()) {
+          cb.checked = on;
+          const rel = a.bundle![i].rel;
+          if (on) picked.add(rel);
+          else picked.delete(rel);
+          cb.closest('details')?.classList.toggle('off', !on);
+        }
+        refreshBundle();
+      });
+      card.appendChild(list);
+      refreshBundle();
+    }
 
     // 결정 카드: 항목마다 안을 고른다 (권장안이 미리 골라져 있음)
     const choices: Record<string, string> = {};
@@ -345,6 +414,10 @@ export class ApprovalsView {
       const d: ApprovalDecision = { decision: 'approve' };
       if (remember) d.rememberFile = remember.checked;
       if (a.decisionItems?.length) d.choices = { ...choices };
+      if (a.bundle?.length) {
+        if (!picked.size) return;
+        d.picked = [...picked];
+      }
       void decide(d);
     });
     reviseBtn.addEventListener('click', () => (mode === 'revise' ? closeNote() : openNote('revise')));
@@ -383,6 +456,12 @@ export class ApprovalsView {
         const o = it.options.find((x) => x.key === key);
         ul.appendChild(el('li', undefined, `${it.id}. ${it.question} → ${key}안 ${o?.label ?? ''}${key === it.recommended ? ' (권장)' : ''}`));
       }
+      card.appendChild(ul);
+    }
+    if (a.status === 'approved' && a.bundle?.length) {
+      const got = new Set(a.picked ?? a.bundle.map((f) => f.rel));
+      const ul = el('ul', 'dec-done');
+      for (const f of a.bundle) ul.appendChild(el('li', undefined, `${got.has(f.rel) ? '반영' : '뺌'} · ${f.rel}`));
       card.appendChild(ul);
     }
     if (a.what) card.appendChild(el('p', 'appr-done-what', a.what));

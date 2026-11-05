@@ -1,6 +1,7 @@
 // 조직 화면: 미션 관리와 인재풀(팀원 역할). 목록 · 미션 5단계 안내 · 역할 편집 셋 중 하나를 보여 준다.
 // 글은 모두 textContent 로 넣는다.
 import { el, mustGet, zoneInfo } from './dom.js';
+import { openMissionDocs } from './missionDocs.js';
 import { Notice, SOURCE_LABEL, abilityText, button, tildify } from './orgCommon.js';
 import { RoleEditor } from './orgRoles.js';
 import { MissionWizard, restartBox } from './orgWizard.js';
@@ -223,7 +224,9 @@ export class OrgView {
         this.confirmArchive = m.id;
         this.render();
       });
-      actions.append(edit, arch);
+      const docs = button('기록 보기', 'btn');
+      docs.addEventListener('click', () => void openMissionDocs(m.id, m.name));
+      actions.append(docs, edit, arch);
     }
     card.appendChild(actions);
     return card;
