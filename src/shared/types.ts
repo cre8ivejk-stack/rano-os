@@ -15,6 +15,17 @@ export interface AuthStatus {
 }
 export type AuthResult = { ok: boolean; message: string };
 
+/** 새 버전 확인 결과 */
+export interface UpdateInfo {
+  current: string;
+  latest?: string;
+  newer: boolean;
+  url?: string; // 배포본 페이지
+  notes?: string; // 바뀐 내용 (배포본 설명)
+  publishedAt?: string;
+  error?: string;
+}
+
 /** 처음 켰을 때 안내 */
 export interface SetupStatus {
   needed: boolean; // 안내를 띄워야 하는지 (처음 쓰는 사람)
@@ -182,6 +193,8 @@ export const IPC = {
   orgRestart: 'org:restart', // invoke → void (앱 다시 시작: 설정 다시 읽기)
   appSettings: 'app:settings', // invoke → AppSettings (역할 쉬운 이름, 구역 이름·폴더)
   setupStatus: 'setup:status', // invoke → SetupStatus
+  updateCheck: 'update:check', // invoke → UpdateInfo (GitHub Releases 최신 버전)
+  openReleasePage: 'update:open-page', // github.com 주소만 연다
   settingsSaveProfile: 'settings:save-profile', // invoke(profile) → me.md
   settingsSaveZones: 'settings:save-zones', // invoke(zones) 미션이 있는 구역은 거절
   openDataFolder: 'settings:open-data-folder', // Finder 로 데이터 폴더 열기
@@ -245,6 +258,8 @@ export interface RanoApi {
   settingsSaveProfile(profile: SetupInput['profile']): Promise<AuthResult>;
   settingsSaveZones(zones: Record<Zone, string>): Promise<{ ok: boolean; message: string; needsRestart: boolean }>;
   openDataFolder(): Promise<void>;
+  updateCheck(): Promise<UpdateInfo>;
+  openReleasePage(url: string): Promise<void>;
   setupStatus(): Promise<SetupStatus>;
   setupPickFolder(zone: Zone, current: string): Promise<string | null>;
   setupCheckFolder(zone: Zone, p: string): Promise<SetupFolderCheck>;

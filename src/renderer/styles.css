@@ -912,3 +912,8 @@ button.approvals:hover { background: #efeeea; }
 .office-vacant-btn { font-size: 12px; background: rgba(255, 255, 255, 0.92); border: 1px dashed #8a9a8f; color: #3f6150; border-radius: 8px; padding: 3px 10px; cursor: pointer; white-space: nowrap; }
 .office-vacant-btn:hover { background: #fff; border-style: solid; }
 .office-vacant-label { font-size: 11px; color: #8a8478; background: rgba(255, 255, 255, 0.6); border-radius: 6px; padding: 0 6px; pointer-events: none; }
+
+/* 새 버전 알림 */
+.update-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 28px; background: #eef5ef; border-bottom: 1px solid #d6e6da; font-size: 13.5px; color: #2f4d3c; }
+.update-actions { margin-left: auto; display: flex; gap: 6px; }
+.update-notes { flex-basis: 100%; white-space: pre-wrap; font-family: inherit; font-size: 13px; background: #fff; border: 1px solid #d6e6da; border-radius: 8px; padding: 10px 12px; margin: 4px 0 0; max-height: 240px; overflow: auto; }

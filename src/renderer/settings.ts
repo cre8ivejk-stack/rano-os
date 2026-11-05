@@ -2,6 +2,7 @@
 import { AccountPanel } from './account.js';
 import { el } from './dom.js';
 import { button, field } from './orgCommon.js';
+import { updateCheckLine } from './update.js';
 
 const ZONES: Zone[] = ['work', 'personal'];
 const DEV = [
@@ -192,6 +193,17 @@ export class SettingsButton {
     row.appendChild(open);
     sec.appendChild(row);
     sec.appendChild(el('p', 'org-hint', `설정·기억·미션 기록·승인함 기록이 이 폴더에 있어요. 라노 OS ${app.version}`));
+    const upRow = el('div', 'org-row');
+    const up = button('새 버전 확인', 'btn btn-small');
+    const result = el('div');
+    up.addEventListener('click', async () => {
+      up.disabled = true;
+      result.replaceChildren(el('span', 'org-hint', '확인하는 중이에요…'));
+      result.replaceChildren(await updateCheckLine());
+      up.disabled = false;
+    });
+    upRow.append(up, result);
+    sec.appendChild(upRow);
     return sec;
   }
 }

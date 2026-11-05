@@ -24,6 +24,7 @@ import type {
   SetupStatus,
   AuthStatus,
   AuthResult,
+  UpdateInfo,
 } from '../shared/types.js' with { 'resolution-mode': 'import' };
 
 const CH_LOAD_HISTORY = 'rano:load-history';
@@ -50,6 +51,8 @@ const CH_ORG_SAVE_ROLE = 'org:save-role';
 const CH_ORG_RESTART = 'org:restart';
 const CH_APP_SETTINGS = 'app:settings';
 const CH_SETUP_STATUS = 'setup:status';
+const CH_UPDATE_CHECK = 'update:check';
+const CH_UPDATE_OPEN = 'update:open-page';
 const CH_SET_PROFILE = 'settings:save-profile';
 const CH_SET_ZONES = 'settings:save-zones';
 const CH_OPEN_DATA = 'settings:open-data-folder';
@@ -229,6 +232,12 @@ const api: RanoApi = {
   },
   async openDataFolder(): Promise<void> {
     await ipcRenderer.invoke(CH_OPEN_DATA);
+  },
+  updateCheck(): Promise<UpdateInfo> {
+    return ipcRenderer.invoke(CH_UPDATE_CHECK);
+  },
+  async openReleasePage(url: string): Promise<void> {
+    await ipcRenderer.invoke(CH_UPDATE_OPEN, String(url ?? ''));
   },
   setupStatus(): Promise<SetupStatus> {
     return ipcRenderer.invoke(CH_SETUP_STATUS);

@@ -75,6 +75,17 @@ interface AuthStatus {
 }
 type AuthResult = { ok: boolean; message: string };
 
+/** 새 버전 확인 결과 */
+interface UpdateInfo {
+  current: string;
+  latest?: string;
+  newer: boolean;
+  url?: string; // 배포본 페이지
+  notes?: string; // 바뀐 내용 (배포본 설명)
+  publishedAt?: string;
+  error?: string;
+}
+
 interface SetupStatus {
   needed: boolean; // 안내를 띄워야 하는지 (처음 쓰는 사람)
   dataDir: string; // 데이터 폴더 (~ 로 줄임)
@@ -221,6 +232,8 @@ interface RanoApi {
   settingsSaveProfile(profile: SetupInput['profile']): Promise<AuthResult>;
   settingsSaveZones(zones: Record<Zone, string>): Promise<{ ok: boolean; message: string; needsRestart: boolean }>;
   openDataFolder(): Promise<void>;
+  updateCheck(): Promise<UpdateInfo>;
+  openReleasePage(url: string): Promise<void>;
   setupStatus(): Promise<SetupStatus>;
   setupPickFolder(zone: Zone, current: string): Promise<string | null>;
   setupCheckFolder(zone: Zone, p: string): Promise<SetupFolderCheck>;

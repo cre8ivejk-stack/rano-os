@@ -11,6 +11,7 @@ import { bindComposer, mustGet, setRoleLabels, setZoneInfo } from './dom.js';
 import { SetupGuide } from './setup.js';
 import { AccountButton } from './account.js';
 import { SettingsButton } from './settings.js';
+import { startUpdateNotice } from './update.js';
 
 const rano = window.rano;
 
@@ -242,6 +243,7 @@ async function start(): Promise<void> {
     new AccountButton(right);
   }
   void new SetupGuide().openIfNeeded();
+  startUpdateNotice();
   void board.load();
   void approvals.load();
   void outputs.load();

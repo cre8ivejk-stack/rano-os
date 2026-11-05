@@ -25,6 +25,7 @@ import { createOrgMcpServer } from './admin/ranoOrgTools.js';
 import { zoneText } from './admin/paths.js';
 import { createSetup } from './setup.js';
 import { createAuth } from './engine/auth.js';
+import { checkForUpdate } from './engine/update.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -273,6 +274,18 @@ async function boot() {
   app.on('before-quit', () => auth.cancelLogin());
   const setup = createSetup(config, memory);
   ipcMain.handle(IPC.setupStatus, () => setup.status());
+  ipcMain.handle(IPC.updateCheck, () => {
+    if ((config.raw as any)?.updates?.check === false) return { current: app.getVersion(), newer: false, error: '새 버전 확인을 꺼 두었어요 (rano.json updates.check)' };
+    return checkForUpdate(app.getAppPath(), app.getVersion());
+  });
+  ipcMain.handle(IPC.openReleasePage, async (_e, url: unknown) => {
+    try {
+      const u = new URL(String(url ?? ''));
+      if (u.protocol === 'https:' && u.hostname === 'github.com') await shell.openExternal(u.toString());
+    } catch {
+      // 잘못된 주소는 무시
+    }
+  });
   ipcMain.handle(IPC.settingsSaveProfile, (_e, p: any) => setup.saveProfile(p ?? {}).catch(() => ({ ok: false, message: '저장하지 못했어요' })));
   ipcMain.handle(IPC.settingsSaveZones, (_e, z: any) => setup.saveZones({ work: String(z?.work ?? ''), personal: String(z?.personal ?? '') }).catch(() => ({ ok: false, message: '저장하지 못했어요', needsRestart: false })));
   ipcMain.handle(IPC.openDataFolder, async () => {
