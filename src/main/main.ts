@@ -24,6 +24,7 @@ import { createOrgAdmin } from './admin/orgAdmin.js';
 import { createOrgMcpServer } from './admin/ranoOrgTools.js';
 import { zoneText } from './admin/paths.js';
 import { createSetup } from './setup.js';
+import { createAuth } from './engine/auth.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -251,6 +252,25 @@ async function boot() {
   ipcMain.handle(IPC.orgSaveRole, (_e, d: any, originalName: unknown) =>
     orgSafe(() => org.saveRole(d, typeof originalName === 'string' ? originalName : undefined), fail('역할을 저장하지 못했어요')),
   );
+  const auth = createAuth(config);
+  ipcMain.handle(IPC.authStatus, () => auth.status());
+  ipcMain.handle(IPC.authStartLogin, (_e, kind: unknown) => auth.startLogin(kind === 'console' ? 'console' : 'claudeai'));
+  ipcMain.handle(IPC.authSubmitCode, (_e, code: unknown) => auth.submitCode(String(code ?? '')));
+  ipcMain.handle(IPC.authCancelLogin, () => auth.cancelLogin());
+  ipcMain.handle(IPC.authLogout, () => auth.logout());
+  ipcMain.handle(IPC.authSaveApiKey, (_e, key: unknown) => auth.saveApiKey(String(key ?? '')));
+  ipcMain.handle(IPC.authUseMethod, (_e, m: unknown) => auth.useMethod(m === 'apiKey' ? 'apiKey' : 'max'));
+  ipcMain.handle(IPC.authRemoveApiKey, () => auth.removeApiKey());
+  ipcMain.handle(IPC.authOpenLoginPage, async (_e, url: unknown) => {
+    // 로그인 주소만 연다 (claude.com · claude.ai · anthropic.com)
+    try {
+      const u = new URL(String(url ?? ''));
+      if (u.protocol === 'https:' && /(^|\.)(claude\.com|claude\.ai|anthropic\.com)$/.test(u.hostname)) await shell.openExternal(u.toString());
+    } catch {
+      // 잘못된 주소는 무시
+    }
+  });
+  app.on('before-quit', () => auth.cancelLogin());
   const setup = createSetup(config, memory);
   ipcMain.handle(IPC.setupStatus, () => setup.status());
   ipcMain.handle(IPC.setupCheckFolder, (_e, zone: unknown, p: unknown) => setup.checkFolder(zone === 'personal' ? 'personal' : 'work', String(p ?? '')));

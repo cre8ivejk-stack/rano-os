@@ -1,8 +1,9 @@
-// 처음 켰을 때 안내: 나에 대해 → 구역 폴더 → 확인. 저장하면 앱을 다시 시작해 반영한다.
+// 처음 켰을 때 안내: 나에 대해 → 구역 폴더 → Claude 연결 → 확인. 저장하면 앱을 다시 시작해 반영한다.
 import { el } from './dom.js';
 import { button, field } from './orgCommon.js';
+import { AccountPanel, authReady } from './account.js';
 
-type Step = 1 | 2 | 3;
+type Step = 1 | 2 | 3 | 4;
 const ZONES: Zone[] = ['work', 'personal'];
 
 export class SetupGuide {
@@ -14,6 +15,8 @@ export class SetupGuide {
   private checks: Partial<Record<Zone, SetupFolderCheck>> = {};
   private error = '';
   private saving = false;
+  private account: AccountPanel | null = null;
+  private auth: AuthStatus | null = null;
 
   /** 안내가 필요하면 띄운다. 띄웠으면 true */
   async openIfNeeded(): Promise<boolean> {
@@ -61,13 +64,14 @@ export class SetupGuide {
   private render(): void {
     const card = el('section', 'setup-card');
     const head = el('div', 'setup-head');
-    head.appendChild(el('span', 'setup-badge', `처음 설정 ${this.step}/3`));
-    head.appendChild(el('h2', 'setup-title', this.step === 1 ? '라노 OS에 오신 걸 환영해요' : this.step === 2 ? '일하는 폴더 정하기' : '이대로 시작할까요?'));
+    head.appendChild(el('span', 'setup-badge', `처음 설정 ${this.step}/4`));
+    head.appendChild(el('h2', 'setup-title', this.step === 1 ? '라노 OS에 오신 걸 환영해요' : this.step === 2 ? '일하는 폴더 정하기' : this.step === 3 ? 'Claude 계정 연결' : '이대로 시작할까요?'));
     card.appendChild(head);
 
     const body = el('div', 'setup-body');
     if (this.step === 1) this.renderProfile(body);
     else if (this.step === 2) this.renderZones(body);
+    else if (this.step === 3) this.renderAccount(body);
     else this.renderConfirm(body);
     card.appendChild(body);
 
@@ -78,7 +82,7 @@ export class SetupGuide {
     const why = el('p', 'org-why', this.error || this.reason(this.step));
     why.hidden = !(this.error || this.reason(this.step));
     nav.append(prev, why);
-    if (this.step < 3) {
+    if (this.step < 4) {
       const next = button('다음', 'btn btn-confirm');
       next.disabled = !!this.reason(this.step);
       next.addEventListener('click', () => this.go((this.step + 1) as Step));
@@ -94,6 +98,7 @@ export class SetupGuide {
   }
 
   private go(s: Step): void {
+    if (this.step === 3 && s !== 3) this.account?.dispose();
     this.error = '';
     this.step = s;
     this.render();
@@ -197,7 +202,26 @@ export class SetupGuide {
     this.render();
   }
 
-  // ---------- 3. 확인 ----------
+  // ---------- 3. Claude 연결 ----------
+  private renderAccount(body: HTMLElement): void {
+    body.appendChild(el('p', 'pane-sub', '라노와 리더·팀원은 내 Claude 계정으로 일해요. 사용량도 이 계정에서 나가요.'));
+    const host = el('div');
+    body.appendChild(host);
+    this.account = new AccountPanel(host, (s) => {
+      this.auth = s;
+      const note = this.overlay.querySelector<HTMLElement>('.setup-auth-note');
+      if (note) note.hidden = authReady(s);
+    });
+    if (this.auth) {
+      this.account.render();
+    }
+    void this.account.refresh();
+    const note = el('p', 'org-warning setup-auth-note', '아직 연결하지 않아도 다음으로 갈 수 있어요. 연결은 나중에 오른쪽 위 Claude 버튼에서 할 수 있어요.');
+    note.hidden = authReady(this.auth);
+    body.appendChild(note);
+  }
+
+  // ---------- 4. 확인 ----------
   private renderConfirm(body: HTMLElement): void {
     const rows = el('dl', 'appr-rows org-summary');
     const add = (k: string, v: string) => {
@@ -211,6 +235,7 @@ export class SetupGuide {
     add('하는 일', this.profile.job.trim() || '(적지 않음)');
     add('개발 경험', dev[this.profile.devLevel] ?? this.profile.devLevel);
     for (const z of ZONES) add(`${this.status.zones[z].label} 폴더`, `${this.checks[z]?.display ?? this.roots[z]}${this.checks[z]?.exists ? '' : ' (새로 만듦)'}`);
+    add('Claude', authReady(this.auth) ? (this.auth?.method === 'apiKey' ? 'API 키로 연결됨' : `연결됨${this.auth?.account?.email ? ` (${this.auth.account.email})` : ''}`) : '아직 연결 안 함 (나중에 오른쪽 위 버튼에서)');
     add('라노 데이터', `${this.status.dataDir} (설정·기억·기록이 여기 저장돼요)`);
     body.appendChild(rows);
     body.appendChild(el('p', 'org-hint', '시작하면 앱이 한 번 다시 켜져요. 그다음 라노에게 하고 싶은 일을 말하거나, 조직 탭에서 첫 미션을 만들면 돼요. 이름·호칭 같은 정보는 나중에 라노에게 말해서 바꿀 수 있어요.'));

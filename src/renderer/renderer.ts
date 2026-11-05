@@ -9,6 +9,7 @@ import { proposalCard } from './orgProposal.js';
 import { ChatView, type SpeakerStyle } from './chatView.js';
 import { bindComposer, mustGet, setRoleLabels, setZoneInfo } from './dom.js';
 import { SetupGuide } from './setup.js';
+import { AccountButton } from './account.js';
 
 const rano = window.rano;
 
@@ -231,6 +232,8 @@ async function start(): Promise<void> {
     // 쉬운 이름이 없으면 역할 이름 그대로 보인다
   }
   rano.onEvent(handleEvent);
+  const topbar = document.querySelector<HTMLElement>('.topbar');
+  if (topbar) new AccountButton(topbar);
   void new SetupGuide().openIfNeeded();
   void board.load();
   void approvals.load();

@@ -21,6 +21,7 @@ import {
 import { createPermissionGate } from './permissions.js';
 import { buildRanoSystemPrompt } from './ranoPrompt.js';
 import { zoneText } from '../admin/paths.js';
+import { storedApiKey } from './auth.js';
 
 export interface RanoSessionDeps {
   config: RanoConfig;
@@ -61,7 +62,7 @@ export function friendlyError(raw: string, kind: string | null, who = '라노'):
     return '지금은 Claude 사용 한도에 도달했어요. 한도가 풀린 뒤에 다시 말씀해 주세요.';
   }
   if (/authentication|oauth|login|log in|401|403|unauthorized|credential|expired|account_on_hold|verification/.test(s)) {
-    return 'Claude 로그인이 만료되었거나 확인되지 않아요. Claude 에 다시 로그인한 뒤 말씀해 주세요.';
+    return 'Claude 로그인이 만료되었거나 확인되지 않아요. 오른쪽 위 Claude 계정 버튼에서 다시 로그인한 뒤 말씀해 주세요.';
   }
   if (/overloaded|server_error|529|500|502|503/.test(s)) {
     return 'Claude 쪽이 지금 많이 바빠요. 잠시 뒤에 다시 말씀해 주세요.';
@@ -87,6 +88,11 @@ export function buildSdkEnv(config: RanoConfig): Record<string, string | undefin
   const env: Record<string, string | undefined> = { ...process.env };
   if (config.authMethod === 'max') {
     delete env.ANTHROPIC_API_KEY;
+    delete env.ANTHROPIC_AUTH_TOKEN;
+  } else {
+    // API 키 모드: 앱에 저장한 키(키체인 암호화)가 있으면 그것을 쓴다
+    const key = storedApiKey(config);
+    if (key) env.ANTHROPIC_API_KEY = key;
     delete env.ANTHROPIC_AUTH_TOKEN;
   }
   env.CLAUDE_AGENT_SDK_CLIENT_APP = 'rano-os/0.1.0';

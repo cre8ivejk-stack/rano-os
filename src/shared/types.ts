@@ -4,6 +4,17 @@
 // ---------- 설정 (config/rano.json 을 읽어 경로를 풀어 둔 형태) ----------
 export type Zone = 'work' | 'personal';
 
+/** Claude 계정 연결 상태 */
+export interface AuthStatus {
+  method: 'max' | 'apiKey'; // 지금 일할 때 쓰는 방식
+  loggedIn: boolean; // 이 맥의 Claude 계정 로그인
+  account?: { kind: 'subscription' | 'console'; email?: string; orgName?: string; plan?: string; expiresAt?: string };
+  apiKeySaved: boolean;
+  apiKeyHint?: string; // 끝 4자리
+  error?: string;
+}
+export type AuthResult = { ok: boolean; message: string };
+
 /** 처음 켰을 때 안내 */
 export interface SetupStatus {
   needed: boolean; // 안내를 띄워야 하는지 (처음 쓰는 사람)
@@ -170,6 +181,15 @@ export const IPC = {
   orgRestart: 'org:restart', // invoke → void (앱 다시 시작: 설정 다시 읽기)
   appSettings: 'app:settings', // invoke → AppSettings (역할 쉬운 이름, 구역 이름·폴더)
   setupStatus: 'setup:status', // invoke → SetupStatus
+  authStatus: 'auth:status',
+  authStartLogin: 'auth:start-login', // invoke(kind) → { ok, url? } 로그인 페이지를 브라우저로 연다
+  authSubmitCode: 'auth:submit-code', // invoke(code) 브라우저에 나온 코드
+  authCancelLogin: 'auth:cancel-login',
+  authLogout: 'auth:logout',
+  authSaveApiKey: 'auth:save-api-key', // 키는 키체인으로 암호화해서 저장, 화면으로는 돌려주지 않음
+  authUseMethod: 'auth:use-method',
+  authRemoveApiKey: 'auth:remove-api-key',
+  authOpenLoginPage: 'auth:open-login-page', // claude.com 로그인 주소만 연다
   setupPickFolder: 'setup:pick-folder', // invoke(zone, current) → string | null (폴더 만들기 가능)
   setupCheckFolder: 'setup:check-folder', // invoke(zone, path) → SetupFolderCheck
   setupSave: 'setup:save', // invoke(SetupInput) → { ok, message, needsRestart }
@@ -209,6 +229,15 @@ export interface RanoApi {
   orgSaveRole(draft: RoleDraft, originalName?: string): Promise<AdminResult>;
   orgRestart(): Promise<void>;
   appSettings(): Promise<AppSettings>;
+  authStatus(): Promise<AuthStatus>;
+  authStartLogin(kind: 'claudeai' | 'console'): Promise<{ ok: boolean; url?: string; message?: string }>;
+  authSubmitCode(code: string): Promise<AuthResult>;
+  authCancelLogin(): Promise<void>;
+  authLogout(): Promise<AuthResult>;
+  authSaveApiKey(key: string): Promise<AuthResult>;
+  authUseMethod(method: 'max' | 'apiKey'): Promise<AuthResult>;
+  authRemoveApiKey(): Promise<AuthResult>;
+  authOpenLoginPage(url: string): Promise<void>;
   setupStatus(): Promise<SetupStatus>;
   setupPickFolder(zone: Zone, current: string): Promise<string | null>;
   setupCheckFolder(zone: Zone, p: string): Promise<SetupFolderCheck>;

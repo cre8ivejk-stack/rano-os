@@ -22,6 +22,8 @@ import type {
   SetupFolderCheck,
   SetupInput,
   SetupStatus,
+  AuthStatus,
+  AuthResult,
 } from '../shared/types.js' with { 'resolution-mode': 'import' };
 
 const CH_LOAD_HISTORY = 'rano:load-history';
@@ -48,6 +50,17 @@ const CH_ORG_SAVE_ROLE = 'org:save-role';
 const CH_ORG_RESTART = 'org:restart';
 const CH_APP_SETTINGS = 'app:settings';
 const CH_SETUP_STATUS = 'setup:status';
+const CH_AUTH = {
+  status: 'auth:status',
+  start: 'auth:start-login',
+  code: 'auth:submit-code',
+  cancel: 'auth:cancel-login',
+  logout: 'auth:logout',
+  saveKey: 'auth:save-api-key',
+  method: 'auth:use-method',
+  removeKey: 'auth:remove-api-key',
+  open: 'auth:open-login-page',
+} as const;
 const CH_SETUP_PICK = 'setup:pick-folder';
 const CH_SETUP_CHECK = 'setup:check-folder';
 const CH_SETUP_SAVE = 'setup:save';
@@ -177,6 +190,33 @@ const api: RanoApi = {
   },
   appSettings(): Promise<AppSettings> {
     return ipcRenderer.invoke(CH_APP_SETTINGS);
+  },
+  authStatus(): Promise<AuthStatus> {
+    return ipcRenderer.invoke(CH_AUTH.status);
+  },
+  authStartLogin(kind: 'claudeai' | 'console'): Promise<{ ok: boolean; url?: string; message?: string }> {
+    return ipcRenderer.invoke(CH_AUTH.start, kind === 'console' ? 'console' : 'claudeai');
+  },
+  authSubmitCode(code: string): Promise<AuthResult> {
+    return ipcRenderer.invoke(CH_AUTH.code, String(code ?? ''));
+  },
+  async authCancelLogin(): Promise<void> {
+    await ipcRenderer.invoke(CH_AUTH.cancel);
+  },
+  authLogout(): Promise<AuthResult> {
+    return ipcRenderer.invoke(CH_AUTH.logout);
+  },
+  authSaveApiKey(key: string): Promise<AuthResult> {
+    return ipcRenderer.invoke(CH_AUTH.saveKey, String(key ?? ''));
+  },
+  authUseMethod(method: 'max' | 'apiKey'): Promise<AuthResult> {
+    return ipcRenderer.invoke(CH_AUTH.method, method === 'apiKey' ? 'apiKey' : 'max');
+  },
+  authRemoveApiKey(): Promise<AuthResult> {
+    return ipcRenderer.invoke(CH_AUTH.removeKey);
+  },
+  async authOpenLoginPage(url: string): Promise<void> {
+    await ipcRenderer.invoke(CH_AUTH.open, String(url ?? ''));
   },
   setupStatus(): Promise<SetupStatus> {
     return ipcRenderer.invoke(CH_SETUP_STATUS);

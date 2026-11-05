@@ -64,6 +64,17 @@ type RanoUiEvent =
 type Zone = 'work' | 'personal';
 
 /** 처음 켰을 때 안내 */
+/** Claude 계정 연결 상태 */
+interface AuthStatus {
+  method: 'max' | 'apiKey'; // 지금 일할 때 쓰는 방식
+  loggedIn: boolean; // 이 맥의 Claude 계정 로그인
+  account?: { kind: 'subscription' | 'console'; email?: string; orgName?: string; plan?: string; expiresAt?: string };
+  apiKeySaved: boolean;
+  apiKeyHint?: string; // 끝 4자리
+  error?: string;
+}
+type AuthResult = { ok: boolean; message: string };
+
 interface SetupStatus {
   needed: boolean; // 안내를 띄워야 하는지 (처음 쓰는 사람)
   dataDir: string; // 데이터 폴더 (~ 로 줄임)
@@ -197,6 +208,15 @@ interface RanoApi {
   orgSaveRole(draft: RoleDraft, originalName?: string): Promise<AdminResult>;
   orgRestart(): Promise<void>;
   appSettings(): Promise<AppSettings>;
+  authStatus(): Promise<AuthStatus>;
+  authStartLogin(kind: 'claudeai' | 'console'): Promise<{ ok: boolean; url?: string; message?: string }>;
+  authSubmitCode(code: string): Promise<AuthResult>;
+  authCancelLogin(): Promise<void>;
+  authLogout(): Promise<AuthResult>;
+  authSaveApiKey(key: string): Promise<AuthResult>;
+  authUseMethod(method: 'max' | 'apiKey'): Promise<AuthResult>;
+  authRemoveApiKey(): Promise<AuthResult>;
+  authOpenLoginPage(url: string): Promise<void>;
   setupStatus(): Promise<SetupStatus>;
   setupPickFolder(zone: Zone, current: string): Promise<string | null>;
   setupCheckFolder(zone: Zone, p: string): Promise<SetupFolderCheck>;
