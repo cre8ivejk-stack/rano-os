@@ -30,7 +30,7 @@ function show(info: UpdateInfo): void {
   bar.setAttribute('role', 'status');
   bar.appendChild(el('strong', undefined, `새 버전 ${info.latest} 이 나왔어요.`));
   bar.appendChild(el('span', undefined, ` 지금은 ${info.current} 이에요.`));
-  const notes = el('pre', 'update-notes', info.notes || '(바뀐 내용 설명이 없어요)');
+  const notes = el('pre', 'update-notes', (info.notes ?? '').replace(/\*\*|`/g, '').trim() || '(바뀐 내용 설명이 없어요)');
   notes.hidden = true;
   const more = button('바뀐 내용', 'btn btn-small btn-plain');
   more.addEventListener('click', () => (notes.hidden = !notes.hidden));
