@@ -77,6 +77,7 @@ export class SettingsButton {
     body.appendChild(acctSec);
     account = new AccountPanel(acctHost);
     void account.refresh();
+    body.appendChild(this.mobileSection(() => overlay.isConnected));
     body.appendChild(this.dataSection(st, app));
   }
 
@@ -179,6 +180,106 @@ export class SettingsButton {
     });
     row.append(save, msg);
     sec.appendChild(row);
+    return sec;
+  }
+
+  // ---------- 휴대폰(텔레그램) ----------
+  private mobileSection(alive: () => boolean): HTMLElement {
+    const sec = el('section', 'settings-sec');
+    sec.appendChild(el('h4', 'settings-title', '휴대폰 연결 (텔레그램)'));
+    const host = el('div', 'mobile-box');
+    sec.appendChild(host);
+    let timer = 0;
+    const draw = async () => {
+      let m: MobileStatus;
+      try {
+        m = await window.rano.mobileStatus();
+      } catch {
+        host.replaceChildren(note('연결 상태를 읽지 못했어요.', false));
+        return;
+      }
+      host.replaceChildren();
+      const msg = el('span');
+      if (!m.connected) {
+        host.appendChild(el('p', 'org-hint', '휴대폰 텔레그램으로 라노와 대화하고 승인 요청을 승인·반려할 수 있어요. 맥이 텔레그램에 먼저 접속하는 방식이라 맥에 들어오는 문은 열지 않아요. 대화 내용은 텔레그램 서버를 거쳐요.'));
+        const steps = el('ol', 'mobile-steps');
+        for (const t of [
+          '휴대폰 텔레그램에서 @BotFather 를 찾아 /newbot 을 보내요',
+          '봇 이름과 아이디(…bot 으로 끝남)를 정하면 토큰(숫자:영문…)을 알려 줘요',
+          '그 토큰을 아래에 붙여 넣고 [연결]을 눌러요',
+        ])
+          steps.appendChild(el('li', undefined, t));
+        host.appendChild(steps);
+        const row = el('div', 'org-row');
+        const input = el('input', 'org-input');
+        input.type = 'password';
+        input.placeholder = '봇 토큰 붙여 넣기';
+        input.autocomplete = 'off';
+        const go = button('연결', 'btn btn-small btn-confirm');
+        go.addEventListener('click', async () => {
+          go.disabled = true;
+          const r = await window.rano.mobileConnect(input.value).catch(() => ({ ok: false, message: '연결하지 못했어요' }));
+          input.value = '';
+          if (!r.ok) {
+            msg.replaceChildren(note(r.message, false));
+            go.disabled = false;
+            return;
+          }
+          void draw();
+        });
+        row.append(input, go, msg);
+        host.appendChild(row);
+        return;
+      }
+      if (!m.paired) {
+        host.appendChild(el('p', undefined, `@${m.botName ?? '봇'} 에 연결했어요. 이제 휴대폰과 짝을 지어요.`));
+        const code = el('div', 'mobile-code');
+        code.append(el('span', 'org-hint', '휴대폰 텔레그램에서 '), el('strong', undefined, `@${m.botName ?? ''}`), el('span', 'org-hint', ' 를 찾아 이 숫자를 보내 주세요'), el('span', 'mobile-code-num', m.pairCode ?? '------'));
+        host.appendChild(code);
+        const row = el('div', 'org-row');
+        const again = button('코드 새로 받기', 'btn btn-small');
+        again.addEventListener('click', async () => {
+          await window.rano.mobileNewCode();
+          void draw();
+        });
+        const off = button('연결 끊기', 'btn btn-small btn-plain');
+        off.addEventListener('click', async () => {
+          await window.rano.mobileDisconnect();
+          void draw();
+        });
+        row.append(again, off);
+        host.appendChild(row);
+        if (m.error) host.appendChild(note(m.error, false));
+        // 짝짓기를 기다리는 동안 상태를 다시 본다
+        window.clearTimeout(timer);
+        timer = window.setTimeout(() => {
+          if (alive()) void draw();
+        }, 2500);
+        return;
+      }
+      host.appendChild(el('p', 'org-ok', `연결됨 · ${m.pairedName || '휴대폰'} ↔ @${m.botName ?? ''}${m.running ? '' : ' (멈춤)'}`));
+      for (const [key, label, on] of [
+        ['allRano', '라노의 답을 휴대폰으로도 모두 받기 (끄면 휴대폰에서 보낸 말의 답만)', m.allRano],
+        ['approvals', '승인 요청을 휴대폰으로 받고 승인·반려하기', m.approvals],
+      ] as const) {
+        const lab = el('label', 'org-check');
+        const cb = el('input');
+        cb.type = 'checkbox';
+        cb.checked = on;
+        cb.addEventListener('change', () => void window.rano.mobileOptions({ [key]: cb.checked }));
+        lab.append(cb, document.createTextNode(` ${label}`));
+        host.appendChild(lab);
+      }
+      host.appendChild(el('p', 'org-hint', '맥이 켜져 있고 라노 OS 가 실행 중일 때만 답해요. 회사 일 내용도 텔레그램 서버를 거쳐요.'));
+      if (m.error) host.appendChild(note(m.error, false));
+      const off = button('연결 끊기', 'btn btn-small btn-plain');
+      off.addEventListener('click', async () => {
+        await window.rano.mobileDisconnect();
+        void draw();
+      });
+      host.appendChild(off);
+    };
+    void draw();
     return sec;
   }
 

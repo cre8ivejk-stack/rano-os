@@ -54,6 +54,19 @@ export interface SearchHit {
   at?: string;
 }
 
+/** 휴대폰(텔레그램) 연결 상태 */
+export interface MobileStatus {
+  connected: boolean; // 봇 토큰이 있음
+  paired: boolean; // 휴대폰 대화방과 짝지음
+  running: boolean;
+  botName?: string;
+  pairedName?: string;
+  pairCode?: string; // 짝짓기 전에만
+  allRano: boolean; // 라노의 답을 모두 휴대폰으로도
+  approvals: boolean; // 승인 요청 알림
+  error?: string;
+}
+
 /** 처음 켰을 때 안내 */
 export interface SetupStatus {
   needed: boolean; // 안내를 띄워야 하는지 (처음 쓰는 사람)
@@ -238,6 +251,11 @@ export const IPC = {
   appSettings: 'app:settings', // invoke → AppSettings (역할 쉬운 이름, 구역 이름·폴더)
   setupStatus: 'setup:status', // invoke → SetupStatus
   usageSummary: 'usage:summary', // invoke → UsageSummary
+  mobileStatus: 'mobile:status',
+  mobileConnect: 'mobile:connect', // invoke(token) 봇 토큰은 키체인 암호화로만 저장
+  mobileDisconnect: 'mobile:disconnect',
+  mobileOptions: 'mobile:options',
+  mobileNewCode: 'mobile:new-code',
   search: 'search:all', // invoke(query) → SearchHit[]
   missionDocs: 'org:mission-docs', // invoke(missionId) → MissionDoc[] (미션 홈 문서 읽기만)
   attachmentData: 'rano:attachment-data', // invoke(ChatAttachment) → data URL | null
@@ -309,6 +327,11 @@ export interface RanoApi {
   openDataFolder(): Promise<void>;
   updateCheck(): Promise<UpdateInfo>;
   openReleasePage(url: string): Promise<void>;
+  mobileStatus(): Promise<MobileStatus>;
+  mobileConnect(token: string): Promise<{ ok: boolean; message: string }>;
+  mobileDisconnect(): Promise<{ ok: boolean; message: string }>;
+  mobileOptions(o: { allRano?: boolean; approvals?: boolean }): Promise<void>;
+  mobileNewCode(): Promise<void>;
   usageSummary(): Promise<UsageSummary>;
   search(query: string): Promise<SearchHit[]>;
   missionDocs(missionId: string): Promise<MissionDoc[]>;

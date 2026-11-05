@@ -1060,3 +1060,9 @@ button.approvals:hover { background: #efeeea; }
 .out-summary-label { font-size: 12px; font-weight: 700; color: #2f6a45; background: #e1efe5; border-radius: 6px; padding: 1px 7px; align-self: start; }
 .out-summary-text { font-size: 13.5px; line-height: 1.6; }
 .out-summary-text .md-p { margin: 0 0 4px; }
+
+/* 휴대폰 연결 */
+.mobile-box { display: flex; flex-direction: column; gap: 8px; }
+.mobile-steps { margin: 0; padding-left: 20px; font-size: 13px; color: #555; line-height: 1.7; }
+.mobile-code { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.mobile-code-num { font-size: 26px; font-weight: 700; letter-spacing: 6px; background: #f3f8f4; border: 1px solid #d9e6dc; border-radius: 10px; padding: 4px 14px; margin-left: 6px; font-variant-numeric: tabular-nums; }

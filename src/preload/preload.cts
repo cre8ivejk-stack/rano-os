@@ -28,6 +28,7 @@ import type {
   UsageSummary,
   MissionDoc,
   SearchHit,
+  MobileStatus,
   ChatAttachment,
   NewAttachment,
 } from '../shared/types.js' with { 'resolution-mode': 'import' };
@@ -255,6 +256,21 @@ const api: RanoApi = {
   },
   search(query: string): Promise<SearchHit[]> {
     return ipcRenderer.invoke('search:all', String(query ?? '').slice(0, 200));
+  },
+  mobileStatus(): Promise<MobileStatus> {
+    return ipcRenderer.invoke('mobile:status');
+  },
+  mobileConnect(token: string): Promise<{ ok: boolean; message: string }> {
+    return ipcRenderer.invoke('mobile:connect', String(token ?? ''));
+  },
+  mobileDisconnect(): Promise<{ ok: boolean; message: string }> {
+    return ipcRenderer.invoke('mobile:disconnect');
+  },
+  async mobileOptions(o: { allRano?: boolean; approvals?: boolean }): Promise<void> {
+    await ipcRenderer.invoke('mobile:options', { ...(typeof o?.allRano === 'boolean' ? { allRano: o.allRano } : {}), ...(typeof o?.approvals === 'boolean' ? { approvals: o.approvals } : {}) });
+  },
+  async mobileNewCode(): Promise<void> {
+    await ipcRenderer.invoke('mobile:new-code');
   },
   usageSummary(): Promise<UsageSummary> {
     return ipcRenderer.invoke('usage:summary');

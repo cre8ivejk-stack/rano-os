@@ -130,6 +130,19 @@ interface SearchHit {
   at?: string;
 }
 
+/** 휴대폰(텔레그램) 연결 상태 */
+interface MobileStatus {
+  connected: boolean; // 봇 토큰이 있음
+  paired: boolean; // 휴대폰 대화방과 짝지음
+  running: boolean;
+  botName?: string;
+  pairedName?: string;
+  pairCode?: string; // 짝짓기 전에만
+  allRano: boolean; // 라노의 답을 모두 휴대폰으로도
+  approvals: boolean; // 승인 요청 알림
+  error?: string;
+}
+
 interface SetupStatus {
   needed: boolean; // 안내를 띄워야 하는지 (처음 쓰는 사람)
   dataDir: string; // 데이터 폴더 (~ 로 줄임)
@@ -299,6 +312,11 @@ interface RanoApi {
   openDataFolder(): Promise<void>;
   updateCheck(): Promise<UpdateInfo>;
   openReleasePage(url: string): Promise<void>;
+  mobileStatus(): Promise<MobileStatus>;
+  mobileConnect(token: string): Promise<{ ok: boolean; message: string }>;
+  mobileDisconnect(): Promise<{ ok: boolean; message: string }>;
+  mobileOptions(o: { allRano?: boolean; approvals?: boolean }): Promise<void>;
+  mobileNewCode(): Promise<void>;
   usageSummary(): Promise<UsageSummary>;
   search(query: string): Promise<SearchHit[]>;
   missionDocs(missionId: string): Promise<MissionDoc[]>;

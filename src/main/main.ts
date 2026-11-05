@@ -28,6 +28,7 @@ import { createAuth } from './engine/auth.js';
 import { checkForUpdate } from './engine/update.js';
 import { initUsage, usageSummary } from './engine/usage.js';
 import { searchAll } from './engine/search.js';
+import { TelegramBridge } from './mobile/telegram.js';
 import { attachmentDataUrl, saveAttachments } from './engine/attachments.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -39,8 +40,15 @@ let win: BrowserWindow | null = null;
 let dispatcherForQuit: MissionDispatcher | null = null;
 const leadersForQuit: MissionLeaderApi[] = [];
 
+let mobile: TelegramBridge | null = null; // 휴대폰(텔레그램) 연결
+
 function emit(e: RanoUiEvent) {
   win?.webContents.send(IPC.event, e);
+  try {
+    mobile?.onEvent(e);
+  } catch {
+    // 휴대폰 쪽 실패가 앱을 막지 않게 한다
+  }
 }
 
 async function boot() {
@@ -59,6 +67,11 @@ async function boot() {
     emit,
     onChange: () => {
       for (const [id, t] of trackers) t.setPendingApprovals(approvals.pendingCount(id));
+      try {
+        mobile?.onApprovalsChanged();
+      } catch {
+        // 무시
+      }
     },
     notify: (title: string, body: string) => {
       if (!Notification.isSupported()) return;
@@ -287,6 +300,25 @@ async function boot() {
   ipcMain.handle(IPC.setupStatus, () => setup.status());
   ipcMain.handle(IPC.missionDocs, (_e, id: unknown) => (typeof id === 'string' ? org.missionDocs(id) : []));
   ipcMain.handle(IPC.search, (_e, q: unknown) => searchAll(config, typeof q === 'string' ? q : ''));
+  // 휴대폰(텔레그램): 맥이 텔레그램에 먼저 접속하는 방식(들어오는 포트 없음)
+  mobile = new TelegramBridge({
+    config,
+    approvals,
+    activity: (text) => emit({ kind: 'activity', text, at: new Date().toISOString() }),
+    sendToRano: async (text, list) => {
+      const saved = saveAttachments(config.runsDir, list);
+      if (!saved.ok) return { ok: false, message: saved.message };
+      void rano.send(text, saved.saved);
+      return { ok: true };
+    },
+  });
+  mobile.start();
+  app.on('before-quit', () => mobile?.stop());
+  ipcMain.handle(IPC.mobileStatus, () => mobile!.status());
+  ipcMain.handle(IPC.mobileConnect, (_e, t: unknown) => mobile!.connect(String(t ?? '')));
+  ipcMain.handle(IPC.mobileDisconnect, () => mobile!.disconnect());
+  ipcMain.handle(IPC.mobileOptions, (_e, o: any) => mobile!.setOptions({ ...(typeof o?.allRano === 'boolean' ? { allRano: o.allRano } : {}), ...(typeof o?.approvals === 'boolean' ? { approvals: o.approvals } : {}) }));
+  ipcMain.handle(IPC.mobileNewCode, () => mobile!.newPairCode());
   ipcMain.handle(IPC.usageSummary, () => usageSummary(Object.fromEntries(config.missions.map((m) => [m.id, m.name]))));
   ipcMain.handle(IPC.updateCheck, () => {
     if ((config.raw as any)?.updates?.check === false) return { current: app.getVersion(), newer: false, error: '새 버전 확인을 꺼 두었어요 (rano.json updates.check)' };
