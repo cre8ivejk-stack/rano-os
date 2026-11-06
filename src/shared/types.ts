@@ -407,6 +407,7 @@ export interface RanoApi {
   openDataFolder(): Promise<void>;
   updateCheck(): Promise<UpdateInfo>;
   openReleasePage(url: string): Promise<void>;
+  guideRead(): Promise<{ ok: boolean; text: string; url?: string }>;
   mobileStatus(): Promise<MobileStatus>;
   mobileConnect(token: string): Promise<{ ok: boolean; message: string }>;
   mobileDisconnect(): Promise<{ ok: boolean; message: string }>;

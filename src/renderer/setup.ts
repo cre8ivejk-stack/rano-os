@@ -1,5 +1,6 @@
 // 처음 켰을 때 안내: 나에 대해 → 구역 폴더 → Claude 연결 → 확인. 저장하면 앱을 다시 시작해 반영한다.
 import { el } from './dom.js';
+import { markGuideAfterSetup } from './guide.js';
 import { button, field } from './orgCommon.js';
 import { AccountPanel, authReady } from './account.js';
 
@@ -250,6 +251,7 @@ export class SetupGuide {
       const res = await window.rano.setupSave({ profile: { ...this.profile }, zones: { ...this.roots } });
       if (res?.ok) {
         this.overlay.querySelector('.setup-nav .org-why')?.replaceWith(el('p', 'org-ok', res.message));
+        markGuideAfterSetup(); // 다시 켜진 뒤 사용 가이드를 한 번 연다
         await window.rano.orgRestart();
         return;
       }

@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { UpdateInfo } from '../../shared/types.js';
 
-function repoSlug(appPath: string): string | null {
+export function repoSlug(appPath: string): string | null {
   try {
     const pkg = JSON.parse(readFileSync(path.join(appPath, 'package.json'), 'utf-8'));
     const url = typeof pkg.repository === 'string' ? pkg.repository : pkg.repository?.url;

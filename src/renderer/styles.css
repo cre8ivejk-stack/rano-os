@@ -1097,3 +1097,16 @@ button.approvals:hover { background: #efeeea; }
 .connector-keys { margin: 6px 0 4px; }
 .connector-key-row { display: flex; gap: 6px; align-items: center; }
 .connector-key-row .org-input { flex: 1; min-width: 0; }
+
+/* 사용 가이드 */
+.guide-modal { width: min(1040px, 94vw); max-width: none; height: min(780px, 90vh); display: flex; flex-direction: column; }
+.guide-wrap { flex: 1; min-height: 0; display: flex; gap: 16px; }
+.guide-toc { width: 220px; flex: none; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; border-right: 1px solid var(--line, #ddd); padding-right: 10px; }
+.guide-toc-item { text-align: left; background: none; border: none; padding: 7px 10px; border-radius: 6px; font-size: 13px; cursor: pointer; color: inherit; }
+.guide-toc-item:hover { background: rgba(0, 0, 0, 0.05); }
+.guide-toc-active { background: rgba(0, 0, 0, 0.08); font-weight: 600; }
+.guide-content { flex: 1; min-width: 0; overflow-y: auto; padding-right: 6px; }
+.guide-intro { margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--line, #ddd); }
+.guide-title { font-size: 18px; margin: 4px 0 10px; }
+.guide-nav { display: flex; justify-content: space-between; gap: 8px; margin: 18px 0 6px; }
+.guide-nav .btn-confirm { margin-left: auto; }

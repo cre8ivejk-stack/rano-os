@@ -1,7 +1,7 @@
 // 앱 본체: 창을 띄우고, 화면 ↔ 라노 세션 ↔ 미션 리포 리더 사이를 잇는다.
 import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from 'electron';
 import { homedir } from 'node:os';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defaultRootDir, loadConfig } from './config.js';
@@ -25,7 +25,7 @@ import { createOrgMcpServer } from './admin/ranoOrgTools.js';
 import { zoneText } from './admin/paths.js';
 import { createSetup } from './setup.js';
 import { createAuth } from './engine/auth.js';
-import { checkForUpdate } from './engine/update.js';
+import { checkForUpdate, repoSlug } from './engine/update.js';
 import { initUsage, usageSummary } from './engine/usage.js';
 import { searchAll } from './engine/search.js';
 import { TelegramBridge } from './mobile/telegram.js';
@@ -347,6 +347,16 @@ async function boot() {
   ipcMain.handle(IPC.updateCheck, () => {
     if ((config.raw as any)?.updates?.check === false) return { current: app.getVersion(), newer: false, error: '새 버전 확인을 꺼 두었어요 (rano.json updates.check)' };
     return checkForUpdate(app.getAppPath(), app.getVersion());
+  });
+  // 사용 가이드: 앱에 같이 넣은 GUIDE.md 를 읽어 준다(인터넷 없이 열림)
+  ipcMain.handle('guide:read', () => {
+    try {
+      const text = readFileSync(path.join(app.getAppPath(), 'GUIDE.md'), 'utf-8');
+      const slug = repoSlug(app.getAppPath());
+      return { ok: true, text, ...(slug ? { url: `https://github.com/${slug}/blob/main/GUIDE.md` } : {}) };
+    } catch {
+      return { ok: false, text: '' };
+    }
   });
   ipcMain.handle(IPC.openReleasePage, async (_e, url: unknown) => {
     try {

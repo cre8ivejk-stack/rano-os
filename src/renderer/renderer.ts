@@ -1,5 +1,6 @@
 // 라노 OS 화면의 시작점: 탭 전환, 라노 대화, 현황판을 잇는다.
 // 원칙: 대화 말은 앱 본체가 보내는 이벤트로만 그린다(내 말도 이벤트로 온다). 글은 모두 textContent 로 넣는다.
+import { GuideButton, openGuideIfMarked } from './guide.js';
 import { ApprovalsView } from './approvals.js';
 import { Board } from './board.js';
 import { OrgView } from './org.js';
@@ -270,6 +271,7 @@ async function start(): Promise<void> {
     const right = document.createElement('div');
     right.className = 'topbar-right';
     topbar.appendChild(right);
+    new GuideButton(right);
     const finder = new SearchButton(right);
     finder.onGo = (h) => {
       if (h.kind === 'rano') showTab('chat');
@@ -283,6 +285,7 @@ async function start(): Promise<void> {
     new AccountButton(right);
   }
   void new SetupGuide().openIfNeeded();
+  openGuideIfMarked();
   startUpdateNotice();
   void board.load();
   void approvals.load();

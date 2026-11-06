@@ -248,6 +248,9 @@ const api: RanoApi = {
   updateCheck(): Promise<UpdateInfo> {
     return ipcRenderer.invoke(CH_UPDATE_CHECK);
   },
+  guideRead(): Promise<any> {
+    return ipcRenderer.invoke('guide:read');
+  },
   async openReleasePage(url: string): Promise<void> {
     await ipcRenderer.invoke(CH_UPDATE_OPEN, String(url ?? ''));
   },
