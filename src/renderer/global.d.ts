@@ -148,6 +148,28 @@ interface MobileStatus {
 }
 
 /** 스킬 보관함 */
+interface ConnectorInfo {
+  name: string;
+  transport: 'stdio' | 'http' | 'sse';
+  url?: string;
+  missingSecrets: string[];
+  label: string;
+  command: string;
+  args: string[];
+  envNames: string[];
+  secretEnv: string[];
+  usedBy: string[];
+  from?: string;
+}
+interface ConnectorCandidate {
+  name: string;
+  transport: 'stdio' | 'http' | 'sse';
+  url?: string;
+  command: string;
+  args: string[];
+  envNames: string[];
+  imported: boolean;
+}
 interface SkillInfo {
   name: string;
   description: string;
@@ -367,6 +389,12 @@ interface RanoApi {
   skillPreview(source: string): Promise<{ ok: true; preview: SkillPreview } | { ok: false; message: string }>;
   skillInstall(token: string): Promise<{ ok: boolean; message: string; name?: string }>;
   skillRemove(name: string): Promise<{ ok: boolean; message: string }>;
+  connectorsList(): Promise<ConnectorInfo[]>;
+  connectorCandidates(): Promise<ConnectorCandidate[]>;
+  connectorImport(name: string): Promise<{ ok: boolean; message: string }>;
+  connectorRemove(name: string): Promise<{ ok: boolean; message: string }>;
+  connectorSetSecret(name: string, key: string, value: string): Promise<{ ok: boolean; message: string }>;
+  setMissionConnectors(missionId: string, names: string[]): Promise<{ ok: boolean; message: string }>;
   toolsStatus(): Promise<ToolsStatus>;
   skillRegistry(): Promise<SkillSuggestion[]>;
   skillsAuto(): Promise<boolean>;

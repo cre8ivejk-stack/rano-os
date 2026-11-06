@@ -3,6 +3,7 @@
 import { el, mustGet, zoneInfo } from './dom.js';
 import { openMissionDocs } from './missionDocs.js';
 import { skillsSection } from './orgSkills.js';
+import { connectorsSection } from './orgConnectors.js';
 import { Notice, SOURCE_LABEL, abilityText, button, tildify } from './orgCommon.js';
 import { RoleEditor } from './orgRoles.js';
 import { MissionWizard, restartBox } from './orgWizard.js';
@@ -137,6 +138,7 @@ export class OrgView {
     frag.appendChild(mSec);
 
     // ---- 인재풀 ----
+    frag.appendChild(connectorsSection(this.notice, () => this.missions, () => void this.load()));
     frag.appendChild(skillsSection(this.notice, () => this.roles.map((r) => r.name), () => void this.load()));
 
     const rSec = el('section', 'org-section');

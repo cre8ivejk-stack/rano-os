@@ -29,6 +29,7 @@ import {
 } from '../../shared/types.js';
 import { isBlockedPath } from '../engine/permissions.js';
 import { classifyBash } from './bashRules.js';
+import { isConnectorReadTool } from '../connectors/readTools.js';
 
 export const SUBAGENT_TOOL = 'Agent'; // sdk.d.ts BUILTIN_TOOL_NAMES 기준 서브에이전트 호출 도구 이름
 const READ_TOOLS = new Set(['Read', 'Grep', 'Glob']);
@@ -326,6 +327,44 @@ const BASH_WHAT: Record<string, (m: MissionConfig) => string> = {
   outsideWrite: () => '작업 폴더 밖의 파일을 명령으로 바꾸려고 해요',
   command: () => '작업에 필요한 명령을 실행하려고 해요',
 };
+
+/**
+ * 외부 연결(MCP) 도구 판단. 연결 도구가 아니면 null.
+ * - 이 미션에 켜진 연결만 쓴다. 읽기(검색·조회)는 바로, 그 밖은 승인함(external)
+ */
+export function decideConnectorTool(
+  config: RanoConfig,
+  mission: MissionConfig,
+  toolName: string,
+  input: Record<string, unknown>,
+  mcpServer?: { name: string; source: string },
+): StageDecision | null {
+  const m = /^mcp__([^_]+(?:_[^_]+)*?)__(.+)$/.exec(toolName);
+  if (!m || m[1] === LEADER_MCP_NAME) return null;
+  const [, server, tool] = m;
+  const conn = config.connectors?.[server];
+  if (!conn || !(mission.connectors ?? []).includes(server)) {
+    return { type: 'deny', reason: `이 미션에 켜지지 않은 외부 연결: ${server}`, message: `이 미션은 '${server}' 연결을 쓸 수 없어요. 필요하면 보고에 적어 주세요(사용자가 조직 탭에서 켤 수 있어요).` };
+  }
+  if (mcpServer && mcpServer.name !== server) return { type: 'deny', reason: '도구 서버 이름이 맞지 않음', message: MSG_UNKNOWN };
+  if (isConnectorReadTool(tool)) return { type: 'allow', reason: `${conn.label} 읽기: ${tool}` };
+  let shown = '';
+  try {
+    shown = JSON.stringify(input, null, 2);
+  } catch {
+    shown = String(input);
+  }
+  return {
+    type: 'ask',
+    reason: `${conn.label} 쓰기 승인 필요: ${tool}`,
+    ask: {
+      kind: 'external',
+      title: `${conn.label}에 쓰기: ${tool.replace(/_/g, ' ')}`,
+      what: `${conn.label}에서 '${tool}' 작업을 하려고 해요 (다른 사람도 보는 곳이 바뀔 수 있어요)`,
+      detail: `연결: ${conn.label} (${server})\n작업: ${tool}\n\n보낼 내용(앞부분):\n${redactPreview(shown, 40, 3000)}`,
+    },
+  };
+}
 
 /** 3단계 판단. 승인함을 기다리는 일은 하지 않는다(type 'ask' 로 돌려줌). */
 export function decideApprovalStage(
@@ -678,6 +717,12 @@ export class LeaderGuard {
 
   private decide(toolName: string, input: Record<string, unknown>, cwd: string, isSub: boolean, mcpServer?: { name: string; source: string }): StageDecision {
     const { config, mission } = this.deps;
+    const ext = decideConnectorTool(config, mission, toolName, input, mcpServer);
+    if (ext) {
+      if (ext.type === 'ask' && (mission.stagePolicy === 'readOnly' || this.planBlocked()))
+        return { type: 'deny', reason: `${mission.stagePolicy === 'readOnly' ? '읽기 전용 미션' : '기획 결정 전'} 외부 쓰기: ${toolName}`, message: mission.stagePolicy === 'readOnly' ? '이 미션은 읽기만 해요. 외부 서비스에 쓰는 일은 보고에 적어 주세요.' : MSG_PLAN };
+      return ext;
+    }
     if (mission.stagePolicy === 'readOnly') {
       const d = decideLeaderTool(config, mission, toolName, input, cwd, isSub);
       return { type: d.allow ? 'allow' : 'deny', reason: d.reason, message: d.message, updatedInput: d.updatedInput, blocked: d.blocked };
@@ -795,6 +840,10 @@ export class LeaderGuard {
               if (d.type === 'allow' && input.tool_name === 'Read' && typeof toolInput.file_path === 'string') {
                 const sk = /\/skills\/([a-z0-9][a-z0-9-]{1,60})\/SKILL\.md$/.exec(toolInput.file_path);
                 if (sk && toolInput.file_path.startsWith(path.join(this.deps.config.rootDir, 'skills'))) this.activity(whoInfo.label, `스킬을 꺼내 씀: ${sk[1]}`);
+              }
+              if (d.type === 'allow' && /^mcp__/.test(input.tool_name) && !input.tool_name.startsWith(LEADER_TOOL_PREFIX)) {
+                const [, srv, tl] = input.tool_name.split('__');
+                this.activity(whoInfo.label, `${config.connectors?.[srv]?.label ?? srv}에서 읽음: ${tl}`);
               }
               if (d.type === 'ask') {
                 // 승인함은 canUseTool 에서 기다린다(훅에는 시간 제한이 있음)

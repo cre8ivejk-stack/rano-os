@@ -293,6 +293,24 @@ const api: RanoApi = {
   skillRemove(name: string): Promise<any> {
     return ipcRenderer.invoke('skills:remove', String(name ?? ''));
   },
+  connectorsList(): Promise<any> {
+    return ipcRenderer.invoke('connectors:list');
+  },
+  connectorCandidates(): Promise<any> {
+    return ipcRenderer.invoke('connectors:candidates');
+  },
+  connectorImport(name: string): Promise<any> {
+    return ipcRenderer.invoke('connectors:import', String(name ?? ''));
+  },
+  connectorSetSecret(name: string, key: string, value: string): Promise<any> {
+    return ipcRenderer.invoke('connectors:set-secret', String(name ?? ''), String(key ?? ''), String(value ?? '').slice(0, 8000));
+  },
+  connectorRemove(name: string): Promise<any> {
+    return ipcRenderer.invoke('connectors:remove', String(name ?? ''));
+  },
+  setMissionConnectors(missionId: string, names: string[]): Promise<any> {
+    return ipcRenderer.invoke('connectors:set-mission', String(missionId ?? ''), Array.isArray(names) ? names.filter((x) => typeof x === 'string').slice(0, 30) : []);
+  },
   toolsStatus(): Promise<any> {
     return ipcRenderer.invoke('tools:status');
   },

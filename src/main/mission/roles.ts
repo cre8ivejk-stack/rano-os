@@ -93,10 +93,14 @@ export function loadRoles(config: RanoConfig, mission: MissionConfig): Record<st
       const kept = (parsed.tools ?? []).filter((t) => (READ_ONLY_TOOLS as readonly string[]).includes(t));
       tools = kept.length ? kept : [...READ_ONLY_TOOLS];
     } else {
-      // 역할 파일에 적힌 도구를 쓰되, 이 앱이 검사할 수 있는 내장 도구만 남긴다(MCP 도구 등은 연결되어 있지 않음)
+      // 역할 파일에 적힌 도구를 쓰되, 이 앱이 검사할 수 있는 내장 도구만 남긴다
+      // 외부 연결(MCP)은 이 미션에 켜진 연결의 도구만 남긴다. 역할 파일에 도구 목록이 없으면 켜진 연결 도구를 모두 쓴다(쓰기는 승인함)
       const allowed = APPROVAL_STAGE_TOOLS as readonly string[];
-      const kept = parsed.tools ? parsed.tools.filter((t) => allowed.includes(t)) : [...allowed];
-      tools = kept.length ? kept : [...READ_ONLY_TOOLS];
+      const conns = (mission.connectors ?? []).filter((n) => config.connectors?.[n]);
+      const isConn = (t: string) => conns.some((n) => t.startsWith(`mcp__${n}__`));
+      const kept = parsed.tools ? parsed.tools.filter((t) => allowed.includes(t) || isConn(t)) : [...allowed];
+      tools = kept.some((t) => allowed.includes(t)) ? kept : [...READ_ONLY_TOOLS, ...kept];
+      if (!parsed.tools && conns.length) tools = undefined; // 리더가 가진 도구(켜진 연결 포함)를 그대로 물려받는다
     }
     out[role] = {
       description: parsed.description,

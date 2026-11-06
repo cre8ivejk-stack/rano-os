@@ -29,6 +29,7 @@ import { checkForUpdate } from './engine/update.js';
 import { initUsage, usageSummary } from './engine/usage.js';
 import { searchAll } from './engine/search.js';
 import { TelegramBridge } from './mobile/telegram.js';
+import { candidates as connectorCandidates, importConnector, initConnectors, listConnectors, removeConnector, setConnectorSecret, setMissionConnectors } from './connectors/connectors.js';
 import { registryList, autoSkills, setAutoSkills, initSkills, installSkill, installTools, listSkills, previewSkill, readSkill, removeSkill, roleSkills, setRoleSkills, toolsStatus } from './skills/skills.js';
 import { attachmentDataUrl, saveAttachments } from './engine/attachments.js';
 
@@ -59,6 +60,7 @@ async function boot() {
   const config = loadConfig();
   initUsage(config.runsDir);
   initSkills(config, defaultsDir(app.getAppPath()));
+  initConnectors(config);
   const memory = new MemoryService(config, emit);
   const store = new ConversationStore(config);
 
@@ -329,6 +331,13 @@ async function boot() {
   ipcMain.handle('skills:preview', (_e, src: unknown) => previewSkill(String(src ?? '')));
   ipcMain.handle('skills:install', (_e, t: unknown) => installSkill(String(t ?? '')));
   ipcMain.handle('skills:remove', (_e, n: unknown) => removeSkill(String(n ?? '')));
+  // 외부 연결(MCP)
+  ipcMain.handle('connectors:list', () => listConnectors());
+  ipcMain.handle('connectors:candidates', () => connectorCandidates());
+  ipcMain.handle('connectors:import', (_e, n: unknown) => importConnector(String(n ?? '')));
+  ipcMain.handle('connectors:set-secret', (_e, n: unknown, k: unknown, v: unknown) => setConnectorSecret(String(n ?? ''), String(k ?? ''), String(v ?? '')));
+  ipcMain.handle('connectors:remove', (_e, n: unknown) => removeConnector(String(n ?? '')));
+  ipcMain.handle('connectors:set-mission', (_e, id: unknown, names: unknown) => setMissionConnectors(String(id ?? ''), Array.isArray(names) ? names.filter((x): x is string => typeof x === 'string') : []));
   ipcMain.handle('tools:status', () => toolsStatus());
   ipcMain.handle('skills:registry', () => registryList());
   ipcMain.handle('skills:auto', () => autoSkills());

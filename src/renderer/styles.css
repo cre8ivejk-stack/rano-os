@@ -1085,3 +1085,15 @@ button.approvals:hover { background: #efeeea; }
 .skill-rec-info { flex: 1; min-width: 0; }
 .skill-rec-why { margin: 2px 0 0; font-size: 13px; color: #555; }
 .skill-suggest .skill-rec-row { margin: 6px 0; }
+
+/* 조직 탭 외부 연결 */
+.connector-list { display: flex; flex-direction: column; gap: 8px; margin: 6px 0 10px; }
+.connector-card { border: 1px solid var(--line, #ddd); border-radius: 8px; padding: 10px 12px; }
+.connector-top { display: flex; align-items: center; gap: 6px; }
+.connector-top .btn { margin-left: auto; }
+.connector-missions { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.connector-cand { display: flex; align-items: center; gap: 10px; font-size: 13px; margin: 4px 0; }
+.connector-cand span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.connector-keys { margin: 6px 0 4px; }
+.connector-key-row { display: flex; gap: 6px; align-items: center; }
+.connector-key-row .org-input { flex: 1; min-width: 0; }

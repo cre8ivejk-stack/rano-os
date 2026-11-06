@@ -28,6 +28,7 @@ import { APPROVAL_STAGE_TOOLS, loadRoles, READ_ONLY_TOOLS } from './roles.js';
 import { shareWithMission } from '../engine/attachments.js';
 import { recordLimit, recordResult } from '../engine/usage.js';
 import { roleSkills, skillCatalog } from '../skills/skills.js';
+import { mcpServersFor } from '../connectors/connectors.js';
 
 export interface MissionLeaderDeps {
   config: RanoConfig;
@@ -287,7 +288,11 @@ export class MissionLeader implements MissionLeaderApi {
       }),
       config.memoryDir,
     );
-    const systemPrompt = buildLeaderSystemPrompt(ctx) + (mission.stagePolicy === 'approval' ? skillCatalog([], true) : '');
+    const conns = (mission.connectors ?? []).map((n) => config.connectors?.[n]).filter((c): c is NonNullable<typeof c> => !!c);
+    const connBlock = conns.length
+      ? `\n\n## 외부 연결 (MCP)\n이 미션은 다음 외부 서비스 도구를 쓸 수 있어요: ${conns.map((c) => `${c.label}(도구 이름 mcp__${c.name}__…)`).join(', ')}.\n- 검색·조회는 바로 돼요. 만들기·고치기·댓글·라벨 같은 쓰기는 사용자 승인함을 거쳐요(한 번에 하나씩, 무엇을 왜 바꾸는지 먼저 말하세요).\n- 팀원에게 맡길 때도 같은 도구를 써요. 연결이 안 되면 "외부 연결 실패"라고 보고하세요.`
+      : '';
+    const systemPrompt = buildLeaderSystemPrompt(ctx) + (mission.stagePolicy === 'approval' ? skillCatalog([], true) : '') + connBlock;
 
     // 팀원도 같은 규칙을 따르도록 역할 프롬프트 끝에 규칙 파일을 붙인다(설정 파일은 불러오지 않으므로)
     const rulesBlock = ctx.rules.map((r) => `### ${r.file}\n${r.content.trim()}`).join('\n\n');
@@ -321,7 +326,7 @@ export class MissionLeader implements MissionLeaderApi {
       // 2단계(readOnly): 읽기 + 팀원 호출. 3단계(approval): 쓰기·명령도 열되 모두 문지기(훅·canUseTool)를 거친다
       tools: approvalStage ? [...APPROVAL_STAGE_TOOLS, SUBAGENT_TOOL] : [...READ_ONLY_TOOLS, SUBAGENT_TOOL],
       agents: roles,
-      mcpServers: leaderMcp ? { [LEADER_MCP_NAME]: leaderMcp } : {},
+      mcpServers: { ...mcpServersFor(config, mission), ...(leaderMcp ? { [LEADER_MCP_NAME]: leaderMcp } : {}) },
       abortController: abort,
       strictMcpConfig: true,
       settingSources: [], // 작업 리포의 .claude 설정·hooks·CLAUDE.md 를 불러오지 않는다(규칙은 프롬프트에 직접 넣음)

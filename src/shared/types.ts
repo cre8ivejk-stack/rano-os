@@ -141,6 +141,41 @@ export interface ZoneConfig {
   denyRead: string[]; // 이 구역 미션이 열 수 없는 절대 경로 (다른 구역 폴더)
 }
 
+/** 외부 연결(MCP 서버): Confluence 등. 미션마다 쓸 연결을 고른다 */
+export interface ConnectorConfig {
+  name: string; // 도구 이름 앞부분이 된다 (mcp__<name>__…)
+  label: string; // 화면 이름
+  transport: 'stdio' | 'http' | 'sse'; // stdio: 이 맥에서 실행, http·sse: 주소로 접속
+  command: string; // stdio 만
+  args: string[];
+  url?: string; // http·sse 만
+  env: Record<string, string>; // 비밀로 보이는 값은 여기 없이 암호화 저장소에 둔다
+  secretEnv: string[]; // 암호화해 둔 환경변수 이름 (http·sse 는 요청 머리글 이름)
+  from?: string; // 어디서 가져왔는지 (예: Claude Code 사용자 설정)
+}
+export interface ConnectorInfo {
+  name: string;
+  transport: 'stdio' | 'http' | 'sse';
+  url?: string;
+  label: string;
+  command: string;
+  args: string[];
+  envNames: string[];
+  secretEnv: string[];
+  usedBy: string[]; // 쓰는 미션 id
+  missingSecrets: string[]; // 아직 값을 넣지 않은 비밀 이름 (이 맥 사용자가 넣어야 함)
+  from?: string;
+}
+export interface ConnectorCandidate {
+  name: string;
+  transport: 'stdio' | 'http' | 'sse';
+  url?: string;
+  command: string;
+  args: string[];
+  envNames: string[];
+  imported: boolean;
+}
+
 export interface RanoConfig {
   rootDir: string; // 절대 경로 (~ 풀림)
   zones?: Record<Zone, ZoneConfig>; // 없으면 기본값(회사 ~/work, 개인 ~/personal)
@@ -152,6 +187,7 @@ export interface RanoConfig {
   autoCommit: boolean;
   runsDir: string; // 절대 경로
   missions: MissionConfig[];
+  connectors?: Record<string, ConnectorConfig>; // 외부 연결
   raw: unknown; // rano.json 원본
 }
 
@@ -169,6 +205,7 @@ export interface MissionConfig {
   roles: string[]; // 이 미션에서 부를 수 있는 역할 이름
   reviewerRoles: string[]; // 이 역할이 일하는 동안은 '검수 중'
   stagePolicy: 'readOnly' | 'approval'; // 2단계 readOnly: 읽기만. 3단계 approval: 쓰기는 승인 규칙대로
+  connectors?: string[]; // 이 미션이 쓰는 외부 연결 이름
   directWriteDirs: string[]; // 3단계: 승인 없이 바로 쓸 수 있는 폴더(절대 경로). 비어 있으면 모든 쓰기가 승인함 (2026-11-04 사용자 결정: 비움)
   // rano.json 에 archived: true 인 미션은 loadConfig 가 config.missions 에서 뺀다(현황판·리더 없음). 조직 화면은 원본에서 읽는다.
 }
@@ -382,6 +419,12 @@ export interface RanoApi {
   skillPreview(source: string): Promise<{ ok: true; preview: SkillPreview } | { ok: false; message: string }>;
   skillInstall(token: string): Promise<{ ok: boolean; message: string; name?: string }>;
   skillRemove(name: string): Promise<{ ok: boolean; message: string }>;
+  connectorsList(): Promise<ConnectorInfo[]>;
+  connectorCandidates(): Promise<ConnectorCandidate[]>;
+  connectorImport(name: string): Promise<{ ok: boolean; message: string }>;
+  connectorRemove(name: string): Promise<{ ok: boolean; message: string }>;
+  connectorSetSecret(name: string, key: string, value: string): Promise<{ ok: boolean; message: string }>;
+  setMissionConnectors(missionId: string, names: string[]): Promise<{ ok: boolean; message: string }>;
   toolsStatus(): Promise<ToolsStatus>;
   skillRegistry(): Promise<SkillSuggestion[]>;
   skillsAuto(): Promise<boolean>;

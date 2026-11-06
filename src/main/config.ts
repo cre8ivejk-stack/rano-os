@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import type { MissionConfig, RanoConfig, Zone, ZoneConfig } from '../shared/types.js';
+import type { ConnectorConfig, MissionConfig, RanoConfig, Zone, ZoneConfig } from '../shared/types.js';
 
 export function expandHome(p: string): string {
   if (p === '~') return homedir();
@@ -59,6 +59,29 @@ export function zonesFrom(raw: any, rootDir: string): Record<Zone, ZoneConfig> {
   };
 }
 
+/** rano.json connectors (이름 → 실행 방법). 비밀 값은 따로 암호화 저장 */
+export function connectorsFrom(raw: any): Record<string, ConnectorConfig> {
+  const out: Record<string, ConnectorConfig> = {};
+  const src = raw?.connectors && typeof raw.connectors === 'object' ? raw.connectors : {};
+  for (const [name, c] of Object.entries(src as Record<string, any>)) {
+    if (!/^[a-zA-Z0-9_-]{1,40}$/.test(name)) continue;
+    const transport = c?.transport === 'http' || c?.transport === 'sse' ? c.transport : 'stdio';
+    if (transport === 'stdio' ? typeof c?.command !== 'string' : typeof c?.url !== 'string' || !/^https:\/\//.test(c.url)) continue;
+    out[name] = {
+      name,
+      label: typeof c.label === 'string' ? c.label : name,
+      transport,
+      command: typeof c.command === 'string' ? c.command : '',
+      ...(transport !== 'stdio' ? { url: c.url } : {}),
+      args: Array.isArray(c.args) ? c.args.filter((a: unknown) => typeof a === 'string') : [],
+      env: c.env && typeof c.env === 'object' ? Object.fromEntries(Object.entries(c.env).filter(([, v]) => typeof v === 'string')) as Record<string, string> : {},
+      secretEnv: Array.isArray(c.secretEnv) ? c.secretEnv.filter((a: unknown) => typeof a === 'string') : [],
+      ...(typeof c.from === 'string' ? { from: c.from } : {}),
+    };
+  }
+  return out;
+}
+
 export function loadConfig(rootDir: string = defaultRootDir()): RanoConfig {
   const file = path.join(rootDir, 'config', 'rano.json');
   const raw = JSON.parse(readFileSync(file, 'utf-8'));
@@ -82,6 +105,7 @@ export function loadConfig(rootDir: string = defaultRootDir()): RanoConfig {
     memoryFiles: raw.memory?.files ?? ['me.md', 'priorities.md', 'missions.md'],
     autoCommit: raw.memory?.autoCommit !== false,
     runsDir: resolve(raw.runsDir ?? 'runs'),
+    connectors: connectorsFrom(raw),
     // archived: true 인 미션은 현황판·리더를 만들지 않는다 (조직 화면은 raw 에서 읽는다)
     missions: (raw.missions ?? []).filter((m: any) => m && m.archived !== true).map(
       (m: any): MissionConfig => ({
@@ -98,6 +122,7 @@ export function loadConfig(rootDir: string = defaultRootDir()): RanoConfig {
         reviewerRoles: m.reviewerRoles ?? [],
         stagePolicy: m.stagePolicy === 'approval' ? 'approval' : 'readOnly',
         directWriteDirs: (m.directWriteDirs ?? []).map(resolve),
+        connectors: Array.isArray(m.connectors) ? m.connectors.filter((x: unknown) => typeof x === 'string') : [],
       }),
     ),
     raw,
