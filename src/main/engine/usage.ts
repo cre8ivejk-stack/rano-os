@@ -87,10 +87,15 @@ export function recordLimit(info: any): void {
     } catch {
       cur = {};
     }
+    const prev = cur[info.rateLimitType] ?? {};
+    const resetsAt = info.resetsAt ? new Date(info.resetsAt * (info.resetsAt < 1e12 ? 1000 : 1)).toISOString() : prev.resetsAt;
+    // 이 알림에는 % 가 없을 때가 많다. 같은 한도 구간(다시 채워지는 시각이 같음)이면 앞서 받은 % 를 지우지 않는다
+    const sameWindow = !!prev.resetsAt && !!resetsAt && Math.abs(Date.parse(prev.resetsAt) - Date.parse(resetsAt)) < 60_000;
+    const utilization = typeof info.utilization === 'number' ? info.utilization : sameWindow ? prev.utilization : undefined;
     cur[info.rateLimitType] = {
       status: info.status,
-      ...(typeof info.utilization === 'number' ? { utilization: info.utilization } : {}),
-      ...(info.resetsAt ? { resetsAt: new Date(info.resetsAt * (info.resetsAt < 1e12 ? 1000 : 1)).toISOString() } : {}),
+      ...(typeof utilization === 'number' ? { utilization } : {}),
+      ...(resetsAt ? { resetsAt } : {}),
       at: new Date().toISOString(),
     };
     mkdirSync(runsDir, { recursive: true });

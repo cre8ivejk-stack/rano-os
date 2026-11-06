@@ -26,7 +26,7 @@ import { createLeaderMcpServer } from './leaderTools.js';
 import { buildLeaderSystemPrompt, readLeaderContext } from './leaderPrompt.js';
 import { APPROVAL_STAGE_TOOLS, loadRoles, READ_ONLY_TOOLS } from './roles.js';
 import { shareWithMission } from '../engine/attachments.js';
-import { recordLimit, recordResult } from '../engine/usage.js';
+import { fetchPlanLimits, recordLimit, recordResult } from '../engine/usage.js';
 import { roleSkills, skillCatalog } from '../skills/skills.js';
 import { mcpServersFor } from '../connectors/connectors.js';
 
@@ -366,7 +366,8 @@ export class MissionLeader implements MissionLeaderApi {
     };
 
     try {
-      for await (const msg of query({ prompt, options }) as AsyncIterable<SDKMessage>) {
+      const q = query({ prompt, options });
+      for await (const msg of q as AsyncIterable<SDKMessage>) {
         if (msg.type === 'system') {
           if (msg.subtype === 'init') {
             out.gotInit = true;
@@ -473,6 +474,7 @@ export class MissionLeader implements MissionLeaderApi {
         }
         if (msg.type === 'result') {
           recordResult(this.mission.id, msg, !!resume);
+          void fetchPlanLimits(q); // 리더가 일한 뒤에도 사용 한도 % 를 새로 받는다
           if (msg.subtype === 'success') {
             if (msg.is_error) out.errorText = msg.result || 'error';
             else if (!segments.length && msg.result?.trim()) segments = [msg.result.trim()];
