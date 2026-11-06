@@ -14,8 +14,8 @@ import type {
   PostToolUseHookInput,
   PreToolUseHookInput,
 } from '@anthropic-ai/claude-agent-sdk';
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   LEADER_MCP_NAME,
@@ -29,6 +29,7 @@ import {
 } from '../../shared/types.js';
 import { isBlockedPath } from '../engine/permissions.js';
 import { classifyBash } from './bashRules.js';
+import { CODE_MAP_FILE } from './leaderPrompt.js';
 import { isConnectorReadTool } from '../connectors/readTools.js';
 
 export const SUBAGENT_TOOL = 'Agent'; // sdk.d.ts BUILTIN_TOOL_NAMES 기준 서브에이전트 호출 도구 이름
@@ -115,6 +116,56 @@ function staticPrefix(pattern: string): string {
 }
 
 /** 차단 목록 검사(원래 경로와 링크를 푼 경로 모두). 걸린 경로를 돌려준다. */
+// 임시 폴더: 명령 결과를 잠깐 담아 두는 곳. 쓰기·읽기 모두 승인 없이 허용
+const TEMP_ROOTS = [...new Set(['/tmp', '/private/tmp', tmpdir(), real(tmpdir())])];
+
+// 폴더 아래 비밀·차단 파일 유무 (통째 검색을 바로 허용해도 되는지). 2분 동안 기억한다
+const SECRET_SCAN_TTL = 120_000;
+const SECRET_SCAN_LIMIT = 30_000;
+const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', 'out', '.turbo', '.cache', 'coverage', '.venv', 'venv', '__pycache__']);
+const secretScanCache = new Map<string, { at: number; hits: string[] }>();
+
+/** 폴더 아래 차단·비밀 파일 목록. 너무 커서 다 못 보면 ['*'] */
+export function secretsUnderDir(config: RanoConfig, absDir: string): string[] {
+  const key = absDir;
+  const cached = secretScanCache.get(key);
+  if (cached && Date.now() - cached.at < SECRET_SCAN_TTL) return cached.hits;
+  let seen = 0;
+  const hits: string[] = [];
+  let full_ = false;
+  const walk = (dir: string, depth: number) => {
+    if (full_) return;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (full_) return;
+      if (++seen > SECRET_SCAN_LIMIT || depth > 12 || hits.length > 200) {
+        full_ = true; // 너무 커서 다 못 보면 있다고 본다
+        return;
+      }
+      const full = path.join(dir, e.name);
+      if (/^\.env(\.|$)/.test(e.name) || blockedHit(config, full)) {
+        hits.push(full);
+        continue;
+      }
+      if (e.isDirectory() && !SKIP_DIRS.has(e.name)) walk(full, depth + 1);
+    }
+  };
+  try {
+    if (blockedHit(config, absDir) || /(^|\/)\.env(\.|$)/.test(absDir)) hits.push(absDir);
+    else if (statSync(absDir).isDirectory()) walk(absDir, 0);
+  } catch {
+    // 없는 경로는 읽을 것도 없다
+  }
+  const result = full_ ? ['*'] : hits;
+  secretScanCache.set(key, { at: Date.now(), hits: result });
+  return result;
+}
+
 function blockedHit(config: RanoConfig, abs: string): string | null {
   for (const c of new Set([abs, real(abs)])) if (isBlockedPath(config, c)) return c;
   return null;
@@ -411,6 +462,9 @@ export function decideApprovalStage(
     const insideSome = (roots: string[]) => candidates.some((c) => inAny(c, roots));
     // 이 과제의 시안 폴더(~/rano/runs/drafts/…): 작업 리포가 아니므로 승인 없이 쓴다
     if (actor.draftsDir && insideAll([actor.draftsDir])) return { type: 'allow', reason: `시안 폴더 안: ${abs}` };
+    // 미션 코드 지도(라노 데이터 폴더 안, 작업 리포 밖): 다시 읽기를 줄이려고 리더가 과제 끝에 갱신. 앱이 미션 기억으로 자동 커밋한다
+    if (toolName !== 'NotebookEdit' && candidates.every((c) => c === path.join(mission.home, 'memory', CODE_MAP_FILE)))
+      return { type: 'allow', reason: `코드 지도 갱신: ${abs}` };
     if (insideSome(mission.readonlyRefs)) return { type: 'deny', reason: `참고 폴더 쓰기: ${abs}`, message: MSG_REFS };
     if (actor.planBlocked) return { type: 'deny', reason: `기획 결정 전 쓰기: ${abs}`, message: MSG_PLAN };
     if (mission.directWriteDirs.length && insideAll(mission.directWriteDirs)) {
@@ -456,12 +510,14 @@ export function decideApprovalStage(
   // 명령 실행
   if (toolName === 'Bash') {
     const command = typeof input.command === 'string' ? input.command : '';
-    const roots = [...allowedRoots(mission), path.join(config.runsDir, 'drafts', mission.id), path.join(config.rootDir, 'skills')]; // 시안 폴더·스킬 보관함도 읽기 허용
+    const roots = [...allowedRoots(mission), path.join(config.runsDir, 'drafts', mission.id), path.join(config.rootDir, 'skills'), ...TEMP_ROOTS]; // 시안 폴더·스킬 보관함·임시 폴더도 읽기 허용
     const b = classifyBash(command, {
       cwd,
       targets: mission.targets.map((t) => path.resolve(t)),
       readRoots: roots,
       isBlocked: (p) => !!blockedHit(config, p),
+      secretsUnder: (dir) => secretsUnderDir(config, dir),
+      allowChecks: true,
     });
     if (b.decision === 'deny') {
       return { type: 'deny', reason: `명령에 차단 경로: ${b.blockedPaths.join(', ')}`, message: MSG_BLOCKED, blocked: b.blockedPaths[0] ?? '(명령)' };
@@ -475,6 +531,14 @@ export function decideApprovalStage(
     // 이 과제의 시안 폴더 안만 지우거나 쓰는 명령(rm·mv·cp 등)은 승인 없이 허용 (작업 리포가 아닌 라노의 임시 공간)
     if ((kind === 'delete' || kind === 'write' || kind === 'outsideWrite') && actor.draftsDir && b.writePaths.length && b.writePaths.every((p) => within(p, actor.draftsDir!) || within(real(p), actor.draftsDir!)))
       return { type: 'allow', reason: `시안 폴더 안 정리(${kind}): ${b.writePaths.map(displayPath).join(', ')}` };
+    // 명령 결과를 임시 폴더에 담기만 하는 명령(예: npm test > /tmp/x.txt)은 허용. 쓰기 말고 다른 판단 근거가 있으면 승인함으로
+    if (
+      kind === 'outsideWrite' &&
+      b.writePaths.length &&
+      b.writePaths.every((p) => TEMP_ROOTS.some((t) => within(p, t))) &&
+      b.reasons.every((r) => r.startsWith('리다이렉션으로 파일 쓰기') || r.startsWith('확인 명령'))
+    )
+      return { type: 'allow', reason: `임시 폴더에 결과 담기: ${b.writePaths.map(displayPath).join(', ')}` };
     const files = b.writePaths.length ? `\n바뀔 수 있는 파일: ${b.writePaths.map(displayPath).join(', ')}` : '';
     return {
       type: 'ask',

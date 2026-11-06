@@ -21,6 +21,22 @@ async function readOr(file: string, fallback = ''): Promise<string> {
   }
 }
 
+/** 미션 기억 폴더의 코드 지도: 과제가 끝날 때 리더가 덧붙이고, 다음 과제의 리더·팀원이 먼저 본다 */
+export const CODE_MAP_FILE = '코드지도.md';
+/** 과제 시안 폴더의 인수 메모: 팀원이 끝날 때 알게 된 것을 남기고, 다음 팀원이 먼저 읽는다 */
+export const HANDOFF_FILE = '인수메모.md';
+const CODE_MAP_MAX = 16_000; // 프롬프트에 넣을 코드 지도 한도(글자)
+
+export function codeMapPath(mission: MissionConfig): string {
+  return path.join(mission.home, 'memory', CODE_MAP_FILE);
+}
+
+/** 코드 지도 내용(너무 길면 앞부분만). 없으면 빈 문자열 */
+export function codeMapText(content: string): string {
+  const t = content.trim();
+  return t.length > CODE_MAP_MAX ? `${t.slice(0, CODE_MAP_MAX)}\n…(길어서 뒷부분 생략. 다음 갱신 때 줄여 정리하세요)` : t;
+}
+
 /** 프롬프트에 넣을 파일들을 읽는다(읽기만 함). */
 export async function readLeaderContext(
   mission: MissionConfig,
@@ -47,7 +63,9 @@ function body(text: string): string {
 }
 
 export function buildLeaderSystemPrompt(input: LeaderPromptInput): string {
-  const { mission, rules, charter, team, memory, roles } = input;
+  const { mission, rules, charter, team, roles } = input;
+  const memory = input.memory.filter((m) => m.name !== CODE_MAP_FILE);
+  const codeMap = codeMapText(input.memory.find((m) => m.name === CODE_MAP_FILE)?.content ?? '');
   const readOnly = mission.stagePolicy === 'readOnly';
   const roleList = roles.length ? roles.map((r) => `- ${r.name}: ${r.description}`).join('\n') : '- (불러올 수 있는 역할 없음)';
   const reviewers = mission.reviewerRoles.length ? mission.reviewerRoles.join(', ') : '(지정 없음)';
@@ -59,7 +77,7 @@ export function buildLeaderSystemPrompt(input: LeaderPromptInput): string {
     : `- 지금 이 미션은 사용자 승인함과 함께 일한다.
   - 읽기·검색(Read, Grep, Glob)은 작업 대상·참고 폴더 안에서 바로 할 수 있다.
   - 파일 쓰기·수정(Write, Edit)은 작업 대상 폴더 안이라도 **파일 하나마다** 앱이 승인함에 올리고, 사용자가 승인한 뒤에만 실행된다. 참고 폴더는 쓸 수 없다.
-  - 명령(Bash)은 작업 폴더 안의 읽기 명령(git status·diff·log, ls, cat 등)만 바로 실행되고, 커밋·삭제·DB·배포와 그 밖의 명령은 모두 승인함을 거친다.
+  - 명령(Bash)은 작업 폴더 안의 읽기 명령(git status·diff·log, ls, cat, grep, sed -n, find 등)과 확인 명령(타입 검사·린트·시험, 결과를 /tmp 에 담기 포함)은 바로 실행되고, 커밋·삭제·DB·배포·설치와 그 밖의 명령은 모두 승인함을 거친다. .env·차단 파일이 있는 폴더를 통째로 grep -r 하면 승인함으로 가니 --include 로 파일 종류를 좁힌다.
   - 차단 목록(비밀 키·인증 파일, 키체인, 브라우저·메신저·메일 데이터, 모든 .env 계열)은 어떤 도구로도 열 수 없다. 우회하려 하지 않는다.
 - **과제를 받으면 가장 먼저** request_approval(kind: teamPlan) 으로 팀 구성안을 올린다. 승인 전에는 팀원을 부를 수 없다(앱이 막는다).
   - what: 역할별로 맡길 일을 한 줄씩 ("- work-writer: 메뉴 구조 문서 초안 작성")
@@ -101,7 +119,15 @@ ${roleList}
 - **보고 직전의 최종본은 반드시 검수를 통과해야 한다.** 검수 지적을 받아 고쳤으면, 아무리 작은 수정이라도 고친 부분을 검수 역할에게 다시 확인받은 뒤 보고한다. 재검수 없이 보고하지 않는다.
 - **결과물 형태를 지킨다.** 과제가 정한 결과물(파일 종류, 위치, 개수, 이름)을 처음에 목록으로 정리해 팀원 지시에 넣고, 다르게 만들어야 할 이유가 생기면 바꾸기 전에 request_approval(kind: other)로 묻는다.
 - 팀원은 한 번에 하나씩 부르는 것을 기본으로 하고, 서로 독립적인 일만 함께 부른다.
-
+${readOnly ? '' : `
+## 다시 읽기 줄이기 (인수 메모·코드 지도)
+- 팀원은 앞사람이 읽은 것을 모른다. 같은 코드를 또 찾지 않도록 **인수 메모**를 쓴다. 위치는 이 과제의 시안 폴더 안 ${HANDOFF_FILE} 이다(앱 안내에 시안 폴더 경로가 있다. 승인 없이 쓴다).
+  - 팀원을 부를 때 지시 첫 줄에 "먼저 인수 메모(경로)를 읽고, 거기 정리된 파일은 다시 찾지 말 것"을 넣는다. 팀원은 일을 마칠 때 메모 끝에 자기 몫을 덧붙인다(앱이 팀원에게도 알려 준다).
+  - 너도 과제를 나누며 알게 된 것(관련 파일 위치, 사용자의 결정)을 처음에 메모에 적어 두면 첫 팀원부터 빨라진다.
+- **코드 지도**(${codeMapPath(mission)})는 과제를 거듭해도 남는 지도다. 아래 "코드 지도" 내용을 리더·팀원 모두 처음부터 받는다.
+  - 과제를 끝내고 보고하기 직전에, 이번에 알게 된 오래 쓸 사실(폴더 구조, 기능별 핵심 파일, 공통 함수, 빌드·시험 방법, 자주 헷갈린 점)만 인수 메모에서 골라 코드 지도에 덧붙이거나 고친다. 승인 없이 쓴다.
+  - 한 줄에 한 사실, "경로 — 무엇" 형태로, 주제별 제목 아래 정리한다. 과제 진행 상황·결정·수치는 넣지 않는다(그건 다른 미션 기억 파일 몫). 전체 200줄 안으로 유지하고, 틀린 줄은 지운다.
+`}
 ## 보고 형식
 과제가 끝나면 아래 형식으로 쉬운 한국어 보고를 마지막 답으로 남긴다. 과제가 작아도 여섯 항목 제목을 모두 쓴다(해당 없으면 "없음"). 설명 수준은 아래 사용자 정보의 개발 경험에 맞추고, 정보가 없으면 비개발자도 알아듣게 코드나 명령어 대신 기능·화면·문서 기준으로 설명한다. 문장은 끊지 않고 잇고, 긍정형으로 말한다.
 1. 한 일: 누구에게 무엇을 맡겼고 무엇을 확인했는지
@@ -119,6 +145,9 @@ ${body(charter)}
 
 ## 팀 편성
 ${body(team)}
+
+## 코드 지도 (${CODE_MAP_FILE})
+${codeMap || '(아직 없음. 이번 과제가 끝날 때 처음 만든다)'}
 
 ## 미션 기억
 ${memory.map((m) => `### ${m.name}\n${body(m.content)}`).join('\n\n') || '(없음)'}

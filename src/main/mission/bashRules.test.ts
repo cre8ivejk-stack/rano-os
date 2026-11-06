@@ -110,3 +110,68 @@ test('sort -o 는 쓰기라서 승인', () => {
 test('md5 로도 비밀 파일은 차단', () => {
   assert.equal(classifyBash("md5 -q .env", ctx).decision, 'deny');
 });
+
+// ---- 2026-11-06 추가: 승인이 너무 잦은 읽기·확인 명령 줄이기 ----
+const SECRET_DIR = path.join(TARGET, 'secret-zone');
+const ctx2: BashContext = {
+  ...ctx,
+  secretsUnder: (dir) =>
+    dir === TARGET ? [path.join(TARGET, '.env'), path.join(SECRET_DIR, 'prod.secret')] : dir.startsWith(SECRET_DIR) ? [path.join(SECRET_DIR, 'prod.secret')] : [],
+  allowChecks: true,
+};
+export const CASES2: [string, string][] = [
+  // 읽기 명령은 바로 허용
+  ['grep -rn "addMonths" src --include=*.ts | head -20', 'allow'],
+  ['grep -n "export function x" -A8 src/lib/a.ts; head -12 src/b.ts', 'allow'],
+  ['sed -n 1,80p docs/README.md', 'allow'],
+  ['sed -n 30,60p src/a.tsx; grep -n "기준월" docs/x.md | head -30', 'allow'],
+  ["sed -e 's/<style>.*<\\/style>//' docs/a.html | head -c 9000", 'allow'],
+  ['find src -name "*.ts" | sort', 'allow'],
+  ['ls -d node_modules 2>&1; ls node_modules 2>/dev/null | wc -l', 'allow'],
+  ['which tsx npx node', 'allow'],
+  ['node -v && npm -v', 'allow'],
+  ['diff src/a.ts src/b.ts', 'allow'],
+  ['for f in src/a.ts src/b.ts; do wc -l $f; done', 'allow'],
+  ['grep -c "error TS" /tmp/tc.txt', 'command'], // ctx2 읽기 폴더에 /tmp 없음(앱에서는 임시 폴더 허용)
+  // 확인 명령(타입 검사·린트·시험)
+  ['npm run typecheck 2>&1 | tail -40; echo "EXIT=${PIPESTATUS[0]}"', 'allow'],
+  ['npm test', 'allow'],
+  ['npx tsx --test src/lib/a.test.ts 2>&1 | tail -40', 'allow'],
+  ['npx eslint --max-warnings=0 src/lib', 'allow'],
+  ['npx tsc --noEmit', 'allow'],
+  ['npx vitest run', 'allow'],
+  // 여전히 승인
+  ['npx eslint --fix src', 'command'],
+  ['npx tsc', 'command'],
+  ['npm run lint:fix', 'command'],
+  ['npm ci', 'command'],
+  ['npm run test:deploy', 'deploy'],
+  ['grep -rn KEY .', 'command'], // 리포 전체에 비밀 파일이 있음
+  ['grep -rn KEY secret-zone/sub', 'command'],
+  ['cat secret-zone/*', 'command'],
+  ['sed -n "s/a/b/w out.txt" docs/a.md', 'command'],
+  ['sed "1e rm -rf x" docs/a.md', 'command'],
+  ['find . -name "*.ts" -exec cat {} +', 'command'],
+  ['find / -name x', 'command'],
+  ['grep -n x /etc/hosts', 'command'],
+  ['cd /tmp && grep x a.txt', 'command'],
+  ['npm run typecheck > /tmp/tc.txt 2>&1', 'outsideWrite'], // 앱에서는 임시 폴더라 허용
+  ['echo x>&2', 'allow'],
+  ['grep -rln "orderTotal" --include=*.ts --include=*.md -l . | head -30', 'allow'],
+  ['grep -rn KEY --include=*.ts --include=prod.* .', 'command'],
+  ['grep -rn KEY --exclude=.env* --exclude=prod.secret .', 'allow'],
+  ['find docs -type f -exec md5 -q {} \\; | sort | md5 -q', 'allow'],
+  ['find . -type f -exec cat {} +', 'command'],
+  ['ls eslint.config.* .eslintrc* 2>/dev/null', 'allow'],
+  ['cat *.md', 'command'],
+  ['git ls-files --others --exclude-standard', 'allow'],
+];
+for (const [cmd, want] of CASES2) {
+  test(`v2 ${want.padEnd(12)} ${cmd}`, () => {
+    const r = classifyBash(cmd, ctx2);
+    assert.equal(label(r), want, `reasons: ${r.reasons.join('; ')}`);
+  });
+}
+test('확인 명령은 allowChecks 없이는 승인', () => {
+  assert.equal(label(classifyBash('npm run typecheck', ctx)), 'command');
+});
