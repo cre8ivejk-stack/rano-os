@@ -15,7 +15,7 @@ import type {
   PreToolUseHookInput,
 } from '@anthropic-ai/claude-agent-sdk';
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import {
   LEADER_MCP_NAME,
@@ -30,6 +30,7 @@ import {
 import { isBlockedPath } from '../engine/permissions.js';
 import { classifyBash } from './bashRules.js';
 import { CODE_MAP_FILE } from './leaderPrompt.js';
+import { fileKey } from '../approvals/approvalQueue.js';
 import { isConnectorReadTool } from '../connectors/readTools.js';
 
 export const SUBAGENT_TOOL = 'Agent'; // sdk.d.ts BUILTIN_TOOL_NAMES 기준 서브에이전트 호출 도구 이름
@@ -117,17 +118,19 @@ function staticPrefix(pattern: string): string {
 
 /** 차단 목록 검사(원래 경로와 링크를 푼 경로 모두). 걸린 경로를 돌려준다. */
 // 임시 폴더: 명령 결과를 잠깐 담아 두는 곳. 쓰기·읽기 모두 승인 없이 허용
-const TEMP_ROOTS = [...new Set(['/tmp', '/private/tmp', tmpdir(), real(tmpdir())])];
+// 맥의 사용자별 임시 폴더(/var/folders/…)는 다른 앱 파일이 많아 넣지 않는다
+const TEMP_ROOTS = ['/tmp', '/private/tmp'];
 
 // 폴더 아래 비밀·차단 파일 유무 (통째 검색을 바로 허용해도 되는지). 2분 동안 기억한다
-const SECRET_SCAN_TTL = 120_000;
+const SECRET_SCAN_TTL = 30_000;
 const SECRET_SCAN_LIMIT = 30_000;
-const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', 'out', '.turbo', '.cache', 'coverage', '.venv', 'venv', '__pycache__']);
+// 너무 커서 다 보지 않는 폴더. 안에 비밀 파일이 있을 수 있다고 보고 '.env' 가 있는 것처럼 기록한다
+const SKIP_DIRS = new Set(['node_modules', '.venv', 'venv']);
 const secretScanCache = new Map<string, { at: number; hits: string[] }>();
 
 /** 폴더 아래 차단·비밀 파일 목록. 너무 커서 다 못 보면 ['*'] */
 export function secretsUnderDir(config: RanoConfig, absDir: string): string[] {
-  const key = absDir;
+  const key = `${absDir}\n${config.blocked.join('\n')}`;
   const cached = secretScanCache.get(key);
   if (cached && Date.now() - cached.at < SECRET_SCAN_TTL) return cached.hits;
   let seen = 0;
@@ -148,11 +151,19 @@ export function secretsUnderDir(config: RanoConfig, absDir: string): string[] {
         return;
       }
       const full = path.join(dir, e.name);
-      if (/^\.env(\.|$)/.test(e.name) || blockedHit(config, full)) {
+      if (/^\.env(\.|$)/.test(e.name) || /^\.git-credentials$|^\.netrc$|^\.npmrc$|^\.pypirc$/.test(e.name) || isBlockedPath(config, full)) {
         hits.push(full);
         continue;
       }
-      if (e.isDirectory() && !SKIP_DIRS.has(e.name)) walk(full, depth + 1);
+      if (e.isDirectory() && e.name === '.git') {
+        hits.push(path.join(full, 'config')); // 원격 주소에 토큰이 들어 있을 수 있다
+        continue;
+      }
+      if (e.isDirectory() && SKIP_DIRS.has(e.name)) {
+        hits.push(path.join(full, '.env'));
+        continue;
+      }
+      if (e.isDirectory()) walk(full, depth + 1);
     }
   };
   try {
@@ -277,6 +288,7 @@ export interface ApprovalAsk {
   detail?: string;
   filePath?: string;
   change?: FileChange;
+  bash?: boolean; // Bash 명령으로 생긴 요청
 }
 
 export interface StageDecision {
@@ -529,14 +541,14 @@ export function decideApprovalStage(
       return { type: 'deny', reason: '명령으로 참고 폴더 쓰기', message: MSG_REFS };
     }
     // 이 과제의 시안 폴더 안만 지우거나 쓰는 명령(rm·mv·cp 등)은 승인 없이 허용 (작업 리포가 아닌 라노의 임시 공간)
-    if ((kind === 'delete' || kind === 'write' || kind === 'outsideWrite') && actor.draftsDir && b.writePaths.length && b.writePaths.every((p) => within(p, actor.draftsDir!) || within(real(p), actor.draftsDir!)))
+    if ((kind === 'delete' || kind === 'write' || kind === 'outsideWrite') && b.fileOpsOnly && actor.draftsDir && b.writePaths.length && b.writePaths.every((p) => within(p, actor.draftsDir!) || within(real(p), actor.draftsDir!)))
       return { type: 'allow', reason: `시안 폴더 안 정리(${kind}): ${b.writePaths.map(displayPath).join(', ')}` };
     // 명령 결과를 임시 폴더에 담기만 하는 명령(예: npm test > /tmp/x.txt)은 허용. 쓰기 말고 다른 판단 근거가 있으면 승인함으로
     if (
       kind === 'outsideWrite' &&
       b.writePaths.length &&
       b.writePaths.every((p) => TEMP_ROOTS.some((t) => within(p, t))) &&
-      b.reasons.every((r) => r.startsWith('리다이렉션으로 파일 쓰기') || r.startsWith('확인 명령'))
+      b.fileOpsOnly
     )
       return { type: 'allow', reason: `임시 폴더에 결과 담기: ${b.writePaths.map(displayPath).join(', ')}` };
     const files = b.writePaths.length ? `\n바뀔 수 있는 파일: ${b.writePaths.map(displayPath).join(', ')}` : '';
@@ -549,6 +561,7 @@ export function decideApprovalStage(
         what: BASH_WHAT[kind](mission),
         detail: `명령: ${redactCommand(command)}\n실행 위치: ${displayPath(cwd)}${files}\n판단 근거: ${b.reasons.join('; ')}`,
         filePath: b.writePaths.length === 1 ? b.writePaths[0] : undefined,
+        bash: true,
       },
     };
   }
@@ -818,8 +831,9 @@ export class LeaderGuard {
   ): Promise<PermissionResult> {
     const { approvals, mission } = this.deps;
     const taskId = this.task?.id;
-    if ((ask.kind === 'write' || ask.kind === 'outsideWrite') && ask.filePath && taskId && approvals?.isFileGranted(taskId, ask.filePath)) {
-      this.record(whoInfo.logName, toolName, 'allow', `이번 과제 동안 다시 묻지 않기로 승인된 파일: ${ask.filePath}`);
+    const scope = rememberScope(ask, toolName, whoInfo);
+    if (scope && taskId && approvals?.isGranted(taskId, scope.key)) {
+      this.record(whoInfo.logName, toolName, 'allow', `이번 과제 동안 다시 묻지 않기로 승인된 범위: ${scope.key}`);
       return { behavior: 'allow', updatedInput: input };
     }
     if (!approvals) {
@@ -843,6 +857,7 @@ export class LeaderGuard {
           detail: ask.detail,
           filePath: ask.filePath,
           ...(ask.change ? { change: ask.change } : {}),
+          ...(scope ? { rememberKey: scope.key, rememberLabel: scope.label } : {}),
         },
         signal,
       );
@@ -960,6 +975,27 @@ function clip(text: string, max: number): string {
 }
 
 // ---- 2단계 호환 함수 (기존 시험·호출용) ----
+
+/**
+ * "이번 과제 동안 다시 묻지 않기" 범위.
+ * - 파일 쓰기(Write·Edit 또는 파일 하나를 바꾸는 명령): 그 파일
+ * - 그 밖의 명령(kind command): 그 팀원의 명령 실행 전체. 커밋·삭제·DB·배포·쓰기로 분류된 명령은 해당 없음
+ * - 외부 연결 쓰기(kind external): 같은 도구
+ * 결정·팀 구성·묶음·수치 등 나머지는 매번 묻는다.
+ */
+export function rememberScope(ask: ApprovalAsk, toolName: string, who: { label: string; logName: string }): { key: string; label: string } | null {
+  if ((ask.kind === 'write' || ask.kind === 'outsideWrite') && ask.filePath) {
+    return { key: fileKey(ask.filePath), label: '이번 과제 동안 이 파일은 다시 묻지 않기' };
+  }
+  if (ask.kind === 'command' && ask.bash) {
+    return { key: `bash:${who.logName}`, label: `이번 과제 동안 ${who.label}의 명령은 다시 묻지 않기` };
+  }
+  if (ask.kind === 'external' && toolName.startsWith('mcp__')) {
+    const tool = toolName.split('__').slice(2).join('__');
+    return { key: `ext:${toolName}`, label: `이번 과제 동안 이 연결의 ${tool} 도구는 다시 묻지 않기` };
+  }
+  return null;
+}
 
 /** canUseTool 형태의 문지기. stagePolicy 에 맞춰 판단한다. 승인 대기가 필요하면 deps.approvals 를 쓴다. */
 export function createLeaderGate(

@@ -297,6 +297,8 @@ interface ApprovalRequest {
   status: 'pending' | 'approved' | 'rejected' | 'revise' | 'expired';
   decisionNote?: string;
   rememberFile?: boolean;
+  rememberKey?: string;
+  rememberLabel?: string;
   createdAt: string;
   decidedAt?: string;
   decisionItems?: DecisionItem[];

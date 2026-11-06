@@ -615,7 +615,9 @@ export interface ApprovalRequest {
   picked?: string[]; // 묶음 승인에서 사용자가 반영하기로 고른 파일(rel)
   status: 'pending' | 'approved' | 'rejected' | 'revise' | 'expired';
   decisionNote?: string; // 반려·수정 요청 때 사용자가 남긴 말
-  rememberFile?: boolean; // 승인하면서 "이번 과제 동안 이 파일은 다시 묻지 않기"를 골랐는지
+  rememberFile?: boolean; // 승인하면서 "이번 과제 동안 다시 묻지 않기"를 골랐는지
+  rememberKey?: string; // 다시 묻지 않을 범위(file:경로 · bash:역할 · ext:도구). 있으면 승인함에 체크 칸이 나온다
+  rememberLabel?: string; // 체크 칸 문구
   createdAt: string;
   decidedAt?: string;
   // ---- 결정 필요(kind: decision) 카드: 항목마다 안을 고른다 ----
@@ -640,7 +642,7 @@ export interface DecisionItem {
 export interface ApprovalDecision {
   decision: 'approve' | 'reject' | 'revise';
   note?: string; // 반려·수정 요청 사유
-  rememberFile?: boolean; // write/outsideWrite 승인 때만 의미
+  rememberFile?: boolean; // rememberKey 가 있는 요청을 승인할 때만 의미(이번 과제 동안 다시 묻지 않기)
   choices?: Record<string, string>; // decision 카드 승인 때 고른 안 (항목 id → 안 key). 없으면 권장안대로
   picked?: string[]; // 묶음 승인 때 고른 파일(rel). 없으면 모두
 }
@@ -660,6 +662,7 @@ export interface ApprovalQueueApi {
   list(): ApprovalRequest[]; // 대기 먼저, 그다음 최신순 (최근 100건)
   pendingCount(missionId?: string): number;
   isFileGranted(taskId: string, filePath: string): boolean; // rememberFile 로 승인된 파일인지 (같은 과제 안에서만)
+  isGranted(taskId: string, key: string): boolean; // rememberKey 범위가 이번 과제 동안 승인됐는지
 }
 
 export interface TaskOutput {

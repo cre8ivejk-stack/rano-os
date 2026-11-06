@@ -316,12 +316,14 @@ export class ApprovalsView {
     for (const b of [approveBtn, reviseBtn, rejectBtn]) b.type = 'button';
 
     let remember: HTMLInputElement | null = null;
-    if (a.kind === 'write' || a.kind === 'outsideWrite') {
+    const rememberText = a.rememberLabel ?? (a.rememberKey || (a.filePath && (a.kind === 'write' || a.kind === 'outsideWrite')) ? '이번 과제 동안 이 파일은 다시 묻지 않기' : '');
+    if (rememberText && a.taskId) {
       const label = el('label', 'appr-remember');
       remember = el('input');
       remember.type = 'checkbox';
       label.appendChild(remember);
-      label.appendChild(document.createTextNode('이번 과제 동안 이 파일은 다시 묻지 않기'));
+      label.appendChild(document.createTextNode(rememberText));
+      if (a.rememberKey?.startsWith('bash:')) label.title = '커밋·삭제·DB·배포·파일 쓰기는 이 칸과 상관없이 계속 물어요';
       actions.append(approveBtn, label, reviseBtn, rejectBtn);
     } else {
       actions.append(approveBtn, reviseBtn, rejectBtn);
@@ -444,7 +446,7 @@ export class ApprovalsView {
     result.appendChild(el('span', `badge result-${a.status}`, STATUS_LABEL[a.status] ?? a.status));
     const bits: string[] = [];
     if (a.decidedAt) bits.push(`${formatWhen(a.decidedAt)} 처리`);
-    if (a.status === 'approved' && a.rememberFile) bits.push('이번 과제 동안 이 파일은 다시 묻지 않음');
+    if (a.status === 'approved' && a.rememberFile) bits.push(a.rememberKey && !a.rememberKey.startsWith('file:') ? '이번 과제 동안 다시 묻지 않음' : '이번 과제 동안 이 파일은 다시 묻지 않음');
     if (a.status === 'expired') bits.push('앱이 다시 시작되어 이 요청은 끝났어요');
     if (bits.length) result.appendChild(el('span', 'appr-result-meta', bits.join(' · ')));
     card.appendChild(result);

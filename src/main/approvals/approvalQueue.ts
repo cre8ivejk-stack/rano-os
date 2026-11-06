@@ -8,6 +8,12 @@ import type { ApprovalDecision, ApprovalQueueApi, ApprovalRequest, Emit, RanoCon
 const KEEP = 200; // 파일에 보관
 const SHOW = 100; // list() 로 보여 줌
 
+
+/** 파일 승인 범위 키 */
+export function fileKey(filePath: string): string {
+  return `file:${path.resolve(filePath)}`;
+}
+
 export interface ApprovalQueueDeps {
   config: RanoConfig;
   emit: Emit;
@@ -32,7 +38,7 @@ function short(text: string, max: number): string {
 export class ApprovalQueue implements ApprovalQueueApi {
   private items: ApprovalRequest[] = []; // 최신순
   private readonly waiters = new Map<string, Waiter>();
-  private readonly grants = new Map<string, Set<string>>(); // taskId → 다시 묻지 않을 파일(절대 경로). 메모리에만 둔다
+  private readonly grants = new Map<string, Set<string>>(); // taskId → 다시 묻지 않을 범위(file:경로 · bash:역할 · ext:도구). 메모리에만 둔다
   private readonly file: string;
   private readonly eventsFile: string;
 
@@ -113,7 +119,8 @@ export class ApprovalQueue implements ApprovalQueueApi {
     }
 
     const note = typeof d.note === 'string' && d.note.trim() ? d.note.trim() : undefined;
-    const remember = d.decision === 'approve' && !!d.rememberFile && !!item.filePath && !!item.taskId;
+    const grantKey = item.rememberKey ?? (item.filePath && (item.kind === 'write' || item.kind === 'outsideWrite') ? fileKey(item.filePath) : undefined);
+    const remember = d.decision === 'approve' && !!d.rememberFile && !!grantKey && !!item.taskId;
     // 결정 카드: 항목마다 고른 안. 없거나 잘못된 값이면 권장안으로 채운다(승인 때만)
     let choices: Record<string, string> | undefined;
     if (d.decision === 'approve' && item.decisionItems?.length) {
@@ -134,7 +141,7 @@ export class ApprovalQueue implements ApprovalQueueApi {
     if (remember) {
       let set = this.grants.get(item.taskId!);
       if (!set) this.grants.set(item.taskId!, (set = new Set()));
-      set.add(path.resolve(item.filePath!));
+      set.add(grantKey!);
     }
 
     const w = this.waiters.get(id);
@@ -159,7 +166,12 @@ export class ApprovalQueue implements ApprovalQueueApi {
 
   isFileGranted(taskId: string, filePath: string): boolean {
     if (!taskId || !filePath) return false;
-    return this.grants.get(taskId)?.has(path.resolve(filePath)) ?? false;
+    return this.isGranted(taskId, fileKey(filePath));
+  }
+
+  isGranted(taskId: string, key: string): boolean {
+    if (!taskId || !key) return false;
+    return this.grants.get(taskId)?.has(key) ?? false;
   }
 
   // ---- 내부 ----
@@ -211,6 +223,7 @@ export class ApprovalQueue implements ApprovalQueueApi {
         filePath: r.filePath,
         status: r.status,
         rememberFile: r.rememberFile,
+        rememberKey: r.rememberKey,
       };
       appendFileSync(this.eventsFile, JSON.stringify(line) + '\n', 'utf-8');
     } catch (e) {
