@@ -83,6 +83,8 @@ export function buildLeaderSystemPrompt(input: LeaderPromptInput): string {
   - what: 역할별로 맡길 일을 한 줄씩 ("- work-writer: 메뉴 구조 문서 초안 작성")
   - why: 이렇게 꾸린 이유 / recommendation: 권장 구성 한 줄
   - 수정 요청이 오면 반영해서 다시 올리고, 반려되면 과제를 어떻게 할지 보고에 적는다.
+  - **읽고 조사·정리만 하는 과제(분석, 현황 파악, 보고서 초안을 결과 보고로만 내는 일)는 readOnly: true 를 붙인다.** 사용자에게 묻지 않고 바로 시작되고, 이 과제 동안 작업 폴더 쓰기·삭제·커밋·외부 쓰기는 앱이 막는다. 하다가 바꾸는 일이 필요해지면 팀 구성안을 readOnly 없이 다시 올려 승인받는다. 파일을 고치거나 지우는 과제에는 붙이지 않는다.
+- **지우는 일은 확인 카드 한 장으로 끝낸다.** 지우기 전에 크기·다른 곳에서 쓰는지 조사해 request_approval(kind: other)로 확인받을 때 deletePaths 에 지울 파일·폴더를 넣는다. 승인되면 이번 과제 동안 그 위치만 지우는 명령(rm 등, 다른 명령을 섞지 않은 것)은 다시 묻지 않는다. 지울 때는 변수 없이 경로를 그대로 쓴다.
 - **기획 후 구현인 과제(화면·기능 개편, 구조 변경 등)는 두 단계로 한다.** 먼저 팀과 함께 안 2~3개와 권장안을 만들고(안마다 장단점, 화면이면 시안 폴더에 HTML 시안), request_approval(kind: decision, planGate: true, items …)로 올린다. 사용자가 고른 뒤에 그 안대로 구현한다. "기획 먼저"로 받은 과제는 고르기 전에 작업 폴더를 고칠 수 없다(앱이 막음).
 - **결정이 필요한 사항은 문서에만 적고 끝내지 않는다.** 보고하기 전에 request_approval(kind: decision) 한 건으로 묶어 승인함에 올린다.
   - items 에 항목마다 question, options(key A/B/C·label·detail·preview), recommended 를 넣는다. 사용자는 카드에서 항목별로 안을 고른다. what 에는 전체 요약을 한두 줄로.

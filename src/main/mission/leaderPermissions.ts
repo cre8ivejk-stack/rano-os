@@ -51,6 +51,8 @@ const MSG_TEAM = '먼저 request_approval 도구로 팀 구성안(누구에게 �
 const MSG_PLAN = '이 과제는 기획 먼저예요. 안 2~3개와 권장안을 request_approval(kind: decision, planGate: true)로 올려 사용자가 고른 뒤에 작업 폴더를 고칠 수 있어요. 시안은 시안 폴더에 만들어 주세요.';
 const MSG_REFS = '참고 폴더는 읽기만 할 수 있어요. 바꿀 내용은 보고에 적어 주세요.';
 const MSG_UNKNOWN = '이 도구는 이 미션에서 쓸 수 없어요.';
+const MSG_READ_TASK =
+  '이 과제는 "읽고 정리만" 하기로 하고 시작했어요. 작업 폴더를 바꾸거나 지우거나 커밋하는 일은 할 수 없어요. 꼭 필요하면 리포 리더가 팀 구성안을 readOnly 없이 다시 올려 승인받아야 해요.';
 
 export interface LeaderDecision {
   allow: boolean;
@@ -289,6 +291,8 @@ export interface ApprovalAsk {
   filePath?: string;
   change?: FileChange;
   bash?: boolean; // Bash 명령으로 생긴 요청
+  paths?: string[]; // Bash 명령이 바꾸거나 지울 수 있는 경로(절대 경로)
+  fileOpsOnly?: boolean; // Bash 명령이 파일 일(쓰기·지우기)만 하는지
 }
 
 export interface StageDecision {
@@ -562,6 +566,8 @@ export function decideApprovalStage(
         detail: `명령: ${redactCommand(command)}\n실행 위치: ${displayPath(cwd)}${files}\n판단 근거: ${b.reasons.join('; ')}`,
         filePath: b.writePaths.length === 1 ? b.writePaths[0] : undefined,
         bash: true,
+        paths: b.writePaths,
+        fileOpsOnly: !!b.fileOpsOnly,
       },
     };
   }
@@ -659,7 +665,9 @@ export class LeaderGuard {
   private readonly memberTask = new Map<string, string>(); // 역할 → 맡은 일 한 줄
   private readonly teamApprovedTasks = new Set<string>();
   private readonly planDecidedTasks = new Set<string>();
-  private task: { id: string; title: string; planFirst?: boolean } | null = null;
+  private readonly readOnlyTasks = new Set<string>(); // 읽고 정리만 하기로 한 과제(팀 구성안 자동 승인)
+  private readonly deleteGrants = new Map<string, string[]>(); // 과제 → 리더 확인 승인으로 지워도 되는 위치(실제 경로)
+  private task:{ id: string; title: string; planFirst?: boolean } | null = null;
 
   private readonly deps: LeaderGuardDeps;
 
@@ -719,6 +727,53 @@ export class LeaderGuard {
   isTeamApproved(taskId?: string): boolean {
     const id = taskId ?? this.task?.id;
     return !!id && this.teamApprovedTasks.has(id);
+  }
+
+  /** 읽고 정리만 하는 과제로 표시(켜기) 또는 해제 */
+  markReadOnly(taskId: string, on: boolean) {
+    if (on) this.readOnlyTasks.add(taskId);
+    else this.readOnlyTasks.delete(taskId);
+  }
+
+  isReadOnlyTask(taskId?: string): boolean {
+    const id = taskId ?? this.task?.id;
+    return !!id && this.readOnlyTasks.has(id);
+  }
+
+  /** 리더가 미리 확인받을 삭제 위치가 괜찮은지. 문제가 있으면 쉬운 말로. 작업 폴더 안의 하위 파일·폴더만 된다(작업 폴더 자체는 안 됨) */
+  deleteTargetProblem(abs: string): string | null {
+    const { config, mission } = this.deps;
+    if (blockedHit(config, abs)) return '차단 목록에 걸린 위치예요';
+    const candidates = [...new Set([abs, real(abs)])];
+    if (candidates.some((c) => inAny(c, mission.readonlyRefs))) return '참고(읽기 전용) 폴더예요';
+    if (!candidates.every((c) => inAny(c, mission.targets))) return '작업 폴더 밖이에요';
+    const roots = mission.targets.flatMap((t) => {
+      const abs2 = path.resolve(expandHome(t));
+      return [abs2, real(abs2)];
+    });
+    if (candidates.some((c) => roots.includes(c))) return '작업 폴더 전체는 미리 승인할 수 없어요';
+    return null;
+  }
+
+  /** 리더의 확인 승인으로 이번 과제 동안 이 위치들을 지우는 명령은 다시 묻지 않는다 */
+  grantDeletes(taskId: string, absPaths: string[]) {
+    const list = this.deleteGrants.get(taskId) ?? [];
+    for (const p of absPaths) list.push(path.resolve(p), real(p));
+    this.deleteGrants.set(taskId, [...new Set(list)]);
+  }
+
+  /** 삭제 명령이 지울 경로가 모두 미리 승인된 위치 안이면 그 위치들을, 아니면 null */
+  private deleteGranted(paths: string[]): string[] | null {
+    const id = this.task?.id;
+    const granted = id ? this.deleteGrants.get(id) : undefined;
+    if (!granted?.length || !paths.length) return null;
+    const hits = new Set<string>();
+    for (const p of paths) {
+      const g = granted.find((x) => within(p, x) || within(real(p), x));
+      if (!g) return null;
+      hits.add(g);
+    }
+    return [...hits];
   }
 
   /** 에이전트가 한 말을 적어 둔다(승인함의 "왜"로 쓰임). key: 'leader' 또는 agentID */
@@ -798,6 +853,7 @@ export class LeaderGuard {
     if (ext) {
       if (ext.type === 'ask' && (mission.stagePolicy === 'readOnly' || this.planBlocked()))
         return { type: 'deny', reason: `${mission.stagePolicy === 'readOnly' ? '읽기 전용 미션' : '기획 결정 전'} 외부 쓰기: ${toolName}`, message: mission.stagePolicy === 'readOnly' ? '이 미션은 읽기만 해요. 외부 서비스에 쓰는 일은 보고에 적어 주세요.' : MSG_PLAN };
+      if (ext.type === 'ask' && this.isReadOnlyTask()) return { type: 'deny', reason: `읽기만 하는 과제에서 외부 쓰기: ${toolName}`, message: MSG_READ_TASK };
       return ext;
     }
     if (mission.stagePolicy === 'readOnly') {
@@ -816,6 +872,15 @@ export class LeaderGuard {
     // 기획 결정 전에는 작업 폴더를 바꾸는 명령(커밋·삭제·쓰기 명령 등)도 승인함에 올리지 않고 막는다
     if (d.type === 'ask' && this.planBlocked() && d.ask?.kind !== 'decision' && d.ask?.kind !== 'teamPlan') {
       return { type: 'deny', reason: `기획 결정 전 ${d.ask?.kind ?? '변경'}`, message: MSG_PLAN };
+    }
+    // 읽고 정리만 하기로 한 과제(팀 구성안 자동 승인): 바꾸는 일은 승인함에 올리지 않고 막는다. 판단이 필요한 일반 명령만 평소처럼 승인함으로
+    if (d.type === 'ask' && this.isReadOnlyTask() && d.ask?.kind !== 'command') {
+      return { type: 'deny', reason: `읽기만 하는 과제에서 ${d.ask?.kind ?? '변경'}`, message: MSG_READ_TASK };
+    }
+    // 리더가 확인 카드(deletePaths)로 미리 승인받은 위치만 지우는 명령은 다시 묻지 않는다
+    if (d.type === 'ask' && d.ask?.kind === 'delete' && d.ask.bash && d.ask.fileOpsOnly && d.ask.paths?.length) {
+      const g = this.deleteGranted(d.ask.paths);
+      if (g) return { type: 'allow', reason: `리더 확인 승인으로 미리 허락된 삭제: ${g.map(displayPath).join(', ')}` };
     }
     return d;
   }

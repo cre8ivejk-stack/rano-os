@@ -79,6 +79,8 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
       '사용자 승인이 필요한 결정을 앱의 승인함에 올리고, 사용자가 결정할 때까지 기다립니다.',
       '언제 쓰나:',
       '- teamPlan: 과제를 받으면 팀원을 부르기 전에 반드시 먼저. what 에 역할별로 맡길 일, why 에 이유, recommendation 에 권장 구성.',
+      '  읽고 조사·정리만 하는 과제면 readOnly: true 를 붙인다(묻지 않고 바로 시작, 이 과제 동안 바꾸는 일은 앱이 막음).',
+      '- 지우기 확인: kind other 로 올리고 deletePaths 에 지울 위치를 넣으면, 승인 뒤 그 위치만 지우는 명령은 다시 묻지 않는다.',
       '- numbers: 수치 레지스트리의 상태를 바꿀 때 / reverseDecision: 기존 결정(ADR 등)을 뒤집을 때',
       '- estimate: 확인되지 않은 추정값을 쓸 때 / external: 다른 사람 공간(Confluence 등)에 게시·수정하거나 메일·제출할 때',
       '- decision: 사용자가 골라야 할 일. items 에 항목마다 안 2~3개(key A/B/C, label 한 줄, detail 장단점)와 recommended(권장안 key)를 넣으면 사용자가 카드에서 안을 고른다.',
@@ -117,11 +119,57 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
         .optional()
         .describe('decision 일 때 항목별 안'),
       planGate: z.boolean().optional().describe('기획 단계 결정이면 true (승인되면 구현을 시작할 수 있음)'),
+      readOnly: z
+        .boolean()
+        .optional()
+        .describe('teamPlan 일 때만: 이번 과제가 읽고 조사·정리만 하면 true. 사용자에게 묻지 않고 바로 시작하고, 이 과제 동안 작업 폴더 쓰기·삭제·커밋·외부 쓰기는 앱이 막는다'),
+      deletePaths: z
+        .array(z.string())
+        .max(20)
+        .optional()
+        .describe('지우기를 확인받을 때: 지울 파일·폴더(작업 폴더 기준 경로 또는 절대 경로). 승인되면 이 과제 동안 이 위치만 지우는 명령은 다시 묻지 않는다'),
     },
     async (args, extra) => {
       const task = guard.currentTask();
       if (!deps.approvals) return text('지금은 승인함이 연결되지 않았어요. 보고에 "승인이 필요한 일"로 적어 주세요.', true);
       if (!task) return text('진행 중인 과제가 없어 승인을 올릴 수 없어요.', true);
+      // 읽고 정리만 하는 과제의 팀 구성: 묻지 않고 바로 시작한다(바꾸는 일은 이 과제 동안 앱이 막음)
+      if (args.kind === 'teamPlan' && args.readOnly) {
+        guard.markTeamApproved(task.id);
+        guard.markReadOnly(task.id, true);
+        let teamNote = '';
+        try {
+          await updateTeamFile(mission.home, { title: `${args.title} (읽기만, 자동 승인)`, what: args.what, taskTitle: task.title });
+        } catch {
+          teamNote = ' (팀 편성 문서는 갱신하지 못했어요)';
+        }
+        try {
+          deps.tracker?.activity(guard.leaderLabel, `팀 구성(읽기만) 바로 시작: ${args.title}`);
+        } catch {
+          // 무시
+        }
+        deps.emitActivity?.(`${guard.leaderLabel}: 읽고 정리만 하는 과제라 팀 구성은 묻지 않고 바로 시작해요 (${args.title})`);
+        return text(
+          `읽고 정리만 하는 과제라 팀 구성안을 사용자에게 묻지 않고 바로 시작해요.${teamNote} 승인된 역할을 불러 일을 맡기세요. 이 과제 동안 작업 폴더 쓰기·삭제·커밋·외부 쓰기는 막혀요. 바꾸는 일이 필요해지면 팀 구성안을 readOnly 없이 다시 올리세요.`,
+        );
+      }
+      // 지우기 확인: 지울 위치를 미리 검사해 카드에 보여 주고, 승인되면 그 위치를 지우는 명령은 다시 묻지 않는다
+      const deleteAbs: string[] = [];
+      if (args.deletePaths?.length) {
+        const root = mission.targets[0] ?? mission.home;
+        const problems: string[] = [];
+        for (const raw of args.deletePaths) {
+          const abs = path.resolve(root, raw.replace(/^~(?=\/|$)/, process.env.HOME ?? '~'));
+          const bad = guard.deleteTargetProblem(abs);
+          if (bad) problems.push(`${raw}: ${bad}`);
+          else deleteAbs.push(abs);
+        }
+        if (problems.length) return text(`지울 위치에 문제가 있어 올리지 않았어요:\n- ${problems.join('\n- ')}`, true);
+      }
+      const home = process.env.HOME ?? '';
+      const deleteNote = deleteAbs.length
+        ? `${args.detail ? '\n\n' : ''}승인하면 이번 과제 동안 아래 위치를 지우는 명령은 다시 묻지 않아요:\n${deleteAbs.map((p) => `- ${home && p.startsWith(home + '/') ? '~' + p.slice(home.length) : p}`).join('\n')}`
+        : '';
       const extraSignal = (extra as { signal?: AbortSignal } | undefined)?.signal;
       const signal = extraSignal && deps.signal ? AbortSignal.any([extraSignal, deps.signal]) : extraSignal ?? deps.signal;
       try {
@@ -163,7 +211,7 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
             what: args.what,
             why: args.why,
             recommendation: args.recommendation,
-            detail: args.detail,
+            detail: (args.detail ?? '') + deleteNote || undefined,
             ...(decisionItems ? { decisionItems } : {}),
             ...(args.kind === 'decision' && args.planGate ? { planGate: true } : {}),
           },
@@ -179,6 +227,7 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
       } catch {
         // 무시
       }
+      if (d.decision === 'approve' && deleteAbs.length) guard.grantDeletes(task.id, deleteAbs);
       if (d.decision === 'approve' && args.kind === 'decision') {
         if (args.planGate) guard.markPlanDecided(task.id);
         const lines = (decisionItems ?? []).map((it) => {
@@ -198,6 +247,7 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
       if (d.decision === 'approve') {
         if (args.kind === 'teamPlan') {
           guard.markTeamApproved(task.id);
+          guard.markReadOnly(task.id, false); // 바꾸는 일까지 하는 구성으로 다시 승인받음
           let teamNote = '';
           try {
             await updateTeamFile(mission.home, { title: args.title, what: args.what, taskTitle: task.title });

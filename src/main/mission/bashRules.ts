@@ -470,6 +470,13 @@ function isVersionQuery(args: string[]): boolean {
 }
 
 const WRAPPERS = new Set(['sudo', 'env', 'nohup', 'time', 'command', 'exec', 'xargs', 'nice']);
+// xargs 옵션 중 값을 따로 받는 것 (-n 1, -I {}, -P 4 …)
+const XARGS_VALUE_OPT = /^-[nILPdsEJRa]$/;
+
+/** awk 프로그램이 출력만 하는지(명령 실행·파일 쓰기·다른 파일 읽기·환경 변수 보기가 없는지). '>' 는 비교일 수도 있지만 쓰기와 구분하지 않고 승인함으로 보낸다 */
+function awkProgramIsPure(prog: string): boolean {
+  return !/system|getline|ENVIRON|PROCINFO|close\s*\(|fflush|@include|@load|[|>]/.test(prog);
+}
 
 // 비밀이 있을 법한 이름. 경로로 풀지 못해도(따옴표 속 글롭 등) 보이면 막는다.
 const SECRET_NAME = /(^|[\/\s"'=:])\.env(\.[^\s\/"']*)?($|[\s\/"'])|(^|\/)\.ssh(\/|$)|(^|\/)\.aws(\/|$)|Keychains|\.config\/gh(\/|$)|\.config\/gcloud(\/|$)/;
@@ -680,16 +687,28 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
       }
       if (!words.length) continue;
       if (WRAPPERS.has(path.basename(words[0]))) {
-        if (words[0] !== 'time') bump('command', `${words[0]} 로 감싼 명령`);
-        else if (words.length === 1) continue;
+        const wrapper = path.basename(words[0]);
+        if (wrapper === 'time' && words.length === 1) continue;
         words = words.slice(1);
         quoted = quoted.slice(1);
         flags = flags.slice(1);
+        let argFile = false; // xargs -a 파일: 파일 내용이 인자가 되어 오류 문구로 드러날 수 있다
         while (words.length && (words[0].startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]))) {
+          const opt = words[0];
           words.shift();
           quoted.shift();
           flags.shift();
+          if (wrapper !== 'xargs') continue;
+          if (/^-a|^--arg-file/.test(opt)) argFile = true;
+          if (XARGS_VALUE_OPT.test(opt) && words.length) {
+            words.shift();
+            quoted.shift();
+            flags.shift();
+          }
         }
+        // xargs 로 지문·크기·종류만 보는 명령(find -exec 와 같은 기준)을 돌리는 것은 읽기로 본다
+        const safeXargs = wrapper === 'xargs' && !argFile && words.length > 0 && FIND_SAFE_EXEC.has(path.basename(words[0]));
+        if (wrapper !== 'time' && !safeXargs) bump('command', `${wrapper} 로 감싼 명령`);
         if (!words.length) continue;
       }
       const name = path.basename(words[0]);
@@ -766,8 +785,10 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
       }
 
       if (DELETE_CMDS.has(name)) {
-        bump('delete', `${name} 로 삭제`);
-        for (const a of nonOptions(args)) out.writePaths.push(resolve(a));
+        // 지울 경로를 모두 알 수 있으면 파일 일로 본다(시안 폴더 정리·미리 승인된 삭제 판단에 씀). 경로가 없으면 다른 판단 근거로
+        const targets = nonOptions(args);
+        bump('delete', `${name} 로 삭제`, targets.length > 0);
+        for (const a of targets) out.writePaths.push(resolve(a));
         continue;
       }
       if (name === 'find') {
@@ -878,6 +899,46 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
         continue;
       }
       if (INFO_CMDS.has(name)) continue;
+      if (name === 'awk' || name === 'gawk' || name === 'nawk') {
+        // awk '프로그램' [변수=값] [파일…]: 프로그램이 출력만 하고 파일이 읽기 허용 폴더 안이면 읽기
+        let prog: string | undefined;
+        let bad = false;
+        const files: string[] = [];
+        for (let k = 0; k < args.length; k++) {
+          const a = args[k];
+          if (prog === undefined) {
+            if (a === '-F' || a === '-v') {
+              k++;
+              continue;
+            }
+            if (/^-[Fv]./.test(a)) continue;
+            if (a.startsWith('-')) {
+              bad = true; // -f 프로그램 파일, gawk -i/-e/-l 등
+              break;
+            }
+            prog = a;
+            continue;
+          }
+          if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(a)) continue;
+          files.push(a);
+        }
+        if (bad || prog === undefined || !awkProgramIsPure(prog)) bump('command', 'awk (쓰기·실행이 섞였을 수 있음)');
+        else {
+          const outside = [...files, ...seg.redirIn].filter((p) => !isReadable(p));
+          if (outside.length) bump('command', `작업 폴더 밖을 읽음: ${outside.map(resolve).join(', ')}`);
+          if (globRisk()) bump('command', '비밀 파일이 있는 폴더를 글롭으로 읽음');
+        }
+        continue;
+      }
+      if (name === 'unzip' || name === 'zipinfo') {
+        // 압축 파일 안 목록만 보기(풀지 않음): unzip -l · unzip -Z1 · zipinfo -1 등
+        const opts = args.filter((a) => a.startsWith('-'));
+        const listOnly = name === 'unzip' ? opts.length === 1 && ['-l', '-Z1'].includes(opts[0]) : opts.every((a) => /^-[12lmsht]+$/.test(a));
+        const archive = nonOptions(args)[0];
+        if (!listOnly || !archive) bump('command', `${name} (압축 풀기일 수 있음)`);
+        else if (!isReadable(archive)) bump('command', `작업 폴더 밖을 읽음: ${resolve(archive)}`);
+        continue;
+      }
       if (READ_CMDS.has(name)) {
         const isGrep = name === 'grep' || name === 'egrep' || name === 'fgrep' || name === 'rg';
         const files: string[] = [];
