@@ -83,7 +83,7 @@ export class TodoStore implements TodoStoreApi {
     return { ...item };
   }
 
-  update(id: string, patch: { title?: string; status?: TodoStatus; queued?: boolean; note?: string }, by: 'user' | 'rano' | 'app'): TodoItem {
+  update(id: string, patch: { title?: string; status?: TodoStatus; queued?: boolean; note?: string; taskId?: string }, by: 'user' | 'rano' | 'app'): TodoItem {
     const item = this.items.find((i) => i.id === id);
     if (!item) throw new Error(`할 일 "${id}" 을(를) 찾지 못했어요`);
     const parts: string[] = [];
@@ -106,6 +106,7 @@ export class TodoStore implements TodoStoreApi {
     }
     if (patch.queued !== undefined) item.queued = patch.queued && item.status === 'active';
     if (patch.note !== undefined) item.note = cleanTitle(patch.note) || undefined;
+    if (patch.taskId !== undefined && by === 'app') item.taskId = patch.taskId || undefined; // 결과물 카드와 잇기(앱만)
     item.updatedAt = new Date().toISOString();
     const who = by === 'user' ? '사용자' : by === 'rano' ? '라노' : '앱';
     this.changed(parts.length ? `${who}: ${item.title} — ${parts.join(', ')}` : '', parts.length > 0);

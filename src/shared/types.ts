@@ -457,6 +457,7 @@ export interface TodoItem {
   status: TodoStatus;
   queued?: boolean; // active 인데 리더가 앞 과제를 하느라 아직 시작 못 함
   note?: string; // 짧은 메모 (예: "리더 보고 도착 11/04 23:10", "중단됨")
+  taskId?: string; // 이 할 일로 돌린 마지막 과제(결과물함 카드와 잇는다)
   createdAt: string;
   updatedAt: string;
   doneAt?: string;
@@ -466,7 +467,7 @@ export interface TodoStoreApi {
   list(): TodoItem[];
   get(id: string): TodoItem | undefined;
   add(missionId: string | null, title: string, by: 'user' | 'rano'): TodoItem;
-  update(id: string, patch: { title?: string; status?: TodoStatus; queued?: boolean; note?: string }, by: 'user' | 'rano' | 'app'): TodoItem;
+  update(id: string, patch: { title?: string; status?: TodoStatus; queued?: boolean; note?: string; taskId?: string }, by: 'user' | 'rano' | 'app'): TodoItem;
   move(id: string, dir: -1 | 1): void;
   remove(id: string, by: 'user' | 'rano'): void;
   describe(): string; // 라노 프롬프트용 글
@@ -543,7 +544,7 @@ export interface MissionTrackerApi {
 //   run 은 큐로 하나씩 처리. 시작 시 tracker.taskStart, 팀원 호출 시 memberStart/End, 끝나면 tracker.taskEnd.
 //   대화 기록(store)과 emit({kind:'leaderMessage'}) 로 지시(role rano/user)와 리더 답(role leader)을 남긴다.
 export interface MissionLeaderApi {
-  run(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; planFirst?: boolean; attachments?: ChatAttachment[] }): Promise<{ ok: boolean; report: string }>; // planFirst: 기획(안 선택) 먼저, 고른 뒤 구현 // onStart: 앞 과제가 끝나고 이 과제를 실제로 시작할 때
+  run(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; planFirst?: boolean; attachments?: ChatAttachment[] }): Promise<{ ok: boolean; report: string; taskId?: string }>; // planFirst: 기획(안 선택) 먼저, 고른 뒤 구현 // onStart: 앞 과제가 끝나고 이 과제를 실제로 시작할 때
   busy(): boolean;
   close?(): void; // 3단계: 앱을 끌 때 진행 중인 일과 승인 대기를 정리
 }

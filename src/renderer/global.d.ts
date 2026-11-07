@@ -426,6 +426,7 @@ interface TodoItem {
   status: TodoStatus;
   queued?: boolean;
   note?: string;
+  taskId?: string; // 이 할 일로 돌린 마지막 과제(결과물함 카드와 잇는다)
   createdAt: string;
   updatedAt: string;
   doneAt?: string;

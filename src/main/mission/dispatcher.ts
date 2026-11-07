@@ -171,21 +171,21 @@ export class MissionDispatcher implements MissionDispatcherApi {
         if (this.closing) return; // 앱이 꺼지며 멈춘 과제는 다음 실행 때 이어 간다
         if (entry) queue?.remove(entry.id);
         this.pushQueue(mission.id);
-        this.todoAfterRun(todoId, result.ok);
+        this.todoAfterRun(todoId, result.ok, 'taskId' in result ? result.taskId : undefined);
         return this.afterRun(mission, text, result);
       })
       .catch((e) => console.error('[dispatcher] 마무리 처리 실패:', e));
   }
 
   // 리더 일이 끝나면 연결된 할 일을 확인 요청(성공) 또는 대기(중단)로 돌린다. 사용자가 이미 완료했으면 그대로 둔다.
-  private todoAfterRun(todoId: string | undefined, ok: boolean) {
+  private todoAfterRun(todoId: string | undefined, ok: boolean, taskId?: string) {
     const todos = this.deps.todos;
     if (!todoId || !todos) return;
     const t = todos.get(todoId);
     if (!t || t.status === 'done') return;
     const now = stamp().slice(5);
     this.safeTodo(() =>
-      todos.update(todoId, ok ? { status: 'review', note: `리더 보고 도착 ${now}` } : { status: 'waiting', note: `리더 작업이 중단됨 ${now}` }, 'app'),
+      todos.update(todoId, ok ? { status: 'review', note: `리더 보고 도착 ${now}`, ...(taskId ? { taskId } : {}) } : { status: 'waiting', note: `리더 작업이 중단됨 ${now}` }, 'app'),
     );
   }
 

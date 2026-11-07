@@ -243,6 +243,7 @@ function handleEvent(e: RanoUiEvent): void {
     org.openProposal(e.proposal);
   } else if (e.kind === 'todos') {
     todo.update(e.items);
+    outputs.setTodos(e.items);
   } else if (e.kind === 'mission') {
     board.updateMission(e.status);
     todo.updateMission(e.status);

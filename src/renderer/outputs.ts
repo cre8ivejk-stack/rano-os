@@ -1,4 +1,4 @@
-// 결과물함: 과제별 결과물(바뀐 파일, 검수 보고, 리포 리더 보고).
+// 결과물함: 과제별 결과물. 결과 요약 → 정하실 것·다음 할 일 → 확인 완료 → 보고서 전체 → 바뀐 파일 → 검수 보고 순서로 보여 준다.
 import { el, foldable, formatWhen, mustGet, renderRich, roleLabel, splitWorkPath, toDate } from './dom.js';
 
 const STATUS_LABEL: Record<TaskOutput['status'], string> = {
@@ -19,6 +19,8 @@ export class OutputsView {
   private gotEvent = false;
   private failed = false;
   private fileNotes = new Map<string, { text: string; error: boolean }>(); // 파일 줄 안내(다시 그려도 유지)
+  private todos: TodoItem[] = []; // 결과물과 이어진 할 일(확인 완료 버튼)
+  private doneErrors = new Map<string, string>(); // 할 일 id → 확인 완료 실패 안내
 
   private listEl = mustGet<HTMLDivElement>('outputs-list');
 
@@ -61,8 +63,9 @@ export class OutputsView {
 
   async load(): Promise<void> {
     try {
-      const list = await this.rano.outputsList();
+      const [list, todos] = await Promise.all([this.rano.outputsList(), this.rano.todosList().catch(() => [] as TodoItem[])]);
       if (!this.gotEvent && Array.isArray(list)) this.items = list;
+      if (Array.isArray(todos) && !this.todos.length) this.todos = todos;
     } catch {
       if (!this.gotEvent) this.failed = true;
     }
@@ -77,6 +80,39 @@ export class OutputsView {
     this.failed = false;
     this.items = items;
     this.render();
+  }
+
+  /** 할 일 목록이 바뀌었을 때(확인 완료 버튼 상태) */
+  setTodos(items: TodoItem[]): void {
+    if (!Array.isArray(items)) return;
+    this.todos = items;
+    this.render();
+  }
+
+  /** 이 결과물과 이어진 할 일. 예전 기록은 같은 미션의 "리더 보고 도착 MM-DD HH:mm" 메모가 끝난 시각과 맞는 것 */
+  private todoFor(o: TaskOutput): TodoItem | undefined {
+    const linked = this.todos.find((t) => t.taskId === o.taskId);
+    if (linked || !o.endedAt) return linked;
+    const end = toDate(o.endedAt).getTime();
+    const stamps = [0, 60_000].map((dt) => {
+      const d = new Date(end + dt);
+      const p = (n: number) => String(n).padStart(2, '0');
+      return `리더 보고 도착 ${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    });
+    return this.todos.find((t) => !t.taskId && t.missionId === o.missionId && stamps.some((x) => (t.note ?? '').includes(x)));
+  }
+
+  private async markDone(t: TodoItem, btn: HTMLButtonElement): Promise<void> {
+    btn.disabled = true;
+    try {
+      const list = await this.rano.todosUpdate(t.id, { status: 'done' });
+      this.doneErrors.delete(t.id);
+      this.setTodos(list);
+    } catch {
+      this.doneErrors.set(t.id, '완료로 바꾸지 못했어요. 할 일 탭에서 다시 해 주세요.');
+      btn.disabled = false;
+      this.render();
+    }
   }
 
   /** 미션 이름이 새로 알려졌을 때 */
@@ -118,7 +154,8 @@ export class OutputsView {
     if (t.task) card.appendChild(el('p', 'out-task', `맡긴 일: ${t.task}`));
 
     // ---- 결과 요약: 리더 보고 첫 부분을 바로 보여 준다 ----
-    const summary = reportSummary(o.leaderReport ?? '');
+    const report = o.leaderReport ?? '';
+    const summary = reportSummary(report);
     if (summary) {
       const box = el('div', 'out-summary');
       box.appendChild(el('span', 'out-summary-label', '결과'));
@@ -128,20 +165,61 @@ export class OutputsView {
       card.appendChild(box);
     }
 
-    // ---- 바뀐 파일 ----
-    const sec = el('section', 'card-sec');
+    // ---- 정하실 것·다음 할 일: 보고 속 해당 부분을 꺼내 바로 보여 준다 ----
+    const next = nextSteps(report);
+    if (next.length) {
+      const box = el('div', 'out-next');
+      box.appendChild(el('div', 'out-next-label', '정하실 것 · 다음 할 일'));
+      for (const sct of next) {
+        box.appendChild(el('div', 'out-next-head', sct.heading));
+        const txt = el('div', 'out-next-text');
+        renderRich(txt, sct.body);
+        box.appendChild(txt);
+      }
+      card.appendChild(box);
+    }
+
+    // ---- 확인 완료: 이어진 할 일이 "확인 요청"이면 여기서 끝낼 수 있다 ----
+    const todo = o.status === 'running' ? undefined : this.todoFor(o);
+    if (todo) {
+      const row = el('div', 'out-actions');
+      if (todo.status === 'done') {
+        row.appendChild(el('span', 'out-done', `✓ 확인 완료${todo.doneAt ? ` · ${formatWhen(todo.doneAt)}` : ''}`));
+      } else if (todo.status === 'review') {
+        const btn = el('button', 'btn btn-confirm', '확인 완료');
+        btn.type = 'button';
+        btn.addEventListener('click', () => void this.markDone(todo, btn));
+        row.appendChild(btn);
+        row.appendChild(el('span', 'muted out-actions-note', `할 일 "${todo.title}"을(를) 완료로 바꿔요`));
+      }
+      const err = this.doneErrors.get(todo.id);
+      if (err) row.appendChild(el('span', 'file-note file-note-error', err));
+      if (row.childElementCount) card.appendChild(row);
+    }
+
+    // ---- 보고서 전체 ----
+    if (report.trim()) {
+      const { root, body } = foldable(`${key}:leader`, '보고서 전체 보기');
+      const text = el('div', 'report-text');
+      renderRich(text, report);
+      body.appendChild(text);
+      card.appendChild(root);
+    }
+
+    // ---- 바뀐 파일: 있을 때만 목록, 없으면 한 줄 ----
     const files = Array.isArray(o.changedFiles) ? o.changedFiles : [];
-    sec.appendChild(el('h3', 'card-sec-title', files.length ? `바뀐 파일 ${files.length}개` : '바뀐 파일'));
-    if (files.length === 0) {
-      sec.appendChild(
-        el('p', 'muted', o.status === 'running' ? '과제가 끝나면 바뀐 파일을 정리해 보여 드려요' : '바뀐 파일 없음 · 결과는 위 보고예요 (읽고 정리한 과제)'),
-      );
-    } else {
+    if (files.length) {
+      const sec = el('section', 'card-sec');
+      sec.appendChild(el('h3', 'card-sec-title', `바뀐 파일 ${files.length}개`));
       const list = el('ul', 'files');
       for (const f of files) list.appendChild(this.renderFile(key, f));
       sec.appendChild(list);
+      card.appendChild(sec);
+    } else {
+      card.appendChild(
+        el('p', 'muted out-nofiles', o.status === 'running' ? '과제가 끝나면 바뀐 파일을 정리해 보여 드려요' : '바뀐 파일 없음 (읽고 정리한 과제예요)'),
+      );
     }
-    card.appendChild(sec);
 
     // ---- 검수 보고 ----
     const reviews = Array.isArray(o.reviewReports) ? o.reviewReports : [];
@@ -156,15 +234,6 @@ export class OutputsView {
         block.appendChild(text);
         body.appendChild(block);
       }
-      card.appendChild(root);
-    }
-
-    // ---- 리포 리더 보고 ----
-    if (o.leaderReport && o.leaderReport.trim()) {
-      const { root, body } = foldable(`${key}:leader`, '리포 리더 보고 전체');
-      const text = el('div', 'report-text');
-      renderRich(text, o.leaderReport);
-      body.appendChild(text);
       card.appendChild(root);
     }
     return card;
@@ -227,10 +296,11 @@ export class OutputsView {
   }
 }
 
-/** 결과물 제목: 리더 보고의 첫 제목 → 지시의 [제목] → 지시 앞부분. task 는 맡긴 일 한 줄 */
+/** 결과물 제목: 리더 보고의 큰 제목(#) → 지시의 [제목] → 지시 앞부분. task 는 맡긴 일 한 줄 */
 export function outputTitle(o: TaskOutput): { title: string; task?: string } {
   const report = o.leaderReport ?? '';
-  const h = /^\s*#{1,3}\s+(.+)$/m.exec(report);
+  // 보고의 큰 제목(#)만 쓴다. 소제목(##)은 보고 안의 한 부분이라 카드 제목으로 쓰면 헷갈린다
+  const h = /^\s*#\s+(.+)$/m.exec(report);
   const bracket = /^\s*\[([^\]]{2,40})\]/.exec(o.title ?? '');
   const clip = (t: string, n: number) => (t.length > n ? `${t.slice(0, n)}…` : t);
   const task = clip((o.title ?? '').replace(/^\s*\[[^\]]*\]\s*/, '').replace(/\s+/g, ' ').trim(), 90);
@@ -258,4 +328,41 @@ export function reportSummary(report: string): string {
   }
   const s = out.join('\n').trim();
   return s.length > 600 ? `${s.slice(0, 600)}…` : s;
+}
+
+// 보고에서 "정하실 것·다음 할 일"로 보여 줄 부분의 제목
+const NEXT_HEADING = /(결정|승인이\s*필요|정해|정하실|다음|남은\s*일|후속|이어서|해\s*주실|권장\s*순서)/;
+
+/** 보고에서 결정·승인이 필요한 일, 다음 할 일 부분(## 또는 ### 제목 아래)을 꺼낸다. 부분마다 900자까지 */
+export function nextSteps(report: string): { heading: string; body: string }[] {
+  const lines = report.replace(/\r\n?/g, '\n').split('\n');
+  const out: { heading: string; body: string }[] = [];
+  let cur: { heading: string; level: number; lines: string[] } | null = null;
+  const flush = () => {
+    if (!cur) return;
+    const body = cur.lines.join('\n').trim();
+    if (body) out.push({ heading: cur.heading, body: body.length > 900 ? `${body.slice(0, 900)}… (보고서 전체에서 이어 보기)` : body });
+    cur = null;
+  };
+  for (const l of lines) {
+    const h = /^\s*(#{2,3})\s+(.+)$/.exec(l);
+    if (h) {
+      const level = h[1].length;
+      if (cur && level > cur.level) {
+        cur.lines.push(l); // 하위 제목은 본문에 포함
+        continue;
+      }
+      flush();
+      const heading = h[2].replace(/\*\*/g, '').replace(/^\d+[.)]\s*/, '').trim();
+      if (NEXT_HEADING.test(heading)) cur = { heading, level, lines: [] };
+      continue;
+    }
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(l)) {
+      flush(); // 가로줄(---) 뒤는 다른 이야기
+      continue;
+    }
+    if (cur) cur.lines.push(l);
+  }
+  flush();
+  return out.slice(0, 3);
 }

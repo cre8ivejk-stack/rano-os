@@ -19,6 +19,7 @@ import { expandHome } from '../config.js';
 import { inspectFolder, type InspectContext } from './folderInspect.js';
 import { cell, exists, isInside, readRaw, resolveIn, shrinkHome, today, writeRaw, zoneRoot, zoneText } from './paths.js';
 import { savePoolRole, scanRoles } from './rolePool.js';
+import { OUTPUTS_HEADER } from '../approvals/outputs.js';
 
 export interface OrgAdminDeps {
   config: RanoConfig;
@@ -314,7 +315,7 @@ export function createOrgAdmin(deps: OrgAdminDeps): OrgAdminApi {
         await writeFile(path.join(home, 'team.md'), teamText(d, roleInfo), 'utf-8');
         await writeFile(
           path.join(home, 'outputs.md'),
-          `# ${name} 결과물\n\n| 날짜 | 과제 | 결과 | 위치 | 검수 |\n|---|---|---|---|---|\n`,
+          `# ${name} 결과물\n\n${OUTPUTS_HEADER}\n|---|---|---|---|---|\n`,
           'utf-8',
         );
         await writeFile(path.join(home, 'memory', '진행업무.md'), '# 진행업무\n\n', 'utf-8');

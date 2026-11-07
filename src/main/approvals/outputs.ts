@@ -8,6 +8,8 @@ import path from 'node:path';
 import type { Emit, MissionConfig, MissionTask, OutputsApi, RanoConfig, TaskOutput } from '../../shared/types.js';
 import { isBlockedPath } from '../engine/permissions.js';
 
+/** 결과물 목록 표 머리글. 줄은 이 순서로 쓴다(미션을 만들 때도 같은 머리글) */
+export const OUTPUTS_HEADER = '| 과제 | 결과물 | 위치 | 검수 | 날짜 |';
 const KEEP = 100;
 const MAX_HASH_BYTES = 50 * 1024 * 1024; // 이보다 큰 파일은 크기·수정 시각으로 비교
 
@@ -243,17 +245,19 @@ export class OutputsStore implements OutputsApi {
         content = await fs.readFile(file, 'utf-8');
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
-        content = `# ${mission.name} 결과물 목록\n\n| 과제 | 결과물 | 위치 | 검수 | 날짜 |\n|---|---|---|---|---|\n`;
+        content = `# ${mission.name} 결과물 목록\n\n${OUTPUTS_HEADER}\n|---|---|---|---|---|\n`;
       }
       const lines = content.split('\n');
       const sep = lines.findIndex((l) => /^\|\s*-{3,}/.test(l.trim()));
+      // 예전에 미션을 만들 때 쓴 머리글(날짜가 맨 앞)은 줄 순서와 달라 칸이 밀려 보였다. 줄 순서에 맞춘 머리글로 고친다
+      if (sep > 0 && /^\|\s*날짜\s*\|\s*과제\s*\|\s*결과\s*\|\s*위치\s*\|\s*검수\s*\|$/.test(lines[sep - 1].trim())) lines[sep - 1] = OUTPUTS_HEADER;
       if (sep >= 0) {
         let end = sep + 1;
         while (end < lines.length && lines[end].trim().startsWith('|')) end++;
         lines.splice(end, 0, row); // 표 맨 아래에 붙인다
       } else {
         while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
-        lines.push('', '| 과제 | 결과물 | 위치 | 검수 | 날짜 |', '|---|---|---|---|---|', row);
+        lines.push('', OUTPUTS_HEADER, '|---|---|---|---|---|', row);
       }
       let next = lines.join('\n');
       if (!next.endsWith('\n')) next += '\n';
