@@ -46,15 +46,27 @@ export class UsageView {
       for (const l of s.limits) {
         const row = el('div', 'usage-limit');
         row.appendChild(el('span', 'usage-limit-name', LIMIT_LABEL[l.type] ?? l.type));
-        const pct = typeof l.utilization === 'number' ? Math.round(l.utilization <= 1 ? l.utilization * 100 : l.utilization) : null;
+        // 새 기록(pct)은 0~100 % 그대로. 예전 기록만 0~1 비율일 수 있다. 다시 채워지는 시각이 지난 값은 지난 구간 것이라 % 를 보이지 않는다
+        const pct = l.expired || typeof l.utilization !== 'number' ? null : Math.round(l.pct || l.utilization > 1 ? l.utilization : l.utilization * 100);
         const bar = el('span', 'usage-bar');
-        const warn = l.status === 'allowed_warning' || (pct ?? 0) >= 80;
-        const fill = el('span', `usage-fill${l.status === 'rejected' ? ' over' : warn ? ' warn' : ''}`);
-        fill.style.width = `${Math.min(100, pct ?? (l.status === 'rejected' ? 100 : 0))}%`;
+        const st = l.expired ? 'allowed' : l.status; // 지난 구간의 상태는 쓰지 않는다
+        const warn = st === 'allowed_warning' || (pct ?? 0) >= 80;
+        const fill = el('span', `usage-fill${st === 'rejected' ? ' over' : warn ? ' warn' : ''}`);
+        fill.style.width = `${Math.min(100, pct ?? (st === 'rejected' ? 100 : 0))}%`;
         bar.appendChild(fill);
         row.appendChild(bar);
-        row.appendChild(el('span', 'usage-pct', pct !== null ? `${pct}%` : l.status === 'rejected' ? '한도 도달' : l.status === 'allowed_warning' ? '거의 다 씀' : '여유'));
-        row.appendChild(el('span', 'org-hint', [l.resetsAt ? `${when(l.resetsAt)} 다시 채워짐` : '', l.at ? `${when(l.at)} 확인` : ''].filter(Boolean).join(' · ')));
+        row.appendChild(
+          el('span', 'usage-pct', pct !== null ? `${pct}%` : l.expired ? '새로 채워짐' : st === 'rejected' ? '한도 도달' : st === 'allowed_warning' ? '거의 다 씀' : '여유'),
+        );
+        row.appendChild(
+          el(
+            'span',
+            'org-hint',
+            l.expired
+              ? `${l.resetsAt ? `${when(l.resetsAt)}에 다시 채워졌어요` : '다시 채워졌어요'} · 새 값을 아직 받지 못했어요${l.at ? ` (마지막 확인 ${when(l.at)})` : ''}`
+              : [l.resetsAt ? `${when(l.resetsAt)} 다시 채워짐` : '', l.at ? `${when(l.at)} 확인` : ''].filter(Boolean).join(' · '),
+          ),
+        );
         lim.appendChild(row);
       }
     }

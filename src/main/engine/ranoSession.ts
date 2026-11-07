@@ -107,6 +107,40 @@ export function buildSdkEnv(config: RanoConfig): Record<string, string | undefin
   return env;
 }
 
+/**
+ * 메시지를 보내지 않는 빈 엔진 세션(사용 한도 조회용). 구독 계정(max)일 때만 만든다. 다 쓰면 close() 로 끈다.
+ * 입력을 기다리기만 하므로 모델을 부르지 않고, 도구·설정·MCP 도 불러오지 않는다
+ */
+export function idleEngineSession(config: RanoConfig): { q: unknown; close: () => void } | null {
+  if (config.authMethod !== 'max') return null;
+  let stop: () => void = () => {};
+  const idle = new Promise<void>((r) => (stop = r));
+  const input = (async function* (): AsyncGenerator<SDKUserMessage> {
+    await idle;
+  })();
+  const q = query({
+    prompt: input,
+    options: {
+      cwd: config.rootDir,
+      tools: [],
+      mcpServers: {},
+      strictMcpConfig: true,
+      settingSources: [],
+      persistSession: false,
+      executable: 'node',
+      ...(claudeBinaryPath() ? { pathToClaudeCodeExecutable: claudeBinaryPath() } : {}),
+      env: buildSdkEnv(config),
+    },
+  });
+  return {
+    q,
+    close: () => {
+      stop();
+      q.close();
+    },
+  };
+}
+
 function firstLine(text: string, max: number): string {
   const line = text.trim().split('\n').find((l) => l.trim()) ?? '';
   const t = line.trim();

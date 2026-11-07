@@ -10,7 +10,7 @@ import { IPC, type NewAttachment, type MissionLeaderApi, type MissionTrackerApi,
 import { MemoryService } from './memory/memoryService.js';
 import { createMemoryMcpServer } from './memory/memoryTools.js';
 import { ConversationStore } from './engine/conversationStore.js';
-import { RanoSession } from './engine/ranoSession.js';
+import { idleEngineSession, RanoSession } from './engine/ranoSession.js';
 import { MissionTracker } from './mission/tracker.js';
 import { MissionLeader } from './mission/leaderSession.js';
 import { MissionDispatcher } from './mission/dispatcher.js';
@@ -26,7 +26,7 @@ import { zoneText } from './admin/paths.js';
 import { createSetup } from './setup.js';
 import { createAuth } from './engine/auth.js';
 import { checkForUpdate, repoSlug } from './engine/update.js';
-import { initUsage, usageSummary } from './engine/usage.js';
+import { initUsage, refreshPlanLimits, usageSummary } from './engine/usage.js';
 import { searchAll } from './engine/search.js';
 import { TelegramBridge } from './mobile/telegram.js';
 import { candidates as connectorCandidates, importConnector, initConnectors, listConnectors, removeConnector, setConnectorSecret, setMissionConnectors } from './connectors/connectors.js';
@@ -343,7 +343,11 @@ async function boot() {
   ipcMain.handle('skills:auto', () => autoSkills());
   ipcMain.handle('skills:set-auto', (_e, on: unknown) => setAutoSkills(on === true));
   ipcMain.handle('tools:install', (_e, kind: unknown) => installTools(() => undefined, kind === 'browser' ? 'browser' : 'docs'));
-  ipcMain.handle(IPC.usageSummary, () => usageSummary(Object.fromEntries(config.missions.map((m) => [m.id, m.name]))));
+  ipcMain.handle(IPC.usageSummary, async () => {
+    // 화면을 열 때 사용 한도 % 를 새로 받는다(2분에 한 번까지, 메시지는 보내지 않음)
+    await refreshPlanLimits(() => idleEngineSession(config));
+    return usageSummary(Object.fromEntries(config.missions.map((m) => [m.id, m.name])));
+  });
   ipcMain.handle(IPC.updateCheck, () => {
     if ((config.raw as any)?.updates?.check === false) return { current: app.getVersion(), newer: false, error: '새 버전 확인을 꺼 두었어요 (rano.json updates.check)' };
     return checkForUpdate(app.getAppPath(), app.getVersion());

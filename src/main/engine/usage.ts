@@ -89,12 +89,13 @@ export function recordLimit(info: any): void {
     }
     const prev = cur[info.rateLimitType] ?? {};
     const resetsAt = info.resetsAt ? new Date(info.resetsAt * (info.resetsAt < 1e12 ? 1000 : 1)).toISOString() : prev.resetsAt;
-    // 이 알림에는 % 가 없을 때가 많다. 같은 한도 구간(다시 채워지는 시각이 같음)이면 앞서 받은 % 를 지우지 않는다
+    // 이 알림의 utilization 은 단위(0~1 비율인지 0~100 % 인지)가 정해져 있지 않아 쓰지 않는다. % 는 사용량 조회(fetchPlanLimits)에서만 받는다.
+    // 같은 한도 구간(다시 채워지는 시각이 같음)이면 앞서 받은 % 를 지우지 않는다
     const sameWindow = !!prev.resetsAt && !!resetsAt && Math.abs(Date.parse(prev.resetsAt) - Date.parse(resetsAt)) < 60_000;
-    const utilization = typeof info.utilization === 'number' ? info.utilization : sameWindow ? prev.utilization : undefined;
+    const keep = sameWindow && prev.pct === true && typeof prev.utilization === 'number';
     cur[info.rateLimitType] = {
       status: info.status,
-      ...(typeof utilization === 'number' ? { utilization } : {}),
+      ...(keep ? { utilization: prev.utilization, pct: true } : {}),
       ...(resetsAt ? { resetsAt } : {}),
       at: new Date().toISOString(),
     };
@@ -122,13 +123,46 @@ export async function fetchPlanLimits(q: any): Promise<void> {
     const at = new Date().toISOString();
     for (const key of ['five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet']) {
       const w = rl[key];
-      if (!w || typeof w.utilization !== 'number') continue;
-      cur[key] = { ...(cur[key] ?? {}), status: cur[key]?.status ?? 'allowed', utilization: w.utilization, ...(w.resets_at ? { resetsAt: w.resets_at } : {}), at };
+      if (!w) continue;
+      const { utilization: _old, pct: _oldPct, ...rest } = cur[key] ?? {};
+      void _old;
+      void _oldPct;
+      // utilization 은 0~100 % (SDK 문서). 값이 없으면(null) 지난 값을 지운다
+      cur[key] = {
+        ...rest,
+        status: rest.status ?? 'allowed',
+        ...(typeof w.utilization === 'number' ? { utilization: w.utilization, pct: true } : {}),
+        ...(w.resets_at ? { resetsAt: w.resets_at } : {}),
+        at,
+      };
     }
     mkdirSync(runsDir, { recursive: true });
     writeFileSync(limitsFile(), JSON.stringify(cur, null, 2), 'utf-8');
   } catch {
     // 무시
+  }
+}
+
+let lastRefresh = 0;
+/**
+ * 사용량 화면을 열 때 한도 % 를 새로 받는다. 라노·리더가 일하지 않는 동안에는 값이 오래된 채 남기 때문.
+ * make: 메시지를 보내지 않는 빈 엔진 세션을 만들어 돌려주는 함수(조회 뒤 close). 2분 안에 다시 부르면 건너뛴다
+ */
+export async function refreshPlanLimits(make: () => { q: any; close: () => void } | null, minGapMs = 120_000): Promise<void> {
+  if (!runsDir || Date.now() - lastRefresh < minGapMs) return;
+  lastRefresh = Date.now();
+  let s: { q: any; close: () => void } | null = null;
+  try {
+    s = make();
+    if (s) await Promise.race([fetchPlanLimits(s.q), new Promise((res) => setTimeout(res, 15_000))]);
+  } catch {
+    // 무시: 화면은 마지막 값을 보여 준다
+  } finally {
+    try {
+      s?.close();
+    } catch {
+      // 무시
+    }
   }
 }
 
@@ -170,7 +204,16 @@ export function usageSummary(names: Record<string, string>): UsageSummary {
   let limits: UsageSummary['limits'] = [];
   try {
     const cur = JSON.parse(readFileSync(limitsFile(), 'utf-8')) as Record<string, any>;
-    limits = Object.entries(cur).map(([type, v]) => ({ type, status: v.status, utilization: v.utilization, resetsAt: v.resetsAt, at: v.at }));
+    const nowMs = Date.now();
+    limits = Object.entries(cur).map(([type, v]) => ({
+      type,
+      status: v.status,
+      utilization: v.utilization,
+      ...(v.pct === true ? { pct: true } : {}),
+      ...(v.resetsAt && Date.parse(v.resetsAt) <= nowMs ? { expired: true } : {}),
+      resetsAt: v.resetsAt,
+      at: v.at,
+    }));
   } catch {
     limits = [];
   }

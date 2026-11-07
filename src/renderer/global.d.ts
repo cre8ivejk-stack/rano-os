@@ -109,7 +109,7 @@ interface UsageSummary {
   weekStart: string;
   rows: { who: string; name: string; weekRuns: number; weekTokens: number; weekCost: number; todayRuns: number; todayTokens: number; todayCost: number }[];
   days: { date: string; tokens: number }[]; // 최근 7일
-  limits: { type: string; status?: string; utilization?: number; resetsAt?: string; at?: string }[]; // 구독 사용 한도 (엔진이 알려 준 최신값)
+  limits: { type: string; status?: string; utilization?: number; pct?: boolean; expired?: boolean; resetsAt?: string; at?: string }[]; // 구독 사용 한도 (엔진이 알려 준 최신값). pct: utilization 이 0~100 % 값. expired: 다시 채워지는 시각이 지나 값이 지난 구간 것
 }
 
 /** 미션 기록 보기: 미션 홈의 문서 하나 */
