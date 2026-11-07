@@ -459,7 +459,10 @@ interface RoleInfo {
   editable: boolean;
   usedBy: string[];
   body?: string;
+  model: RoleModel;
 }
+
+type RoleModel = 'default' | 'opus' | 'sonnet';
 
 interface RoleDraft {
   zone?: Zone;
@@ -468,6 +471,7 @@ interface RoleDraft {
   canWrite: boolean;
   canRun: boolean;
   body: string;
+  model?: RoleModel;
 }
 
 interface MissionDraft {

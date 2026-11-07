@@ -86,6 +86,7 @@ export function scanRoles(rootDir: string, raw: any, withBody: boolean): RoleHit
           dir,
           editable: source === 'pool',
           usedBy: rawMissions.filter((m) => Array.isArray(m?.roles) && m.roles.includes(name)).map((m) => String(m.id)),
+          model: source === 'work' ? 'default' : parsed.model, // 회사 역할 폴더의 model 은 따르지 않는다
           ...(withBody ? { body: parsed.body } : {}),
         },
       });
@@ -120,7 +121,8 @@ export async function savePoolRole(
   if (existing && !originalName) return { ok: false, message: '이미 있는 역할 이름이에요. 다른 이름을 골라 주세요' };
 
   const tools = ['Read', 'Grep', 'Glob', ...(draft.canWrite ? ['Edit', 'Write'] : []), ...(draft.canRun ? ['Bash'] : [])];
-  const text = `---\nname: ${name}\ndescription: ${description}\ntools: ${tools.join(', ')}\n---\n\n${body}\n`;
+  const model = draft.model === 'sonnet' || draft.model === 'opus' ? draft.model : null;
+  const text = `---\nname: ${name}\ndescription: ${description}\ntools: ${tools.join(', ')}\n${model ? `model: ${model}\n` : ''}---\n\n${body}\n`;
   const zone: Zone = draft.zone === 'personal' ? 'personal' : 'work';
   if (existing && existing.info.zone !== zone)
     return { ok: false, message: '다른 구역에 같은 이름의 역할이 있어요. 다른 이름을 골라 주세요' };

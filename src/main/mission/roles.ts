@@ -2,7 +2,7 @@
 import type { AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import type { MissionConfig, RanoConfig } from '../../shared/types.js';
+import type { MissionConfig, RanoConfig, RoleModel } from '../../shared/types.js';
 import { roleSkills, skillCatalog, skillPromptFor } from '../skills/skills.js';
 
 export const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob'] as const;
@@ -13,7 +13,36 @@ export interface RoleFile {
   name: string;
   description: string;
   tools: string[] | null; // 적혀 있지 않으면 null
+  model: RoleModel; // frontmatter 의 model: opus · sonnet (전체 모델 ID 도 알아봄). 그 밖·없으면 'default'
   body: string;
+}
+
+/** frontmatter 의 model 값 → 'opus' · 'sonnet' · 'default' */
+export function normalizeRoleModel(raw: string | undefined): RoleModel {
+  const v = String(raw ?? '').trim().toLowerCase();
+  if (v === 'sonnet' || v.startsWith('claude-sonnet')) return 'sonnet';
+  if (v === 'opus' || v.startsWith('claude-opus')) return 'opus';
+  return 'default';
+}
+
+/** 라노 데이터 폴더(인재풀·미션 홈) 안의 역할 파일인지. 회사 역할 폴더의 model 은 따르지 않는다(라노 설정 우선) */
+export function isOwnRoleFile(config: RanoConfig, roleFile: string): boolean {
+  const rel = path.relative(path.resolve(config.rootDir), path.resolve(roleFile));
+  return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+/** 'opus' · 'sonnet' · 'default' → 실제로 넘길 모델. default 는 라노 설정(models.member) */
+export function modelFor(config: RanoConfig, model: RoleModel): string {
+  if (model === 'opus') return /opus/i.test(config.models.member) ? config.models.member : 'opus';
+  if (model === 'sonnet') return /sonnet/i.test(config.models.member) ? config.models.member : 'sonnet';
+  return config.models.member;
+}
+
+/** 역할의 기본 모델(역할 파일 기준). 과제마다 리더가 추천하고 사용자가 고른 모델이 이보다 우선한다 */
+export function roleDefaultModel(config: RanoConfig, mission: MissionConfig, role: string): RoleModel {
+  const found = findRoleFile(mission, role);
+  if (!found || !isOwnRoleFile(config, found.file)) return 'default';
+  return parseRoleFile(found.text, role).model;
 }
 
 /** 아주 단순한 frontmatter 파서: --- 사이의 `키: 값` 한 줄짜리만 읽는다. */
@@ -43,6 +72,7 @@ export function parseRoleFile(text: string, fallbackName: string): RoleFile {
     name: fields.name || fallbackName,
     description: fields.description || `${fallbackName} 역할`,
     tools,
+    model: normalizeRoleModel(fields.model),
     body: body.trim(),
   };
 }
@@ -107,8 +137,8 @@ export function loadRoles(config: RanoConfig, mission: MissionConfig): Record<st
       description: parsed.description,
       prompt: parsed.body + (readOnly ? READ_ONLY_NOTE : APPROVAL_NOTE) + (readOnly ? '' : skillPromptFor(role) + skillCatalog(roleSkills()[role] ?? [])),
       tools,
-      // 역할 파일에 적힌 모델보다 라노 설정이 우선한다 (전체 모델 ID 사용 가능)
-      model: config.models.member,
+      // 라노 데이터 폴더의 역할 파일에 model: sonnet/opus 가 있으면 그 모델, 아니면 라노 설정. 과제마다 고른 모델은 팀원을 부를 때 덮어쓴다
+      model: modelFor(config, isOwnRoleFile(config, found.file) ? parsed.model : 'default'),
       // 규칙은 리포 리더가 지시에 담아 넘기므로 CLAUDE.md 를 따로 불러오지 않는다
       omitClaudeMd: true,
     };

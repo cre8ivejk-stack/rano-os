@@ -79,7 +79,8 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
       '사용자 승인이 필요한 결정을 앱의 승인함에 올리고, 사용자가 결정할 때까지 기다립니다.',
       '언제 쓰나:',
       '- teamPlan: 과제를 받으면 팀원을 부르기 전에 반드시 먼저. what 에 역할별로 맡길 일, why 에 이유, recommendation 에 권장 구성.',
-      '  읽고 조사·정리만 하는 과제면 readOnly: true 를 붙인다(묻지 않고 바로 시작, 이 과제 동안 바꾸는 일은 앱이 막음).',
+      '  understanding 에 과제 이해(목적·결과를 쓰는 사람·완료 기준), memberModels 에 역할마다 추천 모델(opus/sonnet)과 이유, 검수가 필요 없으면 skipReview 에 이유를 넣는다. 사용자가 카드에서 모델·검수를 바꿔 승인할 수 있다.',
+      '  읽고 조사·정리만 하는 과제면 readOnly: true 를 붙인다(묻지 않고 바로 시작, 추천 모델·검수대로, 이 과제 동안 바꾸는 일은 앱이 막음).',
       '- 지우기 확인: kind other 로 올리고 deletePaths 에 지울 위치를 넣으면, 승인 뒤 그 위치만 지우는 명령은 다시 묻지 않는다.',
       '- numbers: 수치 레지스트리의 상태를 바꿀 때 / reverseDecision: 기존 결정(ADR 등)을 뒤집을 때',
       '- estimate: 확인되지 않은 추정값을 쓸 때 / external: 다른 사람 공간(Confluence 등)에 게시·수정하거나 메일·제출할 때',
@@ -123,6 +124,24 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
         .boolean()
         .optional()
         .describe('teamPlan 일 때만: 이번 과제가 읽고 조사·정리만 하면 true. 사용자에게 묻지 않고 바로 시작하고, 이 과제 동안 작업 폴더 쓰기·삭제·커밋·외부 쓰기는 앱이 막는다'),
+      understanding: z
+        .string()
+        .optional()
+        .describe('teamPlan 일 때: 과제 이해 1~3줄 — 사용자가 왜 이 일을 시키는지(목적), 결과를 누가 어디에 쓰는지, 무엇이면 끝인지(완료 기준). 팀 구성과 모델은 이 판단에 맞춘다'),
+      memberModels: z
+        .array(
+          z.object({
+            role: z.string().describe('팀 편성에 있는 역할 이름'),
+            model: z.enum(['opus', 'sonnet']).describe('추천 모델'),
+            reason: z.string().describe('이 일에 이 모델을 추천하는 이유 한 줄'),
+          }),
+        )
+        .optional()
+        .describe('teamPlan 일 때: 부를 역할마다 추천 모델. 판단·설계·코드 변경·검수처럼 틀리면 안 되는 일은 opus, 자료 읽기·정리·문서 초안·단순 반복은 sonnet'),
+      skipReview: z
+        .string()
+        .optional()
+        .describe('teamPlan 일 때: 검수 없이 진행하자고 추천하면 그 이유 한 줄(예: 이미 검수받은 결과의 단순 후속 수정). 비우면 검수를 받는 것으로 추천한다'),
       deletePaths: z
         .array(z.string())
         .max(20)
@@ -133,13 +152,31 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
       const task = guard.currentTask();
       if (!deps.approvals) return text('지금은 승인함이 연결되지 않았어요. 보고에 "승인이 필요한 일"로 적어 주세요.', true);
       if (!task) return text('진행 중인 과제가 없어 승인을 올릴 수 없어요.', true);
-      // 읽고 정리만 하는 과제의 팀 구성: 묻지 않고 바로 시작한다(바꾸는 일은 이 과제 동안 앱이 막음)
+      // 팀 구성안의 과제 이해와 역할별 추천 모델
+      const understanding = args.kind === 'teamPlan' ? (args.understanding ?? '').trim() : '';
+      const recModels = new Map<string, { model: 'opus' | 'sonnet'; reason: string }>();
+      if (args.kind === 'teamPlan') {
+        for (const m of args.memberModels ?? []) {
+          if (!mission.roles.includes(m.role)) return text(`"${m.role}" 은(는) 이 미션 팀에 없는 역할이에요. 팀 편성에 있는 역할(${mission.roles.join(', ')})만 넣어 주세요.`, true);
+          recModels.set(m.role, { model: m.model, reason: m.reason.trim() });
+        }
+      }
+      const recSkip = args.kind === 'teamPlan' ? (args.skipReview ?? '').trim() : '';
+      const planWhat = understanding ? `과제 이해: ${understanding}\n\n${args.what}` : args.what;
+      const modelLine = (r: string, m: 'opus' | 'sonnet') => `- ${r}: ${m === 'opus' ? 'Opus' : 'Sonnet'}${recModels.get(r)?.reason ? ` — ${recModels.get(r)!.reason}` : ''}`;
+      // 읽고 정리만 하는 과제의 팀 구성: 묻지 않고 바로 시작한다(바꾸는 일은 이 과제 동안 앱이 막음). 모델은 리더 추천대로
       if (args.kind === 'teamPlan' && args.readOnly) {
         guard.markTeamApproved(task.id);
         guard.markReadOnly(task.id, true);
+        if (recModels.size) guard.setMemberModels(task.id, Object.fromEntries([...recModels].map(([r, v]) => [r, v.model])));
+        guard.setReviewSkipped(task.id, !!recSkip);
         let teamNote = '';
         try {
-          await updateTeamFile(mission.home, { title: `${args.title} (읽기만, 자동 승인)`, what: args.what, taskTitle: task.title });
+          await updateTeamFile(mission.home, {
+            title: `${args.title} (읽기만, 자동 승인)`,
+            what: [planWhat, ...[...recModels].map(([r, v]) => modelLine(r, v.model)), ...(recSkip ? [`- 검수 생략: ${recSkip}`] : [])].join('\n'),
+            taskTitle: task.title,
+          });
         } catch {
           teamNote = ' (팀 편성 문서는 갱신하지 못했어요)';
         }
@@ -148,7 +185,9 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
         } catch {
           // 무시
         }
-        deps.emitActivity?.(`${guard.leaderLabel}: 읽고 정리만 하는 과제라 팀 구성은 묻지 않고 바로 시작해요 (${args.title})`);
+        deps.emitActivity?.(
+          `${guard.leaderLabel}: 읽고 정리만 하는 과제라 팀 구성은 묻지 않고 바로 시작해요 (${args.title}${recModels.size ? ` · ${[...recModels].map(([r, v]) => `${r} ${v.model === 'opus' ? 'Opus' : 'Sonnet'}`).join(', ')}` : ''})`,
+        );
         return text(
           `읽고 정리만 하는 과제라 팀 구성안을 사용자에게 묻지 않고 바로 시작해요.${teamNote} 승인된 역할을 불러 일을 맡기세요. 이 과제 동안 작업 폴더 쓰기·삭제·커밋·외부 쓰기는 막혀요. 바꾸는 일이 필요해지면 팀 구성안을 readOnly 없이 다시 올리세요.`,
         );
@@ -199,6 +238,27 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
           return { id: String(i + 1), question: it.question.trim(), options, recommended: rec };
         });
       }
+      if (args.kind === 'teamPlan') {
+        decisionItems = [...recModels].map(([role, v], i) => ({
+          id: String(i + 1),
+          question: `${role}${v.reason ? ` — ${v.reason}` : ''}`,
+          options: [
+            { key: 'opus', label: 'Opus · 꼼꼼하고 깊게 (느리고 사용량 많음)' },
+            { key: 'sonnet', label: 'Sonnet · 빠르고 가볍게 (자료 정리·초안·단순 작업에 충분)' },
+          ],
+          recommended: v.model,
+        }));
+        // 검수 방식: 리더 추천(skipReview)이 골라져 있고 사용자가 바꿀 수 있다
+        decisionItems.push({
+          id: 'review',
+          question: `검수${recSkip ? ` — 리더 추천: 생략 (${recSkip})` : ''}`,
+          options: [
+            { key: 'review', label: '검수 받기 · 최종본을 검수 담당이 확인한 뒤 보고' },
+            { key: 'skip', label: '검수 생략 · 리더가 직접 확인하고 보고 (단순·반복 수정)' },
+          ],
+          recommended: recSkip ? 'skip' : 'review',
+        });
+      }
       let d;
       try {
         d = await deps.approvals.request(
@@ -208,7 +268,7 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
             who: guard.leaderLabel,
             kind: args.kind,
             title: args.title,
-            what: args.what,
+            what: planWhat,
             why: args.why,
             recommendation: args.recommendation,
             detail: (args.detail ?? '') + deleteNote || undefined,
@@ -248,13 +308,37 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
         if (args.kind === 'teamPlan') {
           guard.markTeamApproved(task.id);
           guard.markReadOnly(task.id, false); // 바꾸는 일까지 하는 구성으로 다시 승인받음
+          // 사용자가 고른 모델(바꾸지 않았으면 리더 추천)을 이 과제 동안 적용한다
+          const picked: Record<string, 'opus' | 'sonnet'> = {};
+          for (const it of decisionItems ?? []) {
+            const role = [...recModels.keys()][Number(it.id) - 1];
+            const key = d.choices?.[it.id] ?? it.recommended;
+            if (role && (key === 'opus' || key === 'sonnet')) picked[role] = key;
+          }
+          if (Object.keys(picked).length) guard.setMemberModels(task.id, picked);
+          const reviewItem = decisionItems?.find((it) => it.id === 'review');
+          const skip = (d.choices?.review ?? reviewItem?.recommended) === 'skip';
+          guard.setReviewSkipped(task.id, skip);
+          const reviewNote = reviewItem
+            ? skip
+              ? '\n검수: 생략하기로 했어요. 검수 역할을 부르지 말고, 결과를 직접 확인한 뒤 보고에 "검수 생략(승인됨)"이라고 적으세요.'
+              : `\n검수: 받기로 했어요. 최종본은 검수 역할의 확인을 받은 뒤 보고하세요.${recSkip ? ' (리더는 생략을 추천했지만 사용자가 검수를 골랐어요)' : ''}`
+            : '';
+          const changed = Object.entries(picked).filter(([r, m]) => recModels.get(r)?.model !== m);
+          const modelNote = Object.keys(picked).length
+            ? `\n팀원 모델: ${Object.entries(picked).map(([r, m]) => `${r} ${m === 'opus' ? 'Opus' : 'Sonnet'}`).join(', ')}${changed.length ? ` (사용자가 바꿈: ${changed.map(([r]) => r).join(', ')})` : ''}. 앱이 팀원을 부를 때 이 모델을 넣어요.`
+            : '';
           let teamNote = '';
           try {
-            await updateTeamFile(mission.home, { title: args.title, what: args.what, taskTitle: task.title });
+            await updateTeamFile(mission.home, {
+              title: args.title,
+              what: [planWhat, ...Object.entries(picked).map(([r, m]) => modelLine(r, m)), ...(skip ? ['- 검수 생략'] : [])].join('\n'),
+              taskTitle: task.title,
+            });
           } catch {
             teamNote = ' (팀 편성 문서는 갱신하지 못했어요)';
           }
-          return text(`사용자가 팀 구성안을 승인했어요${note ? `: ${note}` : ''}. 이제 승인된 역할을 불러 일을 맡기세요.${teamNote}`);
+          return text(`사용자가 팀 구성안을 승인했어요${note ? `: ${note}` : ''}. 이제 승인된 역할을 불러 일을 맡기세요.${teamNote}${modelNote}${reviewNote}`);
         }
         return text(`사용자가 승인했어요${note ? `: ${note}` : ''}. 승인된 범위 안에서 진행하세요.`);
       }

@@ -242,8 +242,9 @@ export class MissionLeader implements MissionLeaderApi {
         ok = true;
         report = result.text;
         const seq = this.reviewSeq;
+        // 팀 구성안에서 검수 생략으로 승인된 과제는 검수 확인 안내를 붙이지 않는다
         const note =
-          seq.lastWork === 0
+          seq.lastWork === 0 || this.guard.isReviewSkipped(mt.id)
             ? ''
             : seq.lastReview === 0
               ? '검수 역할이 결과를 확인하지 않았어요'

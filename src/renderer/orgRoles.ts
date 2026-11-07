@@ -151,6 +151,18 @@ export class RoleEditor {
     const write = checkbox('파일 쓰기', role?.canWrite ?? false);
     const run = checkbox('명령 실행', role?.canRun ?? false);
     const bodyInput = el('textarea', 'org-input org-textarea');
+    const modelSel = el('select', 'org-input org-select');
+    for (const [value, text] of [
+      ['default', '기본 (라노 설정 모델)'],
+      ['opus', 'Opus · 꼼꼼하고 깊게 (느리고 사용량 많음)'],
+      ['sonnet', 'Sonnet · 빠르고 가볍게 (자료 정리·초안·단순 작업)'],
+    ] as const) {
+      const o = el('option');
+      o.value = value;
+      o.textContent = text;
+      modelSel.appendChild(o);
+    }
+    modelSel.value = role?.model ?? 'default';
 
     if (editable) {
       const tpl = el('div', 'org-templates');
@@ -191,6 +203,20 @@ export class RoleEditor {
     abil.appendChild(el('p', 'org-hint', '쓰기도 미션이 "승인함을 거쳐 쓰기"일 때만, 파일 하나마다 승인을 받은 뒤에 실행돼요.'));
     wrap.appendChild(abil);
 
+    const modelField = el('div', 'org-field');
+    modelField.appendChild(el('span', 'org-label', '기본 모델'));
+    modelField.appendChild(modelSel);
+    modelField.appendChild(
+      el(
+        'p',
+        'org-hint',
+        role && role.source === 'work'
+          ? '회사 역할 폴더의 역할은 라노 설정 모델을 써요.'
+          : '평소에 쓸 모델이에요. 과제마다 리더가 일의 성격을 보고 모델을 추천하고, 팀 구성안 카드에서 바꿔 승인할 수 있어요.',
+      ),
+    );
+    wrap.appendChild(modelField);
+
     bodyInput.value = role?.body ?? '';
     bodyInput.rows = 10;
     bodyInput.placeholder = '무엇을 하고, 무엇은 하지 않고, 결과를 어떻게 보고하는지 적어 주세요.';
@@ -206,6 +232,7 @@ export class RoleEditor {
     if (!editable) {
       for (const n of [nameInput, descInput, bodyInput]) n.readOnly = true;
       write.input.disabled = run.input.disabled = true;
+      modelSel.disabled = true;
       this.root.replaceChildren(wrap);
       return;
     }
@@ -245,6 +272,7 @@ export class RoleEditor {
         canWrite: write.input.checked,
         canRun: run.input.checked,
         body: bodyInput.value,
+        model: modelSel.value as RoleModel,
       };
       try {
         const res = await window.rano.orgSaveRole(draft, role ? role.name : undefined);
@@ -268,5 +296,6 @@ export class RoleEditor {
 
 /** 역할 한 줄 설명(목록용) */
 export function roleSummary(r: RoleInfo): string {
-  return `${abilityText(r)} · ${SOURCE_LABEL[r.source] ?? r.source}`;
+  const model = r.model === 'opus' ? ' · Opus' : r.model === 'sonnet' ? ' · Sonnet' : '';
+  return `${abilityText(r)}${model} · ${SOURCE_LABEL[r.source] ?? r.source}`;
 }

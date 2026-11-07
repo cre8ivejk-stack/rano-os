@@ -732,7 +732,11 @@ export interface RoleInfo {
   editable: boolean; // 앱이 고칠 수 있는지 (pool 만 true)
   usedBy: string[]; // 이 역할을 쓰는 미션 id
   body?: string; // 지침 본문 (orgRole 에서만 채움)
+  model: RoleModel; // 이 역할이 쓰는 모델. 'default' = 라노 설정(models.member). 회사 역할 폴더의 역할은 늘 'default'
 }
+
+/** 역할 모델: 기본(라노 설정) · Opus · Sonnet */
+export type RoleModel = 'default' | 'opus' | 'sonnet';
 
 /** 역할 만들기·고치기 입력 (pool 에만 저장) */
 export interface RoleDraft {
@@ -742,6 +746,7 @@ export interface RoleDraft {
   canWrite: boolean;
   canRun: boolean;
   body: string;
+  model?: RoleModel; // 없으면 'default'
 }
 
 /** 미션 만들기·고치기 입력 */

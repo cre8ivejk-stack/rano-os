@@ -229,14 +229,16 @@ function readToolPaths(toolName: string, input: Record<string, unknown>, cwd: st
   return paths;
 }
 
-function agentCallInput(input: Record<string, unknown>, role: string): Record<string, unknown> {
+function agentCallInput(input: Record<string, unknown>, role: string, model?: 'opus' | 'sonnet'): Record<string, unknown> {
   // 위험한 선택지(권한 모드·격리·모델 바꾸기·백그라운드)는 지우고 필요한 값만 남긴다.
+  // 모델은 리더가 고를 수 없고, 팀 구성안에서 사용자가 승인한 모델만 앱이 넣는다(없으면 역할 파일·라노 설정).
   // 백그라운드를 끄면 팀원이 끝날 때 도구 결과가 돌아와서 진행 상황을 짝지어 추적할 수 있다.
   return {
     description: str(input.description) ?? role,
     prompt: typeof input.prompt === 'string' ? input.prompt : '',
     subagent_type: role,
     run_in_background: false,
+    ...(model ? { model } : {}),
   };
 }
 
@@ -248,6 +250,7 @@ export function decideLeaderTool(
   input: Record<string, unknown>,
   cwd: string = mission.targets[0] ?? mission.home,
   isSubagent = false,
+  memberModels?: Record<string, 'opus' | 'sonnet'>,
 ): LeaderDecision & { blocked?: string } {
   if (READ_TOOLS.has(toolName)) {
     const paths = readToolPaths(toolName, input, cwd);
@@ -273,7 +276,8 @@ export function decideLeaderTool(
     if (!role || !mission.roles.includes(role)) {
       return { allow: false, reason: `팀에 없는 역할: ${role ?? '(지정 안 함)'}`, message: MSG_ROLE };
     }
-    return { allow: true, reason: `팀원 호출 허용: ${role}`, updatedInput: agentCallInput(input, role) };
+    const model = memberModels?.[role];
+    return { allow: true, reason: `팀원 호출 허용: ${role}${model ? ` (${model})` : ''}`, updatedInput: agentCallInput(input, role, model) };
   }
 
   return { allow: false, reason: `읽기 전용 단계라 ${toolName} 거절`, message: MSG_READ_ONLY };
@@ -440,7 +444,7 @@ export function decideApprovalStage(
   toolName: string,
   input: Record<string, unknown>,
   cwd: string,
-  actor: { isSubagent: boolean; teamApproved: boolean; draftsDir?: string; planBlocked?: boolean },
+  actor: { isSubagent: boolean; teamApproved: boolean; draftsDir?: string; planBlocked?: boolean; memberModels?: Record<string, 'opus' | 'sonnet'> },
   mcpServer?: { name: string; source: string },
 ): StageDecision {
   // 읽기·검색: 2단계와 같음
@@ -451,7 +455,7 @@ export function decideApprovalStage(
 
   // 팀원 호출: 팀 구성안 승인 뒤에만
   if (toolName === SUBAGENT_TOOL) {
-    const d = decideLeaderTool(config, mission, toolName, input, cwd, actor.isSubagent);
+    const d = decideLeaderTool(config, mission, toolName, input, cwd, actor.isSubagent, actor.memberModels);
     if (!d.allow) return { type: 'deny', reason: d.reason, message: d.message };
     if (!actor.teamApproved) return { type: 'deny', reason: '팀 구성안 승인 전 팀원 호출', message: MSG_TEAM };
     return { type: 'allow', reason: d.reason, updatedInput: d.updatedInput };
@@ -666,6 +670,8 @@ export class LeaderGuard {
   private readonly teamApprovedTasks = new Set<string>();
   private readonly planDecidedTasks = new Set<string>();
   private readonly readOnlyTasks = new Set<string>(); // 읽고 정리만 하기로 한 과제(팀 구성안 자동 승인)
+  private readonly reviewSkippedTasks = new Set<string>(); // 팀 구성안에서 검수 생략으로 정한 과제
+  private readonly taskModels = new Map<string, Record<string, 'opus' | 'sonnet'>>(); // 과제 → 역할별로 승인된 모델
   private readonly deleteGrants = new Map<string, string[]>(); // 과제 → 리더 확인 승인으로 지워도 되는 위치(실제 경로)
   private task:{ id: string; title: string; planFirst?: boolean } | null = null;
 
@@ -727,6 +733,27 @@ export class LeaderGuard {
   isTeamApproved(taskId?: string): boolean {
     const id = taskId ?? this.task?.id;
     return !!id && this.teamApprovedTasks.has(id);
+  }
+
+  /** 팀 구성안에서 검수를 생략하기로 했는지(승인된 결정) */
+  setReviewSkipped(taskId: string, skip: boolean) {
+    if (skip) this.reviewSkippedTasks.add(taskId);
+    else this.reviewSkippedTasks.delete(taskId);
+  }
+
+  isReviewSkipped(taskId?: string): boolean {
+    const id = taskId ?? this.task?.id;
+    return !!id && this.reviewSkippedTasks.has(id);
+  }
+
+  /** 팀 구성안에서 승인된 역할별 모델(이 과제 동안 팀원을 부를 때 앱이 넣는다) */
+  setMemberModels(taskId: string, models: Record<string, 'opus' | 'sonnet'>) {
+    this.taskModels.set(taskId, { ...models });
+  }
+
+  memberModels(taskId?: string): Record<string, 'opus' | 'sonnet'> | undefined {
+    const id = taskId ?? this.task?.id;
+    return id ? this.taskModels.get(id) : undefined;
   }
 
   /** 읽고 정리만 하는 과제로 표시(켜기) 또는 해제 */
@@ -857,7 +884,7 @@ export class LeaderGuard {
       return ext;
     }
     if (mission.stagePolicy === 'readOnly') {
-      const d = decideLeaderTool(config, mission, toolName, input, cwd, isSub);
+      const d = decideLeaderTool(config, mission, toolName, input, cwd, isSub, this.memberModels());
       return { type: d.allow ? 'allow' : 'deny', reason: d.reason, message: d.message, updatedInput: d.updatedInput, blocked: d.blocked };
     }
     const d = decideApprovalStage(
@@ -866,7 +893,7 @@ export class LeaderGuard {
       toolName,
       input,
       cwd,
-      { isSubagent: isSub, teamApproved: this.isTeamApproved(), draftsDir: this.draftsDir(), planBlocked: this.planBlocked() },
+      { isSubagent: isSub, teamApproved: this.isTeamApproved(), draftsDir: this.draftsDir(), planBlocked: this.planBlocked(), memberModels: this.memberModels() },
       mcpServer,
     );
     // 기획 결정 전에는 작업 폴더를 바꾸는 명령(커밋·삭제·쓰기 명령 등)도 승인함에 올리지 않고 막는다

@@ -112,3 +112,29 @@ test('읽기만 하는 과제 표시는 그 과제에만', async () => {
   g.setTask({ id: 't2', title: '다른 과제' });
   assert.equal(await judge(g, 'Write', { file_path: path.join(TARGET, 'keep', 'a.md'), content: 'x' }), 'ask');
 });
+
+test('팀원 모델: 승인된 모델만 앱이 넣고, 리더가 넣은 모델은 지운다', async () => {
+  const g = newGuard();
+  g.markTeamApproved('t1');
+  const call = async (input: Record<string, unknown>) => {
+    const r = await (g.canUseTool as CanUseTool)('Agent', input, { signal: new AbortController().signal, suggestions: [], toolUseID: 'x' } as never);
+    assert.equal(r?.behavior, 'allow');
+    return (r as { updatedInput?: Record<string, unknown> }).updatedInput ?? {};
+  };
+  assert.equal((await call({ subagent_type: 'personal-worker', prompt: 'x', model: 'opus' })).model, undefined); // 리더가 고른 모델은 지움
+  g.setMemberModels('t1', { 'personal-worker': 'sonnet' });
+  assert.equal((await call({ subagent_type: 'personal-worker', prompt: 'x', model: 'opus' })).model, 'sonnet');
+  g.setTask({ id: 't2', title: '다른 과제' });
+  g.markTeamApproved('t2');
+  assert.equal((await call({ subagent_type: 'personal-worker', prompt: 'x' })).model, undefined); // 과제마다 따로
+});
+
+test('검수 생략 표시는 그 과제에만', () => {
+  const g = newGuard();
+  g.setReviewSkipped('t1', true);
+  assert.equal(g.isReviewSkipped(), true);
+  g.setTask({ id: 't2', title: '다른 과제' });
+  assert.equal(g.isReviewSkipped(), false);
+  g.setReviewSkipped('t1', false);
+  assert.equal(g.isReviewSkipped('t1'), false);
+});

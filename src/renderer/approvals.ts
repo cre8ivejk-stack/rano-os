@@ -171,7 +171,9 @@ export class ApprovalsView {
     card.dataset.id = a.id;
     this.renderHead(a, card);
 
-    const approveBtn = el('button', 'btn btn-approve', a.decisionItems?.length ? '권장안대로 결정' : '승인');
+    const modelPick = a.kind === 'teamPlan'; // 팀 구성안: 항목은 팀원마다 쓸 모델(리더 추천이 골라져 있음)
+    const recLabel = modelPick ? ['추천대로 승인', '고른 대로 승인'] : ['권장안대로 결정', '고른 안으로 결정'];
+    const approveBtn = el('button', 'btn btn-approve', a.decisionItems?.length ? recLabel[0] : '승인');
     const rows = el('dl', 'appr-rows');
     const addRow = (label: string, text: string) => {
       if (!text) return;
@@ -252,11 +254,12 @@ export class ApprovalsView {
     const choices: Record<string, string> = {};
     if (a.decisionItems?.length) {
       if (a.planGate) card.appendChild(el('p', 'appr-plan', '기획 단계 결정이에요. 고르신 안대로 구현을 시작해요. 고르기 전에는 작업 폴더를 고치지 않아요.'));
+      if (modelPick) card.appendChild(el('p', 'appr-plan', '팀원마다 쓸 모델이에요. 리더가 일의 성격을 보고 추천한 것이 골라져 있어요. Opus 는 꼼꼼하지만 느리고 사용량이 많고, Sonnet 은 빠르고 가벼워요. 바꿔서 승인할 수 있어요.'));
       const box = el('div', 'dec-items');
       for (const it of a.decisionItems) {
         choices[it.id] = it.recommended;
         const fs = el('fieldset', 'dec-item');
-        fs.appendChild(el('legend', 'dec-q', `${it.id}. ${it.question}`));
+        fs.appendChild(el('legend', 'dec-q', modelPick ? it.question : `${it.id}. ${it.question}`));
         for (const o of it.options) {
           const row = el('div', `dec-opt${o.key === it.recommended ? ' rec' : ''}`);
           const label = el('label', 'dec-opt-label');
@@ -267,12 +270,12 @@ export class ApprovalsView {
           radio.checked = o.key === it.recommended;
           radio.addEventListener('change', () => {
             if (radio.checked) choices[it.id] = o.key;
-            approveBtn.textContent = Object.entries(choices).every(([id, k]) => a.decisionItems!.find((x) => x.id === id)?.recommended === k) ? '권장안대로 결정' : '고른 안으로 결정';
+            approveBtn.textContent = Object.entries(choices).every(([id, k]) => a.decisionItems!.find((x) => x.id === id)?.recommended === k) ? recLabel[0] : recLabel[1];
           });
           label.appendChild(radio);
-          label.appendChild(el('span', 'dec-key', `${o.key}안`));
+          if (!modelPick) label.appendChild(el('span', 'dec-key', `${o.key}안`));
           label.appendChild(el('span', 'dec-label', o.label));
-          if (o.key === it.recommended) label.appendChild(el('span', 'dec-rec', '권장'));
+          if (o.key === it.recommended) label.appendChild(el('span', 'dec-rec', modelPick ? '리더 추천' : '권장'));
           row.appendChild(label);
           if (o.detail) row.appendChild(el('p', 'dec-detail', o.detail));
           if (o.preview) {
@@ -456,7 +459,9 @@ export class ApprovalsView {
       for (const it of a.decisionItems) {
         const key = a.choices?.[it.id] ?? it.recommended;
         const o = it.options.find((x) => x.key === key);
-        ul.appendChild(el('li', undefined, `${it.id}. ${it.question} → ${key}안 ${o?.label ?? ''}${key === it.recommended ? ' (권장)' : ''}`));
+        ul.appendChild(
+          el('li', undefined, a.kind === 'teamPlan' ? `${it.question} → ${o?.label ?? key}${key === it.recommended ? ' (리더 추천)' : ' (바꿔서 승인)'}` : `${it.id}. ${it.question} → ${key}안 ${o?.label ?? ''}${key === it.recommended ? ' (권장)' : ''}`),
+        );
       }
       card.appendChild(ul);
     }
