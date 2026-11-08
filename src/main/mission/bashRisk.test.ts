@@ -248,8 +248,8 @@ test('카드 제목: 쉬운 말 종류 + 대상 이름', () => {
     ['chmod +x docs/test-block.command', '실행 권한 붙이기: test-block.command'],
     ['chmod 644 docs/a.md', '파일 권한 바꾸기: a.md'],
     ['echo hi > /tmp/rano-check.txt', '공용 임시 폴더에 쓰기: rano-check.txt'],
-    ['pkill -f Electron', '프로그램 끄기: pkill'],
-    ["GIT_EXTERNAL_DIFF='pkill -f Electron' git diff", '프로그램 끄기: pkill'],
+    ['pkill -f Electron', '프로그램 끄기: pkill Electron'],
+    ["GIT_EXTERNAL_DIFF='pkill -f Electron' git diff", '프로그램 끄기: pkill Electron'],
     [`osascript -e 'tell application "라노 OS" to quit'`, '프로그램 끄기: osascript'],
     ['curl -s -H "Authorization: Bearer abc123" "https://github.com/x?token=xyz"', '인터넷으로 보내기·받기: github.com'],
     ['rm docs/a.txt docs/b.txt docs/c.txt', '파일·폴더 지우기: a.txt 외 2개'],
@@ -259,13 +259,35 @@ test('카드 제목: 쉬운 말 종류 + 대상 이름', () => {
     ['python3 scripts/check.py --key=sk-ant-abcdefghijklmn', '명령 실행: python3'],
     ['npm ci', '명령 실행: npm'],
     ['FOO=1 ls', '명령 실행: ls'],
-    ['pkill -f x && curl https://example.com', '프로그램 끄기: pkill (그 밖에 1가지)'],
+    ['pkill -f x && curl https://example.com', '프로그램 끄기: pkill x (그 밖에 1가지)'],
     ['git push origin main', '시험 미션 리포에 변경 내용 기록(커밋)'],
     ['echo x > docs/new.md', '시험 미션 리포 파일을 명령으로 바꾸기: new.md'],
     ['cp docs/a.md ~/Desktop/a.md', '작업 폴더 밖 파일을 명령으로 바꾸기: a.md'],
     ['vercel --prod', '배포·운영 설정 바꾸기: vercel'],
   ];
   for (const [cmd, want] of cases) assert.equal(titleOf(cmd), want, cmd);
+});
+
+test('프로그램 끄기 제목의 대상: 하나뿐인 한 단어(24자 이하 영문 이름·번호)만 보이고, 그 밖은 프로그램 이름만', () => {
+  const cases: [string, string][] = [
+    ['pkill Electron', '프로그램 끄기: pkill Electron'],
+    ['killall Finder', '프로그램 끄기: killall Finder'],
+    ['kill -9 12345', '프로그램 끄기: kill 12345'],
+    ['pkill -f node_modules.bin-x', '프로그램 끄기: pkill node_modules.bin-x'],
+    // 공백 든 -f 패턴은 대상 안 보임 (비밀번호 같은 인자가 섞일 수 있음)
+    ["pkill -f 'mysql -u root hunter2'", '프로그램 끄기: pkill'],
+    ['pkill -f "Electron Helper"', '프로그램 끄기: pkill'],
+    // 경로·대상 둘 이상·24자 넘음·숫자로 시작·무작위 글·한글
+    ['pkill -f /Applications/x.app/Contents/MacOS/x', '프로그램 끄기: pkill'],
+    ['pkill Electron node', '프로그램 끄기: pkill'],
+    ['kill 123 456', '프로그램 끄기: kill'],
+    ['pkill abcdefghijklmnopqrstuvwxyz', '프로그램 끄기: pkill'],
+    ['pkill 9lives', '프로그램 끄기: pkill'],
+    ['pkill aB3xYz9Qw', '프로그램 끄기: pkill'],
+    ['killall 라노', '프로그램 끄기: killall'],
+  ];
+  for (const [cmd, want] of cases) assert.equal(titleOf(cmd), want, cmd);
+  for (const bad of ['mysql', 'root', 'hunter2', '-u']) assert.ok(!titleOf("pkill -f 'mysql -u root hunter2'").includes(bad), bad);
 });
 
 test('카드 제목에는 경로·인자·토큰이 들어가지 않는다', () => {

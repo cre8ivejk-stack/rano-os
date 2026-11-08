@@ -94,7 +94,7 @@ test('명령 카드는 "다시 묻지 않기"를 골라도 기억하지 않는�
     // 다른 명령(pkill) → 다시 승인함
     assert.equal(await run(g, 'Bash', bash('pkill -f Electron'), agentID), 'allow');
     assert.equal(asked.length, n0 + 2);
-    assert.equal(asked[asked.length - 1].title, '프로그램 끄기: pkill');
+    assert.equal(asked[asked.length - 1].title, '프로그램 끄기: pkill Electron'); // 대상이 한 단어 이름 하나면 제목에 보임
     // 같은 명령 다시 → 다시 승인함
     assert.equal(await run(g, 'Bash', bash('python3 check.py'), agentID), 'allow');
     assert.equal(asked.length, n0 + 3);
@@ -239,7 +239,7 @@ test('앞에 설정값을 붙인 명령은 승인함(문지기에서)', async ()
   assert.equal(await run(g, 'Bash', bash("GIT_EXTERNAL_DIFF='pkill -f Electron' git diff")), 'deny');
   assert.equal(await run(g, 'Bash', bash('FOO=1 ls')), 'deny');
   assert.equal(asked.length, n0 + 2);
-  assert.equal(asked[n0].title, '프로그램 끄기: pkill');
+  assert.equal(asked[n0].title, '프로그램 끄기: pkill Electron');
   assert.equal(asked[n0].kind, 'command');
   assert.equal(asked[n0 + 1].title, '명령 실행: ls');
   assert.equal(await run(g, 'Bash', bash('ls')), 'allow');

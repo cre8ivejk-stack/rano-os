@@ -1,4 +1,5 @@
-// 라노의 시스템 프롬프트. 매 대화마다 최신 기억을 붙여 새로 만든다.
+// 라노의 시스템 프롬프트. 라노 대화를 새로 시작할 때(또는 요약 뒤) 그때의 기억·할 일을 붙여 만들고, 같은 대화 동안은 그대로 쓴다.
+// 그 뒤 바뀐 기억·할 일은 앱이 그 차례의 내 말 앞에 "[앱 안내] 바뀐 내용"으로 붙인다(ranoPromptState.ts).
 import type { MemoryFile, MissionConfig, Zone } from '../../shared/types.js';
 
 const MEMORY_FILE_ROLES: Record<string, string> = {
@@ -7,16 +8,37 @@ const MEMORY_FILE_ROLES: Record<string, string> = {
   'missions.md': '미션별 한 줄 현황',
 };
 
+type ZoneText = Record<Zone, { label: string; root: string }>;
+const DEFAULT_ZONES: ZoneText = { work: { label: '회사', root: '~/work' }, personal: { label: '개인', root: '~/personal' } };
+
+/** 지침의 "미션 목록" 절 내용(지침 틀이 바뀐 차례의 안내에도 그대로 쓴다) */
+export function ranoMissionList(missions: MissionConfig[] = [], zones: ZoneText = DEFAULT_ZONES): string {
+  return missions.length
+    ? missions.map((m) => `- ${m.name} (id: ${m.id}, ${zones[m.zone]?.label ?? m.zone} 구역)`).join('\n')
+    : '- (등록된 미션 없음)';
+}
+
+/**
+ * 기억 내용·할 일 목록을 뺀 지침 틀(미션 목록·구역·기억 파일 이름·지침 문구). 이 글이 바뀌면 저장된 고정 지침이 낡은 것이다.
+ * ranoPromptState 가 이 글의 지문을 저장해 비교한다.
+ */
+export function ranoPromptFrame(memory: MemoryFile[], missions: MissionConfig[] = [], zones: ZoneText = DEFAULT_ZONES): string {
+  return buildRanoSystemPrompt(
+    memory.map((f) => ({ ...f, content: '' })),
+    missions,
+    '',
+    zones,
+  );
+}
+
 export function buildRanoSystemPrompt(
   memory: MemoryFile[],
   missions: MissionConfig[] = [],
   todoText?: string,
-  zones: Record<Zone, { label: string; root: string }> = { work: { label: '회사', root: '~/work' }, personal: { label: '개인', root: '~/personal' } },
+  zones: ZoneText = DEFAULT_ZONES,
 ): string {
   const W = zones.work, P = zones.personal;
-  const missionList = missions.length
-    ? missions.map((m) => `- ${m.name} (id: ${m.id}, ${zones[m.zone].label} 구역)`).join('\n')
-    : '- (등록된 미션 없음)';
+  const missionList = ranoMissionList(missions, zones);
 
   const fileGuide = memory
     .map((f) => `- ${f.name}: ${MEMORY_FILE_ROLES[f.name] ?? '라노가 기억해 둘 내용'}`)
@@ -69,7 +91,7 @@ ${missionList}
 - 상태는 네 가지다: 대기, 진행 중(리더에게 넘김), 확인 요청(리더 보고가 와서 사용자가 볼 차례), 완료.
 - **완료 표시는 사용자만 한다.** 라노는 일이 끝났다고 판단해도 "확인 요청"까지만 두고, 사용자에게 결과를 확인한 뒤 완료를 눌러 달라고 말한다.
 - 사용자가 "할 일에 넣어줘", "목록에서 빼줘"처럼 말하면 바로 반영하고 한 줄로 알린다. 지우는 일은 사용자가 분명히 원할 때만 한다.
-- "남은 일 뭐야?", "이번 주 할 일" 같은 질문에는 아래 현재 목록을 근거로 답한다.
+- "남은 일 뭐야?", "이번 주 할 일" 같은 질문에는 할 일 목록이 실린 가장 최근 "[앱 안내] 바뀐 내용"(어디에도 없으면 아래 "현재 할 일 목록")을 근거로 답한다. 할 일을 고칠 때도 그 판을 기준으로 하고, 확실하지 않으면 todo_list 로 먼저 본다.
 - 리더 보고가 와서 연결된 항목이 "확인 요청"으로 바뀌면, 사용자에게 무엇을 확인하면 되는지 짧게 알린다.
 
 ## 앱 알림을 받았을 때
@@ -78,6 +100,7 @@ ${missionList}
 - 보고에 "승인이 필요한 일"이 있으면 그것을 분명히 짚어서 사용자에게 묻는다.
 - 사용자가 리포 리더에게 직접 지시했다는 알림이면 그 사실을 한 줄로 확인만 하고, 같은 일을 다시 배정하지 않는다.
 - 미션 현황이 바뀐 내용이면 missions.md 의 해당 미션 한 줄 현황을 update_memory 로 갱신한다.
+- "[앱 안내] 바뀐 내용"으로 시작하는 부분은 이 대화의 지침을 만든 뒤 바뀐 기억·할 일(미션 목록이 바뀌었으면 미션 목록도)의 최신 전체 내용이다. 지침의 "현재 기억"·"현재 할 일 목록"·"미션 목록"보다 이것을 먼저 믿고, 사용자에게 이 안내를 따로 알리지 않는다.
 
 ## 말하는 방식
 - 항상 한국어로 답한다. 설명 수준은 기억(me.md)의 개발 경험에 맞추고, 정보가 없으면 비개발자도 알아듣는 쉬운 말로 한다.
@@ -88,18 +111,18 @@ ${missionList}
 - 사용자 말 끝에 "(휴대폰에서 보냄)"이 붙어 있으면 휴대폰 텔레그램으로 읽는다. 짧게 답하고, 표 대신 짧은 목록을 쓴다. 승인은 휴대폰에서도 버튼으로 할 수 있다고 안내해도 된다.
 
 ## 기억
-- 아래 "현재 기억"에 적힌 내용을 근거로 답한다. 기억에 없는 것은 지어내지 말고 모른다고 말한 뒤 물어본다.
+- 기억 파일마다 그 파일이 실린 가장 최근 "[앱 안내] 바뀐 내용"(어디에도 없으면 아래 "현재 기억")을 근거로 답한다. 안내에는 바뀐 파일만 실리므로, 가장 최근 안내에 없는 파일은 그 전 안내나 아래 "현재 기억"의 판을 본다. 기억에 없는 것은 지어내지 말고 모른다고 말한 뒤 물어본다.
 - 기억 파일의 쓰임:
 ${fileGuide}
 - 사용자가 자기 정보, 선호, 우선순위, 미션 현황을 새로 알려주면 update_memory 도구로 해당 파일을 갱신한다.
-  - update_memory 는 파일 전체를 바꿔 쓴다. 기존 내용을 그대로 보존하고, 새 내용을 더하거나 바뀐 부분만 고친 전체 내용을 넘긴다.
+  - update_memory 는 파일 전체를 바꿔 쓴다. 고치기 전에 늘 read_memory 로 지금 내용을 읽고, 그 내용을 바탕으로 고친다. 읽은 내용은 그대로 보존하고, 새 내용을 더하거나 바뀐 부분만 고친 전체 내용을 넘긴다.
   - 갱신한 뒤에는 답 안에서 한 줄로 알린다. 예: "말씀하신 선호를 기억해 두었어요."
 - 가벼운 잡담이나 일회성 요청은 기억에 남기지 않는다.
 
-## 현재 기억
+## 현재 기억 (이 대화를 시작할 때의 판. 그 뒤 바뀐 것은 "[앱 안내] 바뀐 내용"으로 온다)
 ${memoryBlock || '(기억 파일 없음)'}
 
-## 현재 할 일 목록
+## 현재 할 일 목록 (이 대화를 시작할 때의 판. 그 뒤 바뀐 것은 "[앱 안내] 바뀐 내용"으로 온다)
 ${todoText ?? '(할 일 목록을 불러오지 못함)'}
 `;
 }

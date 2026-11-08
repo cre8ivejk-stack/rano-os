@@ -8,6 +8,12 @@ import type { ApprovalDecision, ApprovalQueueApi, ApprovalRequest, Emit, RanoCon
 const KEEP = 200; // 파일에 보관
 const SHOW = 100; // list() 로 보여 줌
 
+/** 앱이 decisionNote 에 쓰는 메모(사용자가 쓴 말이 아님). 리더 "직전 과제" 묶음에서 뺀다 */
+export const NOTE_APP_QUIT = '앱이 꺼져 요청이 사라졌어요';
+export const NOTE_TASK_STOPPED = '요청한 작업이 멈춰 요청이 사라졌어요';
+export const NOTE_NO_PICK = '반영할 파일을 고르지 않았어요';
+export const NOTE_MOBILE_REJECT = '휴대폰에서 반려'; // mobile/telegram.ts 의 반려 버튼이 쓰는 글과 같아야 한다
+export const APP_WRITTEN_NOTES: ReadonlySet<string> = new Set([NOTE_APP_QUIT, NOTE_TASK_STOPPED, NOTE_NO_PICK, NOTE_MOBILE_REJECT]);
 
 /** 파일 승인 범위 키 */
 export function fileKey(filePath: string): string {
@@ -63,7 +69,7 @@ export class ApprovalQueue implements ApprovalQueueApi {
     // 앱이 꺼지면서 요청한 에이전트가 사라졌으므로 남은 대기 건은 만료 처리
     const now = new Date().toISOString();
     const stale = this.items.filter((r) => r.status === 'pending');
-    for (const r of stale) Object.assign(r, { status: 'expired', decidedAt: now, decisionNote: '앱이 꺼져 요청이 사라졌어요' });
+    for (const r of stale) Object.assign(r, { status: 'expired', decidedAt: now, decisionNote: NOTE_APP_QUIT });
     if (stale.length) {
       this.save();
       for (const r of stale) this.log('expire', r);
@@ -96,7 +102,7 @@ export class ApprovalQueue implements ApprovalQueueApi {
     const promise = new Promise<ApprovalDecision & { id: string }>((resolve, reject) => {
       const onAbort = () => {
         if (item.status !== 'pending') return;
-        Object.assign(item, { status: 'expired', decidedAt: new Date().toISOString(), decisionNote: '요청한 작업이 멈춰 요청이 사라졌어요' });
+        Object.assign(item, { status: 'expired', decidedAt: new Date().toISOString(), decisionNote: NOTE_TASK_STOPPED });
         this.waiters.delete(item.id);
         this.changed('expire', item);
         reject(new Error('승인 요청이 취소됐어요(작업이 멈춤)'));
@@ -126,7 +132,7 @@ export class ApprovalQueue implements ApprovalQueueApi {
       picked = Array.isArray(d.picked) ? [...new Set(d.picked.filter((r) => rels.has(r)))] : [...rels];
       if (!picked.length) {
         status = STATUS_OF.reject;
-        d = { ...d, decision: 'reject', note: d.note || '반영할 파일을 고르지 않았어요' };
+        d = { ...d, decision: 'reject', note: d.note || NOTE_NO_PICK };
         picked = undefined;
       }
     }

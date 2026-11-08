@@ -28,7 +28,7 @@ import {
   type RanoConfig,
 } from '../../shared/types.js';
 import { isBlockedPath } from '../engine/permissions.js';
-import { classifyBash, type BashDecision, type BashKind } from './bashRules.js';
+import { classifyBash, type BashDecision, type BashKind, type BashRisk } from './bashRules.js';
 import { CODE_MAP_FILE } from './leaderPrompt.js';
 import { fileKey } from '../approvals/approvalQueue.js';
 import { isConnectorReadTool } from '../connectors/readTools.js';
@@ -526,6 +526,23 @@ function fileNames(paths: string[]): string {
   return names.length === 1 ? shortLabel(names[0]) : `${shortLabel(names[0])} 외 ${names.length - 1}개`;
 }
 
+const KILL_NAME = /^[A-Za-z][A-Za-z0-9._-]{0,23}$/;
+const KILL_PID = /^\d{1,10}$/;
+
+/**
+ * 프로그램 끄기 제목에 붙일 대상: 끌 대상이 (프로그램과 함께 따져) 하나뿐이고, 공백 없는 한 단어 24자 이하
+ * (영문으로 시작하는 이름 또는 숫자만인 번호)이며 비밀처럼 보이지 않을 때만. 그 밖(공백 든 -f 패턴·경로·한글·따옴표 등)은 빈 글.
+ */
+export function killTitleTarget(kill: Pick<BashRisk, 'program' | 'targets'>[]): string {
+  const pairs = new Set(kill.flatMap((r) => r.targets.map((t) => `${r.program}\u0000${t}`)));
+  if (pairs.size !== 1) return '';
+  const [program, t] = [...pairs][0].split('\u0000');
+  if (program !== kill[0].program) return '';
+  if (!KILL_NAME.test(t) && !KILL_PID.test(t)) return '';
+  if (randomLooking(t) || redactCommand(t) !== t) return '';
+  return t;
+}
+
 /**
  * 명령 승인 카드 제목: "쉬운 말 종류: 대상 이름".
  * 제목은 화면·맥 알림·휴대폰·events.jsonl·활동 기록으로 그대로 가므로 명령 인자 원문을 넣지 않는다
@@ -539,7 +556,10 @@ export function bashTitle(mission: MissionConfig, kind: BashKind, b: Pick<BashDe
   // [제목, 따로 세는 일인지] — 공용 임시 폴더·파일 쓰기는 "어디에"라서 다른 일이 있으면 세지 않는다
   const cats: [string, boolean][] = [];
   const kill = of('kill');
-  if (kill.length) cats.push([`프로그램 끄기: ${kill[0].program}`, true]);
+  if (kill.length) {
+    const target = killTitleTarget(kill);
+    cats.push([`프로그램 끄기: ${kill[0].program}${target ? ` ${target}` : ''}`, true]);
+  }
   const net = of('network');
   if (net.length) cats.push([`인터넷으로 보내기·받기: ${net.flatMap((r) => r.targets)[0] ?? net[0].program}`, true]);
   const del = of('delete');

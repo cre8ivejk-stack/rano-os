@@ -31,6 +31,8 @@ import { shareWithMission } from '../engine/attachments.js';
 import { fetchPlanLimits, recordLimit, recordResult } from '../engine/usage.js';
 import { roleSkills, skillCatalog } from '../skills/skills.js';
 import { mcpServersFor } from '../connectors/connectors.js';
+import { FILE_TOOLS } from '../approvals/approvalQueue.js';
+import { buildCarryBlock, isLeaderEditTarget, leaderEditNote, runTaskAttempts } from './leaderCarry.js';
 
 export interface MissionLeaderDeps {
   config: RanoConfig;
@@ -114,6 +116,8 @@ export class MissionLeader implements MissionLeaderApi {
   private currentTask: MissionTask | null = null;
   // 이번 과제에서 작업 담당·검수 담당이 마지막으로 끝난 순서 (최종본 재검수 확인용)
   private reviewSeq = { tick: 0, lastWork: 0, lastReview: 0 };
+  // 이번 과제에서 리더 자신이 시안 폴더·작업 폴더에 Write/Edit 해 성공한 것 (tick = 그때의 팀원 끝남 순서 번호)
+  private leaderEdits: { tick: number; file: string }[] = [];
   private abort: AbortController | null = null;
   private closed = false;
   private queue: Promise<unknown> = Promise.resolve();
@@ -195,6 +199,8 @@ export class MissionLeader implements MissionLeaderApi {
     // 앱이 꺼지는 중이면 줄 서 있던 과제는 시작하지 않는다 (대화·현황판에 흔적을 남기지 않고, 다음 실행 때 이어 간다)
     if (this.closed) return { ok: false, report: '앱이 종료되는 중이라 시작하지 않았어요' };
     this.safe(() => task.onStart?.());
+    // 과제마다 새 대화: 앞 과제는 앱이 "직전 과제" 묶음으로 붙인다(이번 지시를 저장하기 전 기록으로 만든다)
+    const carry = await this.carryBlock(task.from).catch(() => '');
     await this.saveMessage(task.from === 'rano' ? 'rano' : 'user', task.text, task.attachments);
     let started: MissionTask | null = null;
     this.safe(() => {
@@ -209,6 +215,7 @@ export class MissionLeader implements MissionLeaderApi {
     };
     this.currentTask = mt;
     this.reviewSeq = { tick: 0, lastWork: 0, lastReview: 0 };
+    this.leaderEdits = [];
     this.guard.setTask({ id: mt.id, title: mt.title, planFirst: !!task.planFirst });
     // 이 과제의 시안 폴더: 작업 리포 밖이라 승인 없이 쓸 수 있다
     const drafts = this.guard.draftsDir(mt.id);
@@ -231,17 +238,14 @@ export class MissionLeader implements MissionLeaderApi {
       if (shared.paths.length)
         pics = `\n\n[첨부 그림] 사용자가 붙인 그림이에요. Read 도구로 열어 보세요(팀원에게도 이 경로를 넘기세요).${task.attachments.some((a) => a.marked) ? ' 그림 위의 펜·네모·화살표·번호는 사용자가 고치고 싶은 곳을 직접 표시한 거예요. 번호는 지시 글의 "1번 …"과 짝지으세요.' : ''}\n${shared.paths.map((p) => `- ${p}`).join('\n')}`;
     }
-    const prompt = `${task.text}${pics}${appNote}`;
+    const prompt = `${task.text}${pics}${appNote}${carry ? `\n\n${carry}` : ''}`;
     if (this.outputs) await this.outputs.taskStarted(this.mission, mt).catch(() => undefined);
 
     let ok = false;
     let report = '';
     try {
-      const { sessionId } = await this.store.load();
-      let result = await this.attempt(prompt, sessionId ?? undefined);
-      if (sessionId && result.errorText !== null && !result.text && (!result.gotInit || looksLikeMissingSession(result.errorText))) {
-        result = await this.attempt(prompt, undefined);
-      }
+      // 과제마다 새 대화로 시작한다(저장된 리더 대화 번호로 이어 쓰지 않음). 과제 안 이어가기 실패 재시도 규칙은 runTaskAttempts 에 그대로
+      const result = await runTaskAttempts((resume) => this.attempt(prompt, resume), undefined, looksLikeMissingSession);
       if (result.errorText === null && result.text) {
         ok = true;
         report = result.text;
@@ -258,6 +262,12 @@ export class MissionLeader implements MissionLeaderApi {
         if (note) {
           report += `\n\n(앱 확인: ${note}. 이 결과는 최종 검수 전 상태예요)`;
           this.safe(() => this.tracker.activity('앱', `확인 필요: ${note}`));
+        }
+        // 작은 수정은 리더가 직접 고칠 수 있다: 마지막 검수 뒤 리더가 직접 고친 횟수·파일을 앱이 세어 붙인다(검수 생략 과제도)
+        const edits = leaderEditNote(this.leaderEdits, seq.lastReview);
+        if (edits) {
+          report += `\n\n(앱 확인: ${edits})`;
+          this.safe(() => this.tracker.activity('앱', edits));
         }
       } else {
         const friendly =
@@ -280,6 +290,32 @@ export class MissionLeader implements MissionLeaderApi {
     this.currentTask = null;
     this.guard.setTask(null);
     return { ok, report, taskId: mt.id };
+  }
+
+  /** "직전 과제" 묶음: 직전 과제 id·결과는 결과물함 기록(outputs.json), 지시·직접 대화는 리더 대화 기록, 사용자 메모는 승인함에서 */
+  private async carryBlock(from: 'rano' | 'user'): Promise<string> {
+    const { messages } = await this.store.load();
+    let tasks: ReturnType<OutputsApi['list']> = [];
+    let approvals: ReturnType<ApprovalQueueApi['list']> = [];
+    try {
+      tasks = this.outputs?.list(this.mission.id) ?? [];
+    } catch {
+      tasks = [];
+    }
+    try {
+      approvals = this.approvals?.list() ?? [];
+    } catch {
+      approvals = [];
+    }
+    return buildCarryBlock({
+      missionId: this.mission.id,
+      from,
+      tasks,
+      messages,
+      approvals,
+      draftsDir: (id) => this.guard.draftsDir(id),
+      handoffFile: HANDOFF_FILE,
+    });
   }
 
   private async attempt(prompt: string, resume: string | undefined): Promise<AttemptResult> {
@@ -365,6 +401,8 @@ export class MissionLeader implements MissionLeaderApi {
     let segments: string[] = [];
     const allSegments: string[] = [];
     const memberCalls = new Map<string, string>(); // Agent tool_use_id → 역할
+    const leaderEditCalls = new Map<string, string>(); // 리더 자신의 Write/Edit tool_use_id → 고친 파일
+    const editDrafts = this.guard.draftsDir();
     const reviewerRoles = new Set(mission.reviewerRoles);
     const lastMemberActivity = new Map<string, { text: string; at: number }>();
 
@@ -436,6 +474,11 @@ export class MissionLeader implements MissionLeaderApi {
             if (b.type === 'text' && typeof b.text === 'string' && b.text.trim()) texts.push(b.text.trim());
             if (b.type === 'tool_use') {
               hadToolUse = true;
+              if (FILE_TOOLS.has(b.name)) {
+                const input = (b.input ?? {}) as Record<string, unknown>;
+                const file = typeof input.file_path === 'string' ? input.file_path : typeof input.notebook_path === 'string' ? input.notebook_path : '';
+                if (isLeaderEditTarget(file, editDrafts, mission.targets, HANDOFF_FILE)) leaderEditCalls.set(b.id, file);
+              }
               if (b.name === SUBAGENT_TOOL) {
                 const input = (b.input ?? {}) as Record<string, unknown>;
                 const role = typeof input.subagent_type === 'string' ? input.subagent_type : '팀원';
@@ -476,6 +519,12 @@ export class MissionLeader implements MissionLeaderApi {
           if (Array.isArray(content)) {
             for (const b of content) {
               if (b && typeof b === 'object' && b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
+                // 리더 자신의 파일 고치기가 성공했으면(승인 거절·오류는 빼고) 센다
+                const edited = leaderEditCalls.get(b.tool_use_id);
+                if (edited !== undefined) {
+                  leaderEditCalls.delete(b.tool_use_id);
+                  if (!b.is_error) this.leaderEdits.push({ tick: this.reviewSeq.tick, file: edited });
+                }
                 const role = memberRoles.get(b.tool_use_id);
                 if (role && reviewerRoles.has(role) && !b.is_error && this.outputs && this.currentTask) {
                   const reviewText = cleanHandBack(toolResultText(b.content));

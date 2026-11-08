@@ -22,11 +22,12 @@ import {
   type RanoUiEvent,
 } from '../../shared/types.js';
 import { createPermissionGate } from './permissions.js';
-import { buildRanoSystemPrompt } from './ranoPrompt.js';
+import { buildRanoSystemPrompt, ranoMissionList, ranoPromptFrame } from './ranoPrompt.js';
 import { zoneText } from '../admin/paths.js';
 import { imageBlocks } from './attachments.js';
 import { recordLimit, recordResult } from './usage.js';
 import { findUnanswered, LANE_LIMITS, markPassed, noticePrompt, planNextTurn, toolLabel, userTurnPrompt, type LaneLimits, type LaneNotice, type LaneUser, type TurnPlan } from './ranoLanes.js';
+import { contentKey, nextState, planPrompt, PromptStateFile, withNotice, type PromptPlan, type RanoPromptState } from './ranoPromptState.js';
 
 export interface RanoSessionDeps {
   config: RanoConfig;
@@ -80,6 +81,8 @@ interface AttemptResult {
   gotInit: boolean;
   ttftMs?: number; // 엔진이 알려 준 첫 글자까지 시간
   engineMs?: number; // 엔진이 알려 준 이번 일 시간
+  plan?: PromptPlan; // 이번 시도에 넘긴 지침·안내와, 정상으로 끝나면 비교 기준이 될 판
+  compacted?: boolean; // 이번 시도 중 엔진이 대화를 요약함(compact_boundary)
 }
 
 /** 한 줄 JSON 기록을 덧붙인다. 실패해도 조용히 넘어간다. 비밀 값은 넘기지 않는다. */
@@ -249,6 +252,9 @@ export class RanoCore implements RanoSessionApi {
   // 앞 차례 엔진: 결과가 오면 답은 바로 확정하지만 엔진은 뒤에서 마저 끝난다(사용 한도 받기 등).
   // 라노 도구 서버(MCP)는 앱 전체에 하나뿐이라 앞 엔진이 붙어 있는 채로 새 엔진을 켜면 "Already connected" 로 빠진다
   private prevEngine: { finished: Promise<void>; close: () => void } | null = null;
+  // 라노 지침 고정: 이 대화를 시작할 때 만든 지침과, 마지막으로 정상 끝난 차례에 라노가 본 기억·할 일 판(runs/rano/prompt-state.json)
+  private readonly promptFile: PromptStateFile;
+  private promptState: RanoPromptState | null | undefined; // undefined = 아직 읽지 않음
 
   // 두 칸 줄: 사용자 말(먼저) · 앱 알림(뒤)
   private users: LaneUser[] = [];
@@ -280,6 +286,30 @@ export class RanoCore implements RanoSessionApi {
     this.throttleMs = deps.liveThrottleMs ?? 80;
     this.limits = deps.limits ?? LANE_LIMITS;
     this.drainMs = deps.engineDrainMs ?? ENGINE_DRAIN_MS;
+    this.promptFile = PromptStateFile.at(deps.config.runsDir);
+  }
+
+  private loadPromptState(): RanoPromptState | null {
+    if (this.promptState === undefined) this.promptState = this.promptFile.load();
+    return this.promptState;
+  }
+
+  /** 차례가 끝난 뒤: 정상으로 끝났을 때만 비교 기준을 이번 판으로 바꾼다(요약을 받았으면 다음에 새로 만들도록 표시) */
+  private async settlePromptState(result: AttemptResult | undefined): Promise<void> {
+    if (!result) return;
+    let sessionId: string | null = null;
+    try {
+      sessionId = (await this.store.load()).sessionId;
+    } catch {
+      sessionId = null;
+    }
+    const prev = this.loadPromptState();
+    const ok = result.errorText === null && !!result.text;
+    const next = nextState(prev, result.plan, sessionId, ok, !!result.compacted);
+    if (next && next !== prev) {
+      this.promptState = next;
+      this.promptFile.save(next);
+    }
   }
 
   /** 앞 엔진이 끝나기를 기다린다. 제한 시간 안에 안 끝나면 close() 로 끄고(그 차례의 사용 한도 받기는 끊김) 조금 더 기다린 뒤 진행 */
@@ -425,6 +455,7 @@ export class RanoCore implements RanoSessionApi {
         live.reset();
         result = await this.attempt(prompt, undefined, attachments, live);
       }
+      // 지침 판 저장(settlePromptState)은 답 저장 뒤 finally 에서 한다(그 안에서 오류가 나도 답 저장·표시가 막히지 않게)
 
       // 저장은 최종 답 하나. 글이 조금 나온 뒤 오류로 끝나면 그 글을 지우지 않되 "끊김" 표시를 붙이고,
       // 답한 말로 치지 않는다(replyTo: []) → 다시 켜면 [다시 보내기] 대상. 휴대폰에도 같은 글이 간다
@@ -469,6 +500,12 @@ export class RanoCore implements RanoSessionApi {
         engineMs: result?.engineMs ?? null,
         ok: !!result && result.errorText === null,
       });
+      // 정상으로 끝난 차례만 비교 기준을 바꾼다. 다음 차례는 runTurn 이 끝난 뒤에 시작하므로 그 전에 저장된다
+      try {
+        await this.settlePromptState(result);
+      } catch (e) {
+        console.error('[rano] 지침 판 정리 실패:', e);
+      }
     }
   }
 
@@ -481,7 +518,13 @@ export class RanoCore implements RanoSessionApi {
     } catch {
       todoText = undefined;
     }
-    const systemPrompt = buildRanoSystemPrompt(memoryFiles, this.config.missions ?? [], todoText, zoneText(this.config));
+    // 지침은 대화 동안 처음 만든 판 그대로(앞부분이 바뀌지 않아 다시 읽기 할인이 유지된다). 기억·할 일이 바뀐 차례에만 내 말 앞에 안내를 붙인다
+    // 지침 틀(미션 목록·구역·지침 문구)이 저장된 지문과 다르면 지침을 새로 만들고, 안내에 미션 목록도 넣는다
+    const missions = this.config.missions ?? [];
+    const zones = zoneText(this.config);
+    const frame = { key: contentKey(ranoPromptFrame(memoryFiles, missions, zones)), missions: ranoMissionList(missions, zones) };
+    const plan = planPrompt(this.loadPromptState(), resume, memoryFiles, todoText, () => buildRanoSystemPrompt(memoryFiles, missions, todoText, zones), frame);
+    prompt = withNotice(prompt, plan.notice);
     const logPermission = (line: PermissionLogEntry) => appendJsonl(this.permissionsLog, line);
     const claudePath = this.claudePath();
 
@@ -490,7 +533,8 @@ export class RanoCore implements RanoSessionApi {
       effort: ranoEffortOf(this.config), // 라노만: 생각 깊이 (기본 'low'). 리더·팀원 옵션에는 넣지 않는다
       includePartialMessages: true, // 답을 글자 조각으로도 받아 화면에 흘려 보인다
       cwd: this.config.rootDir,
-      systemPrompt,
+      // 엔진의 지침 기록(snapshot)이 켜졌든 아니든 같은 지침을 넘긴다(기록은 덤)
+      systemPrompt: { type: 'custom', prompt: plan.systemPrompt, snapshot: true },
       tools: [], // 내장 도구(파일·명령 실행 등) 전부 끔
       mcpServers: {
         [MEMORY_MCP_NAME]: this.memoryMcp,
@@ -509,7 +553,7 @@ export class RanoCore implements RanoSessionApi {
       ...(resume ? { resume } : {}),
     };
 
-    const out: AttemptResult = { text: '', errorText: null, errorKind: null, gotInit: false };
+    const out: AttemptResult = { text: '', errorText: null, errorKind: null, gotInit: false, plan };
     // 라노 답 조각: 도구 호출 뒤에 나온 글을 최종 답으로 본다
     let segments: string[] = [];
     const allSegments: string[] = [];
@@ -563,6 +607,10 @@ export class RanoCore implements RanoSessionApi {
             if (msg.type === 'system' && msg.subtype === 'init') {
               out.gotInit = true;
               if (msg.session_id) await this.store.setSessionId(msg.session_id).catch(() => undefined);
+              continue;
+            }
+            if (msg.type === 'system' && (msg as { subtype?: string }).subtype === 'compact_boundary') {
+              out.compacted = true; // 대화가 요약됨 → 다음 차례에 지침을 새로 만들고 전체 안내
               continue;
             }
             if (msg.type === 'stream_event') {

@@ -35,7 +35,11 @@ const memory: MemoryServiceApi = { readAll: async () => [], read: async () => ''
 
 type Engine = AsyncIterable<any> & { close?: () => void };
 
-function setup(scripts: (Script | ((args: any) => Engine))[], extra: Partial<RanoConfig> = {}, opts: { engineDrainMs?: number; order?: string[] } = {}) {
+function setup(
+  scripts: (Script | ((args: any) => Engine))[],
+  extra: Partial<RanoConfig> = {},
+  opts: { engineDrainMs?: number; order?: string[]; memory?: MemoryServiceApi; todoText?: () => string } = {},
+) {
   const config = makeConfig(extra);
   const store = new ConversationStore(config);
   const events: RanoUiEvent[] = [];
@@ -48,7 +52,19 @@ function setup(scripts: (Script | ((args: any) => Engine))[], extra: Partial<Ran
     if (!s) throw new Error('시험 대본이 모자라요');
     return s(args);
   }) as QueryFn;
-  const core = new RanoCore({ config, memory, store, emit: (e) => events.push(e), memoryMcp: {}, queryFn, sdkEnv: () => ({}), liveThrottleMs: 0, afterResult: (q) => afterResult.push(q), ...(opts.engineDrainMs !== undefined ? { engineDrainMs: opts.engineDrainMs } : {}) });
+  const core = new RanoCore({
+    config,
+    memory: opts.memory ?? memory,
+    store,
+    emit: (e) => events.push(e),
+    memoryMcp: {},
+    queryFn,
+    sdkEnv: () => ({}),
+    liveThrottleMs: 0,
+    afterResult: (q) => afterResult.push(q),
+    ...(opts.engineDrainMs !== undefined ? { engineDrainMs: opts.engineDrainMs } : {}),
+    ...(opts.todoText ? { todoText: opts.todoText } : {}),
+  });
   const logLines = () => {
     const f = path.join(config.runsDir, 'events.jsonl');
     return existsSync(f) ? readFileSync(f, 'utf-8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
@@ -481,4 +497,224 @@ test('오류 줄에도 차례 번호·휴대폰 표시가 붙는다', async () =
   assert.ok(err);
   assert.equal(err.turn, 1);
   assert.equal(err.mobile, true);
+});
+
+// ---- 3-B: 라노 지침 고정 + 바뀐 차례에만 "[앱 안내] 바뀐 내용" ----
+function world(todo0 = '### 홈\n- [대기] 메뉴 정리 (id: t1)') {
+  const files: Record<string, string> = { 'me.md': '이름: 지케이', 'priorities.md': '', 'missions.md': '- 홈: 진행 중' };
+  let todo = todo0;
+  const mem: MemoryServiceApi = {
+    readAll: async () => Object.entries(files).map(([name, content]) => ({ name, content })),
+    read: async (n) => files[n] ?? '',
+    write: async () => ({ committed: false }),
+  };
+  return { files, mem, setTodo: (t: string) => void (todo = t), todoText: () => todo };
+}
+const sysOf = (c: { options: any }) => {
+  assert.equal(c.options.systemPrompt.type, 'custom');
+  assert.equal(c.options.systemPrompt.snapshot, true);
+  return String(c.options.systemPrompt.prompt);
+};
+const said = (c: { prompt: unknown }) => String(c.prompt);
+const HEAD = '[앱 안내] 바뀐 내용';
+async function say(t: ReturnType<typeof setup>, text: string) {
+  await t.core.send(text);
+  await t.core.whenIdle();
+}
+
+test('지침 고정: 같은 대화 동안 처음 만든 지침 그대로, 기억·할 일이 바뀐 차례에만 바뀐 것의 최신 전체를 내 말 앞에', async () => {
+  const w = world();
+  const t = setup([simpleAnswer('1'), simpleAnswer('2'), simpleAnswer('3'), simpleAnswer('4')], {}, { memory: w.mem, todoText: w.todoText });
+  await say(t, 'a');
+  assert.equal(t.calls[0].options.resume, undefined);
+  assert.equal(said(t.calls[0]), 'a', '새 대화 첫 차례는 안내 없음');
+  assert.ok(sysOf(t.calls[0]).includes('[대기] 메뉴 정리'));
+
+  w.setTodo('### 홈\n- [진행 중] 메뉴 정리 (id: t1)');
+  await say(t, 'b');
+  assert.equal(t.calls[1].options.resume, 'sess-1');
+  assert.equal(sysOf(t.calls[1]), sysOf(t.calls[0]), '지침은 그대로');
+  const p1 = said(t.calls[1]);
+  assert.ok(p1.startsWith(`${HEAD} —`), p1);
+  assert.ok(p1.includes('### 할 일 목록 (최신 전체)\n### 홈\n- [진행 중] 메뉴 정리 (id: t1)'));
+  assert.ok(!p1.includes('### 기억'), '바뀌지 않은 기억은 안 붙임');
+  assert.ok(p1.trimEnd().endsWith('b'));
+
+  await say(t, 'c');
+  assert.equal(said(t.calls[2]), 'c', '바뀐 것이 없으면 안내 없음');
+  assert.equal(sysOf(t.calls[2]), sysOf(t.calls[0]));
+
+  w.files['missions.md'] = '- 홈: 보고 도착, 확인 요청';
+  await say(t, 'd');
+  const p3 = said(t.calls[3]);
+  assert.ok(p3.startsWith(HEAD));
+  assert.ok(p3.includes('### 기억 missions.md (최신 전체)\n- 홈: 보고 도착, 확인 요청'));
+  assert.ok(!p3.includes('### 할 일 목록'), '할 일은 그대로라 안 붙임');
+  assert.ok(!p3.includes('### 기억 me.md'));
+  assert.equal(sysOf(t.calls[3]), sysOf(t.calls[0]));
+});
+
+test('비교는 내용 기준: 할 일 메모의 시각만 바뀌면(todoStore.describe) 안내를 붙이지 않는다', async () => {
+  const w = world('### 홈\n- [확인 요청] 메뉴 정리 (id: t1) — 리더 보고 도착 11-08 14:20');
+  const t = setup([simpleAnswer('1'), simpleAnswer('2'), simpleAnswer('3')], {}, { memory: w.mem, todoText: w.todoText });
+  await say(t, 'a');
+  w.setTodo('### 홈\n- [확인 요청] 메뉴 정리 (id: t1) — 리더 보고 도착 11-08 14:25');
+  await say(t, 'b');
+  assert.equal(said(t.calls[1]), 'b');
+  w.setTodo('### 홈\n- [대기] 메뉴 정리 (id: t1) — 리더 작업이 중단됨 11-08 14:30');
+  await say(t, 'c');
+  assert.ok(said(t.calls[2]).startsWith(HEAD), '상태·글이 바뀌면 안내');
+});
+
+test('알림 차례에도: 바뀐 내용 안내가 [앱 알림] 앞에 붙는다', async () => {
+  const w = world();
+  const t = setup([simpleAnswer('1'), simpleAnswer('보고 요약')], {}, { memory: w.mem, todoText: w.todoText });
+  await say(t, 'a');
+  w.setTodo('### 홈\n- [확인 요청] 메뉴 정리 (id: t1)');
+  await t.core.notify('홈 리더 보고 (과제: 메뉴, 결과: 완료)\n\n보고 원문', 'report');
+  await t.core.whenIdle();
+  const p = said(t.calls[1]);
+  assert.ok(p.startsWith(HEAD), p);
+  assert.ok(p.includes('[확인 요청] 메뉴 정리'));
+  assert.ok(p.includes('[앱 알림] 홈 리더 보고'));
+  assert.ok(p.indexOf(HEAD) < p.indexOf('[앱 알림]'));
+  assert.equal(sysOf(t.calls[1]), sysOf(t.calls[0]));
+});
+
+test('처음 적용: 이어 쓰는 대화인데 저장된 지침 판이 없으면 지침을 새로 만들고 전체 안내를 한 번 붙인다', async () => {
+  const w = world();
+  const t = setup([simpleAnswer('1'), simpleAnswer('2')], {}, { memory: w.mem, todoText: w.todoText });
+  await t.store.setSessionId('sess-1'); // 이 기능 전부터 이어 오던 대화
+  await say(t, 'a');
+  assert.equal(t.calls[0].options.resume, 'sess-1');
+  const p = said(t.calls[0]);
+  assert.ok(p.startsWith(`${HEAD}(전체)`), p);
+  for (const part of ['### 기억 me.md', '### 기억 priorities.md', '### 기억 missions.md', '### 할 일 목록 (최신 전체)']) assert.ok(p.includes(part), part);
+  await say(t, 'b');
+  assert.equal(said(t.calls[1]), 'b', '다음 차례부터는 바뀐 것만');
+  assert.equal(sysOf(t.calls[1]), sysOf(t.calls[0]));
+  const saved = JSON.parse(readFileSync(path.join(t.config.runsDir, 'rano', 'prompt-state.json'), 'utf-8'));
+  assert.equal(saved.sessionId, 'sess-1');
+  assert.equal(saved.systemPrompt, sysOf(t.calls[0]));
+});
+
+test('이어가기 실패로 새 대화 재시도: 지침을 새로 만들고(최신 기억) 안내는 붙이지 않으며, 그 판이 새 기준', async () => {
+  const w = world();
+  const t = setup(
+    [
+      simpleAnswer('1'),
+      async function* () {
+        throw new Error('No conversation found with session ID sess-1');
+      },
+      simpleAnswer('2'),
+      simpleAnswer('3'),
+    ],
+    {},
+    { memory: w.mem, todoText: w.todoText },
+  );
+  await say(t, 'a');
+  w.files['me.md'] = '이름: 지케이 (호칭: 제이)';
+  await say(t, 'b');
+  assert.equal(t.calls[1].options.resume, 'sess-1');
+  assert.ok(said(t.calls[1]).startsWith(HEAD), '첫 시도(이어 쓰기)에는 바뀐 것 안내');
+  assert.equal(t.calls[2].options.resume, undefined);
+  assert.equal(said(t.calls[2]), 'b', '새 대화 재시도에는 안내 없음');
+  assert.ok(sysOf(t.calls[2]).includes('호칭: 제이'), '지침을 최신 기억으로 새로 만듦');
+  assert.notEqual(sysOf(t.calls[2]), sysOf(t.calls[0]));
+  await say(t, 'c');
+  assert.equal(said(t.calls[3]), 'c');
+  assert.equal(sysOf(t.calls[3]), sysOf(t.calls[2]), '재시도에서 만든 지침이 새 고정 판');
+});
+
+test('요약(compact_boundary)을 받은 뒤 차례: 지침을 새로 만들고 전체 안내를 한 번', async () => {
+  const w = world();
+  const t = setup(
+    [
+      simpleAnswer('1'),
+      async function* () {
+        yield init;
+        yield { type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'auto', pre_tokens: 150000 }, uuid: 'c', session_id: 'sess-1' };
+        yield assistant('m2', [{ type: 'text', text: '2' }]);
+        yield ok('2');
+      },
+      simpleAnswer('3'),
+      simpleAnswer('4'),
+    ],
+    {},
+    { memory: w.mem, todoText: w.todoText },
+  );
+  await say(t, 'a');
+  await say(t, 'b');
+  assert.equal(said(t.calls[1]), 'b');
+  w.files['priorities.md'] = '1순위: 홈';
+  await say(t, 'c');
+  const p = said(t.calls[2]);
+  assert.ok(p.startsWith(`${HEAD}(전체)`), p);
+  assert.ok(sysOf(t.calls[2]).includes('1순위: 홈'), '요약 뒤에는 지침을 최신으로 새로 만듦');
+  assert.notEqual(sysOf(t.calls[2]), sysOf(t.calls[0]));
+  await say(t, 'd');
+  assert.equal(said(t.calls[3]), 'd');
+  assert.equal(sysOf(t.calls[3]), sysOf(t.calls[2]));
+});
+
+test('끊긴 차례 뒤에는 비교 기준이 바뀌지 않는다: 다음 차례에 같은 안내를 다시 붙인다', async () => {
+  const w = world();
+  const t = setup(
+    [
+      simpleAnswer('1'),
+      async function* () {
+        yield init;
+        yield textStart;
+        yield delta('반쯤');
+        throw new Error('socket hang up');
+      },
+      simpleAnswer('3'),
+      simpleAnswer('4'),
+    ],
+    {},
+    { memory: w.mem, todoText: w.todoText },
+  );
+  await say(t, 'a');
+  w.setTodo('### 홈\n- [진행 중] 메뉴 정리 (id: t1)');
+  await say(t, 'b');
+  assert.ok(said(t.calls[1]).startsWith(HEAD));
+  assert.ok(ranoMsgs(t.events)[1].message.text.endsWith(CUT_NOTE), '이 차례는 끊김');
+  await say(t, 'c');
+  assert.ok(said(t.calls[2]).startsWith(HEAD), '끊긴 차례에 붙인 안내를 다시 붙임');
+  assert.ok(said(t.calls[2]).includes('[진행 중] 메뉴 정리'));
+  await say(t, 'd');
+  assert.equal(said(t.calls[3]), 'd', '정상으로 끝난 뒤에야 기준이 바뀜');
+});
+
+test('미션 목록이 바뀐 뒤 첫 차례(앱 재시작 뒤 이어 쓰는 대화 등): 지침을 새로 만들고 안내에 미션 목록을 넣는다', async () => {
+  const w = world();
+  const t = setup([simpleAnswer('1'), simpleAnswer('2'), simpleAnswer('3')], { missions: [{ id: 'home', name: '홈', zone: 'personal' } as any] }, { memory: w.mem, todoText: w.todoText });
+  await say(t, 'a');
+  assert.ok(sysOf(t.calls[0]).includes('- 홈 (id: home,'));
+  const saved = JSON.parse(readFileSync(path.join(t.config.runsDir, 'rano', 'prompt-state.json'), 'utf-8'));
+  assert.equal(typeof saved.frame, 'string', '지침 틀 지문 저장');
+  t.config.missions!.push({ id: 'budget', name: '가계부', zone: 'personal' } as any); // 미션 추가(재시작 뒤 반영되는 설정)
+  await say(t, 'b');
+  assert.equal(t.calls[1].options.resume, 'sess-1');
+  const p = said(t.calls[1]);
+  assert.ok(p.startsWith(`${HEAD}(전체)`), p);
+  assert.ok(p.includes('### 미션 목록 (최신 전체)\n- 홈 (id: home,') && p.includes('- 가계부 (id: budget,'), p);
+  assert.ok(sysOf(t.calls[1]).includes('- 가계부 (id: budget,'), '지침도 새로 만듦');
+  assert.notEqual(sysOf(t.calls[1]), sysOf(t.calls[0]));
+  await say(t, 'c');
+  assert.equal(said(t.calls[2]), 'c', '다음 차례부터는 안내 없음');
+  assert.equal(sysOf(t.calls[2]), sysOf(t.calls[1]));
+});
+
+test('지침 판 정리에서 오류가 나도 답은 저장·표시된다', async () => {
+  const w = world();
+  const t = setup([simpleAnswer('답이에요')], {}, { memory: w.mem, todoText: w.todoText });
+  (t.core as any).settlePromptState = async () => {
+    throw new Error('일부러 낸 오류');
+  };
+  await say(t, 'a');
+  const { messages } = await t.store.load();
+  assert.deepEqual(messages.map((m) => [m.role, m.text]), [['user', 'a'], ['rano', '답이에요']]);
+  assert.equal(ranoMsgs(t.events).length, 1);
+  assert.ok(!t.events.some((e) => e.kind === 'error'), '오류 표시 없음');
 });
