@@ -17,6 +17,7 @@ import { MissionDispatcher } from './mission/dispatcher.js';
 import { createMissionMcpServer } from './mission/missionTools.js';
 import { ApprovalQueue } from './approvals/approvalQueue.js';
 import { OutputsStore } from './approvals/outputs.js';
+import { checkPreviewFile, taskDraftsDir, type PreviewCheck } from './approvals/previewSafety.js';
 import { isBlockedPath } from './engine/permissions.js';
 import { TodoStore } from './todo/todoStore.js';
 import { createTodoMcpServer } from './todo/todoTools.js';
@@ -174,17 +175,27 @@ async function boot() {
         : {}),
     });
   });
-  // 결정 카드의 시안 열기: 그 요청에 붙은 시안 파일만, 시안 폴더(runs/drafts) 안에 있을 때만 연다
-  ipcMain.handle(IPC.approvalOpenPreview, async (_e, id: unknown, itemId: unknown, key: unknown) => {
+  // 결정 카드의 시안 열기: 그 요청에 붙은 시안 파일만. 누를 때마다 승인 기록의 미션·과제로 그 과제의 시안 폴더를 다시 계산하고,
+  // 실제 경로·파일 종류·형식·실행 권한을 확인한 뒤(previewSafety.ts) 확인을 마친 실제 경로만 연다
+  const previewCheck = (id: unknown, itemId: unknown, key: unknown): PreviewCheck => {
     const item = approvals.list().find((a) => a.id === id);
     const opt = item?.decisionItems?.find((it) => it.id === itemId)?.options.find((o) => o.key === key);
-    const draftsRoot = path.join(config.runsDir, 'drafts');
-    const p = opt?.preview;
-    if (!p || !path.isAbsolute(p) || !(p === draftsRoot || p.startsWith(draftsRoot + path.sep) || p.includes(`${path.sep}runs${path.sep}drafts${path.sep}`)) || !existsSync(p)) {
-      return { ok: false, message: '시안 파일을 찾지 못했어요' };
-    }
-    const err = await shell.openPath(p);
-    return err ? { ok: false, message: '시안을 여는 프로그램을 찾지 못했어요' } : { ok: true };
+    if (!item || !opt?.preview) return { ok: false, message: '시안 파일을 찾지 못했어요' };
+    return checkPreviewFile(opt.preview, taskDraftsDir(config.runsDir, item.missionId, item.taskId));
+  };
+  ipcMain.handle(IPC.approvalOpenPreview, async (_e, id: unknown, itemId: unknown, key: unknown) => {
+    const c = previewCheck(id, itemId, key);
+    if (!c.ok) return { ok: false, message: c.message, ...(c.reveal ? { reveal: true } : {}) };
+    const err = await shell.openPath(c.path);
+    return err ? { ok: false, message: '시안을 여는 프로그램을 찾지 못했어요', reveal: true } : { ok: true };
+  });
+  // 막힌 시안을 Finder 에서 위치만 보여 준다(실행하지 않음)
+  ipcMain.handle(IPC.approvalRevealPreview, async (_e, id: unknown, itemId: unknown, key: unknown) => {
+    const c = previewCheck(id, itemId, key);
+    const where = c.ok ? c.path : c.reveal;
+    if (!where) return { ok: false, message: c.ok ? '시안 파일을 찾지 못했어요' : c.message };
+    shell.showItemInFolder(where);
+    return { ok: true };
   });
   ipcMain.handle(IPC.outputsList, async () => outputs.list());
   ipcMain.handle(IPC.openFile, async (_e, p: unknown) => {

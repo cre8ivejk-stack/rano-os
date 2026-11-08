@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { MissionConfig, RanoConfig, RoleModel } from '../../shared/types.js';
 import { roleSkills, skillCatalog, skillPromptFor } from '../skills/skills.js';
+import { missionTmpDir } from './missionTmp.js';
 
 export const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob'] as const;
 /** 3단계(approval)에서 팀원이 쓸 수 있는 내장 도구. 모두 앱의 권한 검사를 거친다(쓰기·실행은 승인함). */
@@ -84,16 +85,20 @@ const READ_ONLY_NOTE = `
 - 위 본문에 쓰기나 게시 절차가 있더라도, 지금은 초안이나 바꿀 내용을 결과 보고에 적어 리포 리더에게 넘긴다.
 - 결과는 쉬운 한국어로, 근거가 된 파일 위치와 함께 보고한다.`;
 
-const APPROVAL_NOTE = `
+/** 승인함 미션 팀원 안내. tmpDir: 이 미션 전용 임시 폴더(경로를 글자 그대로 적어 준다) */
+export function approvalNote(tmpDir: string): string {
+  return `
 
 ## 지금 권한 (승인함 미션)
 - 읽기·검색은 바로 할 수 있다. 파일 쓰기·수정과 명령 실행은 앱이 파일 하나, 명령 하나까지 사용자 승인함에 올리고, 승인된 뒤에만 실행된다.
 - 쓰기나 명령 직전에는 무엇을 왜 하는지 쉬운 한국어로 한두 줄 먼저 말한다. 그 말이 승인함의 "왜"로 쓰인다. 권장안이 있으면 "권장: …" 한 줄로 덧붙인다.
 - 리포 리더가 "시안 폴더에 고친 파일을 만들라"고 하면 작업 폴더 대신 그 시안 폴더에 고친 뒤의 전체 내용을 쓴다(묶음 승인용, 승인 없이 쓸 수 있다).
-- 확인용 임시 스크립트·결과 파일은 이 과제의 시안 폴더에 Write 로 만들거나 /tmp 에 쓴다(둘 다 승인 없음). 읽기·grep·sed -n·find 와 타입 검사·린트·시험 명령도 바로 된다. 만든 스크립트를 node·python 으로 실행하는 것은 승인함을 거치므로, 여러 번 나눠 돌리지 말고 한 스크립트에 모아 한 번에 돌린다.
+- 확인용 임시 스크립트는 이 과제의 시안 폴더에 Write 로 만든다(승인 없음. Write·Edit 도구는 시안 폴더에만 승인 없이 쓴다). 명령 결과는 이 미션 임시 폴더 ${tmpDir} 에 Bash 로 담고 읽는다(예: npm test > ${tmpDir}/test.txt 2>&1, 승인 없음). 경로는 글자 그대로 적는다. /tmp, $TMPDIR, mktemp 를 쓰면 승인함으로 간다. 읽기·grep·sed -n·find 와 타입 검사·린트·시험 명령도 바로 된다. 만든 스크립트를 node·python 으로 실행하는 것은 승인함을 거치므로, 여러 번 나눠 돌리지 말고 한 스크립트에 모아 한 번에 돌린다.
+- 시안 폴더·임시 폴더 안이라도 권한 바꾸기(chmod·chown·install)와 밖(작업 폴더 등)을 가리키는 바로가기(ln) 만들기는 승인함으로 간다.
 - 커밋·삭제·DB·배포는 리포 리더가 따로 지시한 경우에만 시도한다. 반려되면 우회하지 말고 결과 보고에 적는다.
 - 비밀 키·인증 파일, .env 계열 파일은 열지 않는다. 앱이 막는다.
 - 결과는 쉬운 한국어로, 근거가 된 파일 위치와 함께 보고한다.`;
+}
 
 /** 역할 파일을 mission.roleDirs 앞에서부터 찾아 처음 있는 것의 경로와 내용을 돌려준다. 없으면 null. */
 export function findRoleFile(mission: MissionConfig, role: string): { file: string; text: string } | null {
@@ -135,7 +140,7 @@ export function loadRoles(config: RanoConfig, mission: MissionConfig): Record<st
     }
     out[role] = {
       description: parsed.description,
-      prompt: parsed.body + (readOnly ? READ_ONLY_NOTE : APPROVAL_NOTE) + (readOnly ? '' : skillPromptFor(role) + skillCatalog(roleSkills()[role] ?? [])),
+      prompt: parsed.body + (readOnly ? READ_ONLY_NOTE : approvalNote(missionTmpDir(config, mission.id))) + (readOnly ? '' : skillPromptFor(role) + skillCatalog(roleSkills()[role] ?? [])),
       tools,
       // 라노 데이터 폴더의 역할 파일에 model: sonnet/opus 가 있으면 그 모델, 아니면 라노 설정. 과제마다 고른 모델은 팀원을 부를 때 덮어쓴다
       model: modelFor(config, isOwnRoleFile(config, found.file) ? parsed.model : 'default'),

@@ -42,6 +42,7 @@ const CH_MISSION_SEND = 'mission:send';
 const CH_APPROVALS_LIST = 'approvals:list';
 const CH_APPROVAL_DECIDE = 'approvals:decide';
 const CH_APPROVAL_OPEN_PREVIEW = 'approvals:open-preview';
+const CH_APPROVAL_REVEAL_PREVIEW = 'approvals:reveal-preview';
 const CH_OUTPUTS_LIST = 'outputs:list';
 const CH_OPEN_FILE = 'outputs:open';
 const CH_REVEAL_FILE = 'outputs:reveal';
@@ -162,8 +163,11 @@ const api: RanoApi = {
     }
     await ipcRenderer.invoke(CH_APPROVAL_DECIDE, String(id), clean);
   },
-  approvalOpenPreview(id: string, itemId: string, optionKey: string): Promise<{ ok: boolean; message?: string }> {
+  approvalOpenPreview(id: string, itemId: string, optionKey: string): Promise<{ ok: boolean; message?: string; reveal?: boolean }> {
     return ipcRenderer.invoke(CH_APPROVAL_OPEN_PREVIEW, String(id), String(itemId), String(optionKey));
+  },
+  approvalRevealPreview(id: string, itemId: string, optionKey: string): Promise<{ ok: boolean; message?: string }> {
+    return ipcRenderer.invoke(CH_APPROVAL_REVEAL_PREVIEW, String(id), String(itemId), String(optionKey));
   },
   outputsList(): Promise<TaskOutput[]> {
     return ipcRenderer.invoke(CH_OUTPUTS_LIST);

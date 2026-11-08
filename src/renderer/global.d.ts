@@ -350,7 +350,8 @@ interface RanoApi {
   missionSend(missionId: string, text: string, attachments?: NewAttachment[]): Promise<{ ok: boolean; message?: string }>;
   approvalsList(): Promise<ApprovalRequest[]>;
   approvalDecide(id: string, decision: ApprovalDecision): Promise<void>;
-  approvalOpenPreview(id: string, itemId: string, optionKey: string): Promise<{ ok: boolean; message?: string }>;
+  approvalOpenPreview(id: string, itemId: string, optionKey: string): Promise<{ ok: boolean; message?: string; reveal?: boolean }>;
+  approvalRevealPreview(id: string, itemId: string, optionKey: string): Promise<{ ok: boolean; message?: string }>;
   outputsList(): Promise<TaskOutput[]>;
   openFile(absPath: string): Promise<{ ok: boolean; message?: string }>;
   revealFile(absPath: string): Promise<{ ok: boolean; message?: string }>;

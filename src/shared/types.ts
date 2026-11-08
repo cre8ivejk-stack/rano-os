@@ -313,7 +313,8 @@ export const IPC = {
   // ---- 3단계 ----
   approvalsList: 'approvals:list', // invoke → ApprovalRequest[]
   approvalDecide: 'approvals:decide', // invoke(id, ApprovalDecision) → void
-  approvalOpenPreview: 'approvals:open-preview', // invoke(id, itemId, optionKey) → { ok, message? } (시안 폴더 안 파일만 연다)
+  approvalOpenPreview: 'approvals:open-preview', // invoke(id, itemId, optionKey) → { ok, message?, reveal? } (그 과제 시안 폴더 안의 허용 형식 보통 파일만 연다. reveal: [폴더에서 보기] 가능)
+  approvalRevealPreview: 'approvals:reveal-preview', // invoke(id, itemId, optionKey) → { ok, message? } (시안을 Finder 에서 보기만, 실행하지 않음)
   outputsList: 'outputs:list', // invoke → TaskOutput[]
   openFile: 'outputs:open', // invoke(absPath) → { ok: boolean; message?: string } (작업 대상 폴더 안 파일만)
   revealFile: 'outputs:reveal', // invoke(absPath) → { ok: boolean; message?: string } (Finder 에서 보기)
@@ -377,7 +378,8 @@ export interface RanoApi {
   // ---- 3단계 ----
   approvalsList(): Promise<ApprovalRequest[]>;
   approvalDecide(id: string, decision: ApprovalDecision): Promise<void>;
-  approvalOpenPreview(id: string, itemId: string, optionKey: string): Promise<{ ok: boolean; message?: string }>;
+  approvalOpenPreview(id: string, itemId: string, optionKey: string): Promise<{ ok: boolean; message?: string; reveal?: boolean }>;
+  approvalRevealPreview(id: string, itemId: string, optionKey: string): Promise<{ ok: boolean; message?: string }>;
   outputsList(): Promise<TaskOutput[]>;
   openFile(absPath: string): Promise<{ ok: boolean; message?: string }>;
   revealFile(absPath: string): Promise<{ ok: boolean; message?: string }>;

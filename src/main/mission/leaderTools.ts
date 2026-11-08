@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { LEADER_MCP_NAME, type ApprovalQueueApi, type BundleFile, type DecisionItem, type MissionConfig, type MissionTrackerApi } from '../../shared/types.js';
 import { fileChangeFor, type LeaderGuard } from './leaderPermissions.js';
+import { checkPreviewFile, PREVIEW_EXTS } from '../approvals/previewSafety.js';
 
 export const LEADER_APPROVAL_KINDS = ['teamPlan', 'decision', 'numbers', 'reverseDecision', 'estimate', 'external', 'other'] as const;
 
@@ -217,20 +218,20 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
         // 무시
       }
       deps.emitActivity?.(`${guard.leaderLabel}: 승인을 기다리는 중: ${args.title}`);
-      // 결정 항목 정리: 시안 파일은 이 과제의 시안 폴더 안에 실제로 있는 것만 붙인다
+      // 결정 항목 정리: 시안 파일은 이 과제의 시안 폴더 안에 실제로 있고, [시안 열기]로 열 수 있는 것(허용 형식의 보통 파일, 실행 권한 없음)만 붙인다.
+      // 사용자가 누를 때 앱이 같은 확인(previewSafety.ts)을 다시 한다
       let decisionItems: DecisionItem[] | undefined;
       const previewProblems: string[] = [];
       if (args.kind === 'decision' && args.items?.length) {
         const dir = guard.draftsDir(task.id);
-        const realDir = dir && existsSync(dir) ? realpathSync(dir) : dir;
         decisionItems = args.items.map((it, i) => {
           const options = it.options.map((o) => {
             let preview: string | undefined;
-            if (o.preview && dir && realDir) {
+            if (o.preview && dir) {
               const abs = path.isAbsolute(o.preview) ? o.preview : path.join(dir, o.preview);
-              const real = existsSync(abs) ? realpathSync(abs) : '';
-              if (real && (real === realDir || real.startsWith(realDir + path.sep))) preview = real;
-              else previewProblems.push(`${o.key}안 시안 "${o.preview}" 을(를) 시안 폴더에서 찾지 못했어요`);
+              const c = checkPreviewFile(abs, dir);
+              if (c.ok) preview = c.path;
+              else previewProblems.push(`${o.key}안 시안 "${o.preview}" 을(를) 붙이지 못했어요: ${c.message} (허용 형식: ${[...PREVIEW_EXTS].join(' ')})`);
             }
             return { key: o.key.trim(), label: o.label.trim(), ...(o.detail ? { detail: o.detail.trim() } : {}), ...(preview ? { preview } : {}) };
           });

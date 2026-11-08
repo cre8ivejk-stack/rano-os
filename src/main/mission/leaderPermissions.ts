@@ -14,7 +14,7 @@ import type {
   PostToolUseHookInput,
   PreToolUseHookInput,
 } from '@anthropic-ai/claude-agent-sdk';
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import {
@@ -32,6 +32,7 @@ import { classifyBash } from './bashRules.js';
 import { CODE_MAP_FILE } from './leaderPrompt.js';
 import { fileKey } from '../approvals/approvalQueue.js';
 import { isConnectorReadTool } from '../connectors/readTools.js';
+import { missionTmpDir } from './missionTmp.js';
 
 export const SUBAGENT_TOOL = 'Agent'; // sdk.d.ts BUILTIN_TOOL_NAMES 기준 서브에이전트 호출 도구 이름
 const READ_TOOLS = new Set(['Read', 'Grep', 'Glob']);
@@ -77,13 +78,27 @@ export function within(target: string, root: string): boolean {
 }
 
 // 실제 경로(심볼릭 링크 풀기). 없는 파일이면 있는 부모까지 풀고 나머지를 붙인다.
-function real(p: string): string {
+// 끊긴 바로가기(가리키는 곳이 없는 링크)면 링크를 읽어 가리키는 곳으로 판단한다(그 부모 폴더의 실제 경로 + 이름).
+// 끊긴 바로가기에 쓰면 가리키는 곳에 새 파일이 생기기 때문이다
+export function real(p: string, depth = 0): string {
   let cur = p;
   const tail: string[] = [];
   for (let i = 0; i < 64; i++) {
     try {
       return path.join(realpathSync.native(cur), ...tail);
     } catch {
+      let link: string | null = null;
+      try {
+        if (lstatSync(cur).isSymbolicLink()) link = readlinkSync(cur);
+      } catch {
+        // 없는 경로: 부모로 올라간다
+      }
+      if (link !== null) {
+        if (depth >= 32) return p; // 링크가 돌고 돌면(ELOOP) 더 풀지 않는다. 그런 경로에는 쓸 수도 없다
+        // 상대 경로 링크는 링크가 놓인 폴더의 실제 위치 기준
+        const base = real(path.dirname(cur), depth + 1);
+        return real(path.join(path.resolve(base, link), ...tail), depth + 1);
+      }
       const parent = path.dirname(cur);
       if (parent === cur) return p;
       tail.unshift(path.basename(cur));
@@ -91,6 +106,54 @@ function real(p: string): string {
     }
   }
   return p;
+}
+
+/** 이미 있는 폴더인지(바로가기면 따라가서 본다) */
+function isDirPath(p: string): boolean {
+  try {
+    return statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** 폴더 아래(자기 자신 포함)에 바로가기가 있는지. 너무 크거나 깊어 다 못 보면 있다고 본다 */
+function hasLinksUnder(p: string): boolean {
+  let seen = 0;
+  const walk = (dir: string, depth: number): boolean => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    for (const e of entries) {
+      if (++seen > 5000 || depth > 16) return true;
+      if (e.isSymbolicLink()) return true;
+      if (e.isDirectory() && walk(path.join(dir, e.name), depth + 1)) return true;
+    }
+    return false;
+  };
+  try {
+    const st = lstatSync(p);
+    if (st.isSymbolicLink()) return true;
+    if (!st.isDirectory()) return false;
+  } catch {
+    return false; // 아직 없는 폴더
+  }
+  return walk(p, 0);
+}
+
+/** 승인 카드에 덧붙일 말: 바로가기라서 실제로 바뀌는 곳이 다르면 그 위치, 작업 폴더 안이면 경고 */
+function realPathNote(mission: MissionConfig, paths: string[]): string {
+  const lines: string[] = [];
+  for (const p of [...new Set(paths)]) {
+    const rp = real(p);
+    if (rp === p) continue;
+    lines.push(`실제로 바뀌는 곳: ${displayPath(rp)} (${displayPath(p)} 경로에 바로가기가 있어 따라간 위치예요)`);
+    if (inAny(rp, mission.targets)) lines.push(`주의: 실제로는 ${mission.name} 작업 폴더(리포) 안의 파일이 바뀌어요`);
+  }
+  return lines.length ? `\n${lines.join('\n')}` : '';
 }
 
 function absPath(raw: string, cwd: string): string {
@@ -107,6 +170,11 @@ function inAny(p: string, roots: string[]): boolean {
   return roots.some((r) => within(p, r) || within(p, real(r)));
 }
 
+/** 원래 경로와 링크를 푼 실제 경로가 "모두" root 안인지. 폴더 안의 바로가기로 밖(작업 리포·다른 미션 폴더)을 건드리는 우회를 막는다 */
+export function insideBoth(p: string, root: string): boolean {
+  return inAny(p, [root]) && inAny(real(p), [root]);
+}
+
 // glob 패턴에서 글롭 문자가 나오기 전까지의 고정된 앞부분
 function staticPrefix(pattern: string): string {
   const parts = pattern.split('/');
@@ -118,10 +186,9 @@ function staticPrefix(pattern: string): string {
   return fixed.join('/') || (pattern.startsWith('/') ? '/' : '.');
 }
 
-/** 차단 목록 검사(원래 경로와 링크를 푼 경로 모두). 걸린 경로를 돌려준다. */
-// 임시 폴더: 명령 결과를 잠깐 담아 두는 곳. 쓰기·읽기 모두 승인 없이 허용
+// 임시 폴더: 명령 결과를 잠깐 담아 두는 곳. 미션마다 따로(~/rano/runs/tmp/<미션>, missionTmp.ts) 두고, 그 미션의 Bash 만 승인 없이 읽고 결과를 담는다.
+// /tmp(/private/tmp)는 모든 미션이 같이 쓰는 곳이라 바로 허용하지 않는다(읽기·쓰기 모두 승인함).
 // 맥의 사용자별 임시 폴더(/var/folders/…)는 다른 앱 파일이 많아 넣지 않는다
-const TEMP_ROOTS = ['/tmp', '/private/tmp'];
 
 // 폴더 아래 비밀·차단 파일 유무 (통째 검색을 바로 허용해도 되는지). 2분 동안 기억한다
 const SECRET_SCAN_TTL = 30_000;
@@ -179,15 +246,19 @@ export function secretsUnderDir(config: RanoConfig, absDir: string): string[] {
   return result;
 }
 
+/** 차단 목록 검사(원래 경로와 링크를 푼 경로 모두). 걸린 경로를 돌려준다. */
 function blockedHit(config: RanoConfig, abs: string): string | null {
   for (const c of new Set([abs, real(abs)])) if (isBlockedPath(config, c)) return c;
   return null;
 }
 
-/** 미션 구역의 denyRead(다른 구역 폴더)를 차단 목록에 더한 설정 */
+/** 미션 구역의 denyRead(다른 구역 폴더)와 다른 구역 미션들의 임시 폴더를 차단 목록에 더한 설정 */
 export function withZoneBlocks(config: RanoConfig, mission: MissionConfig): RanoConfig {
   const deny = config.zones?.[mission.zone]?.denyRead ?? [];
-  return deny.length ? { ...config, blocked: [...config.blocked, ...deny] } : config;
+  // 다른 구역(회사↔개인) 미션의 임시 폴더는 거절. 설정 파일(rano.json)은 이미 있는 사용자 설정을 덮어쓰지 않으므로 코드에서 더한다
+  const otherZoneTmp = (config.missions ?? []).filter((m) => m.zone !== mission.zone).map((m) => missionTmpDir(config, m.id));
+  const extra = [...deny, ...otherZoneTmp];
+  return extra.length ? { ...config, blocked: [...config.blocked, ...extra] } : config;
 }
 
 /** 차단된 위치를 쉬운 말로 */
@@ -498,6 +569,7 @@ export function decideApprovalStage(
           : `노트북 셀 새 내용(앞부분):\n${redactPreview(String(input.new_source ?? ''))}`;
     const exists = existsSync(abs);
     const verb = toolName === 'Write' ? (exists ? '새 내용으로 다시 쓰려고' : '새로 만들려고') : '고치려고';
+    const realNote = realPathNote(mission, [abs]); // 바로가기라 실제로 바뀌는 곳이 다르면 알린다
     if (insideAll(mission.targets)) {
       const rel = relToTarget(mission, abs);
       return {
@@ -507,7 +579,7 @@ export function decideApprovalStage(
           kind: 'write',
           title: `${mission.name} 리포 파일 ${toolName === 'Write' && !exists ? '만들기' : '고치기'}: ${path.basename(abs)}`,
           what: `${mission.name} 리포의 ${rel} 문서를 ${verb} 해요`,
-          detail: `파일: ${displayPath(abs)}\n도구: ${toolName}${input.replace_all ? ' (모두 바꾸기)' : ''}\n\n${preview}`,
+          detail: `파일: ${displayPath(abs)}${realNote}\n도구: ${toolName}${input.replace_all ? ' (모두 바꾸기)' : ''}\n\n${preview}`,
           filePath: abs,
           change: fileChangeFor(toolName, input, abs),
         },
@@ -520,7 +592,7 @@ export function decideApprovalStage(
         kind: 'outsideWrite',
         title: `작업 폴더 밖 파일 쓰기: ${path.basename(abs)}`,
         what: `${mission.name} 작업 폴더 밖에 있는 ${displayPath(abs)} 파일을 ${verb} 해요`,
-        detail: `파일: ${displayPath(abs)}\n도구: ${toolName}\n\n${preview}`,
+        detail: `파일: ${displayPath(abs)}${realNote}\n도구: ${toolName}\n\n${preview}`,
         filePath: abs,
         change: fileChangeFor(toolName, input, abs),
       },
@@ -530,7 +602,8 @@ export function decideApprovalStage(
   // 명령 실행
   if (toolName === 'Bash') {
     const command = typeof input.command === 'string' ? input.command : '';
-    const roots = [...allowedRoots(mission), path.join(config.runsDir, 'drafts', mission.id), path.join(config.rootDir, 'skills'), ...TEMP_ROOTS]; // 시안 폴더·스킬 보관함·임시 폴더도 읽기 허용
+    const tmpDir = missionTmpDir(config, mission.id);
+    const roots = [...allowedRoots(mission), path.join(config.runsDir, 'drafts', mission.id), path.join(config.rootDir, 'skills'), tmpDir]; // 시안 폴더·스킬 보관함·이 미션 임시 폴더도 읽기 허용(/tmp 는 아님)
     const b = classifyBash(command, {
       cwd,
       targets: mission.targets.map((t) => path.resolve(t)),
@@ -538,6 +611,9 @@ export function decideApprovalStage(
       isBlocked: (p) => !!blockedHit(config, p),
       secretsUnder: (dir) => secretsUnderDir(config, dir),
       allowChecks: true,
+      realPath: (p) => real(p), // 읽는 파일은 링크를 푼 실제 경로도 읽기 허용 폴더 안이어야 바로 허용
+      isDir: isDirPath, // cp·install 대상이 폴더면 <대상>/<원본 이름> 도 바뀌는 파일로 본다
+      hasLinksUnder, // cp -R 받는 폴더 안에 바로가기가 있으면 승인함
     });
     if (b.decision === 'deny') {
       return { type: 'deny', reason: `명령에 차단 경로: ${b.blockedPaths.join(', ')}`, message: MSG_BLOCKED, blocked: b.blockedPaths[0] ?? '(명령)' };
@@ -545,21 +621,26 @@ export function decideApprovalStage(
     if (b.decision === 'allow') return { type: 'allow', reason: `읽기 명령 허용: ${b.reasons.join('; ')}` };
     const kind = b.kind ?? 'command';
     // 참고 폴더를 바꾸는 명령은 승인 없이 거절
-    if ((kind === 'write' || kind === 'outsideWrite') && b.writePaths.some((p) => inAny(p, mission.readonlyRefs))) {
+    if ((kind === 'write' || kind === 'outsideWrite') && b.writePaths.some((p) => inAny(p, mission.readonlyRefs) || inAny(real(p), mission.readonlyRefs))) {
       return { type: 'deny', reason: '명령으로 참고 폴더 쓰기', message: MSG_REFS };
     }
+    // 바로 허용할 수 있는 폴더(시안·임시) 안만 건드리는지: 바꿀 경로가 원래 경로·실제 경로 "모두" 그 안이고,
+    // 새로 만드는 링크가 가리킬 곳도 그 안이며, 권한(실행 권한 등)을 바꾸지 않을 때만. 바로가기로 작업 리포·밖을 건드리는 우회를 막는다
+    const onlyIn = (root: string) =>
+      b.fileOpsOnly === true &&
+      !b.modeChange &&
+      b.writePaths.length > 0 &&
+      b.writePaths.every((p) => insideBoth(p, root)) &&
+      (b.linkSources ?? []).every((s) => insideBoth(s, root));
     // 이 과제의 시안 폴더 안만 지우거나 쓰는 명령(rm·mv·cp 등)은 승인 없이 허용 (작업 리포가 아닌 라노의 임시 공간)
-    if ((kind === 'delete' || kind === 'write' || kind === 'outsideWrite') && b.fileOpsOnly && actor.draftsDir && b.writePaths.length && b.writePaths.every((p) => within(p, actor.draftsDir!) || within(real(p), actor.draftsDir!)))
+    if ((kind === 'delete' || kind === 'write' || kind === 'outsideWrite') && actor.draftsDir && onlyIn(actor.draftsDir))
       return { type: 'allow', reason: `시안 폴더 안 정리(${kind}): ${b.writePaths.map(displayPath).join(', ')}` };
-    // 명령 결과를 임시 폴더에 담기만 하는 명령(예: npm test > /tmp/x.txt)은 허용. 쓰기 말고 다른 판단 근거가 있으면 승인함으로
-    if (
-      kind === 'outsideWrite' &&
-      b.writePaths.length &&
-      b.writePaths.every((p) => TEMP_ROOTS.some((t) => within(p, t))) &&
-      b.fileOpsOnly
-    )
-      return { type: 'allow', reason: `임시 폴더에 결과 담기: ${b.writePaths.map(displayPath).join(', ')}` };
-    const files = b.writePaths.length ? `\n바뀔 수 있는 파일: ${b.writePaths.map(displayPath).join(', ')}` : '';
+    // 명령 결과를 이 미션 임시 폴더에 담기만 하는 명령(예: npm test > ~/rano/runs/tmp/<미션>/x.txt)은 허용. 쓰기 말고 다른 판단 근거가 있으면 승인함으로
+    if (kind === 'outsideWrite' && onlyIn(tmpDir))
+      return { type: 'allow', reason: `미션 임시 폴더에 결과 담기: ${b.writePaths.map(displayPath).join(', ')}` };
+    const files = b.writePaths.length ? `\n바뀔 수 있는 파일: ${b.writePaths.map(displayPath).join(', ')}${realPathNote(mission, b.writePaths)}` : '';
+    const modeNote = b.modeChange ? '\n주의: 파일 권한(실행 권한 등)을 바꾸는 명령이에요. 시안 폴더 안이라도 확인을 받아요' : '';
+    const linkNote = b.linkSources?.length ? `\n주의: 바로가기(링크)를 만드는 명령이에요. 가리키는 곳: ${[...new Set(b.linkSources)].map(displayPath).join(', ')}` : '';
     return {
       type: 'ask',
       reason: `명령 승인 필요(${kind}): ${b.reasons.join('; ')}`,
@@ -567,7 +648,7 @@ export function decideApprovalStage(
         kind,
         title: BASH_TITLES[kind](mission),
         what: BASH_WHAT[kind](mission),
-        detail: `명령: ${redactCommand(command)}\n실행 위치: ${displayPath(cwd)}${files}\n판단 근거: ${b.reasons.join('; ')}`,
+        detail: `명령: ${redactCommand(command)}\n실행 위치: ${displayPath(cwd)}${files}${modeNote}${linkNote}\n판단 근거: ${b.reasons.join('; ')}`,
         filePath: b.writePaths.length === 1 ? b.writePaths[0] : undefined,
         bash: true,
         paths: b.writePaths,
@@ -795,9 +876,11 @@ export class LeaderGuard {
     const granted = id ? this.deleteGrants.get(id) : undefined;
     if (!granted?.length || !paths.length) return null;
     const hits = new Set<string>();
+    // 원래 경로와 실제 경로가 "모두" 승인된 위치 안이어야 한다(바로가기로 승인 밖을 지우는 우회 막기)
     for (const p of paths) {
-      const g = granted.find((x) => within(p, x) || within(real(p), x));
-      if (!g) return null;
+      const rp = real(p);
+      const g = granted.find((x) => within(p, x));
+      if (!g || !granted.some((x) => within(rp, x))) return null;
       hits.add(g);
     }
     return [...hits];

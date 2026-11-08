@@ -282,16 +282,30 @@ export class ApprovalsView {
             const pv = el('button', 'btn btn-small dec-preview', '시안 열기');
             pv.type = 'button';
             const pvMsg = el('span', 'dec-preview-msg');
+            // 안전 확인에 막히면 이유와 함께 [폴더에서 보기](Finder 에서 위치만 보여 줌, 실행하지 않음)를 띄운다
+            const reveal = el('button', 'btn btn-small dec-preview', '폴더에서 보기');
+            reveal.type = 'button';
+            reveal.hidden = true;
+            reveal.addEventListener('click', async () => {
+              try {
+                const r = await this.rano.approvalRevealPreview(a.id, it.id, o.key);
+                if (!r?.ok) pvMsg.textContent = r?.message ?? '폴더를 보여 주지 못했어요';
+              } catch {
+                pvMsg.textContent = '폴더를 보여 주지 못했어요';
+              }
+            });
             pv.addEventListener('click', async () => {
               try {
                 const r = await this.rano.approvalOpenPreview(a.id, it.id, o.key);
                 pvMsg.textContent = r?.ok ? '' : r?.message ?? '시안을 열지 못했어요';
+                reveal.hidden = !!r?.ok || !r?.reveal;
               } catch {
                 pvMsg.textContent = '시안을 열지 못했어요';
+                reveal.hidden = true;
               }
             });
             const pvRow = el('div', 'dec-preview-row');
-            pvRow.append(pv, pvMsg);
+            pvRow.append(pv, pvMsg, reveal);
             row.appendChild(pvRow);
           }
           fs.appendChild(row);

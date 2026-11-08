@@ -11,6 +11,7 @@ export interface LeaderPromptInput {
   memory: { name: string; content: string }[];
   roles: { name: string; description: string }[];
   userProfile?: string; // 라노 기억 me.md (사용자 이름·호칭·선호)
+  tmpDir?: string; // 이 미션 전용 임시 폴더(~/rano/runs/tmp/<미션>). 안내문에 경로를 글자 그대로 적는다
 }
 
 async function readOr(file: string, fallback = ''): Promise<string> {
@@ -69,6 +70,7 @@ export function buildLeaderSystemPrompt(input: LeaderPromptInput): string {
   const readOnly = mission.stagePolicy === 'readOnly';
   const roleList = roles.length ? roles.map((r) => `- ${r.name}: ${r.description}`).join('\n') : '- (불러올 수 있는 역할 없음)';
   const reviewers = mission.reviewerRoles.length ? mission.reviewerRoles.join(', ') : '(지정 없음)';
+  const tmpWhere = input.tmpDir ? `이 미션 임시 폴더 ${input.tmpDir}` : '이 미션 임시 폴더';
 
   const permission = readOnly
     ? `- 지금 이 미션은 작업 대상 폴더와 참고 폴더를 **읽기만** 한다. 쓸 수 있는 도구는 Read, Grep, Glob 과 팀원 호출(Agent)뿐이다.
@@ -77,7 +79,9 @@ export function buildLeaderSystemPrompt(input: LeaderPromptInput): string {
     : `- 지금 이 미션은 사용자 승인함과 함께 일한다.
   - 읽기·검색(Read, Grep, Glob)은 작업 대상·참고 폴더 안에서 바로 할 수 있다.
   - 파일 쓰기·수정(Write, Edit)은 작업 대상 폴더 안이라도 **파일 하나마다** 앱이 승인함에 올리고, 사용자가 승인한 뒤에만 실행된다. 참고 폴더는 쓸 수 없다.
-  - 명령(Bash)은 작업 폴더 안의 읽기 명령(git status·diff·log, ls, cat, grep, sed -n, find 등)과 확인 명령(타입 검사·린트·시험, 결과를 /tmp 에 담기 포함)은 바로 실행되고, 커밋·삭제·DB·배포·설치와 그 밖의 명령은 모두 승인함을 거친다. .env·차단 파일이 있는 폴더를 통째로 grep -r 하면 승인함으로 가니 --include 로 파일 종류를 좁힌다.
+  - 명령(Bash)은 작업 폴더 안의 읽기 명령(git status·diff·log, ls, cat, grep, sed -n, find 등)과 확인 명령(타입 검사·린트·시험, 결과를 ${tmpWhere} 에 담기 포함)은 바로 실행되고, 커밋·삭제·DB·배포·설치와 그 밖의 명령은 모두 승인함을 거친다. .env·차단 파일이 있는 폴더를 통째로 grep -r 하면 승인함으로 가니 --include 로 파일 종류를 좁힌다.
+  - 임시 폴더는 Bash 로 결과를 담고(> 파일) 읽는(cat·grep·tail) 데만 쓴다. 경로는 글자 그대로 적는다. /tmp, $TMPDIR, mktemp 를 쓰면 승인함으로 간다. Write·Edit 도구는 시안 폴더에만 승인 없이 쓴다.
+  - 시안 폴더·임시 폴더 안이라도 권한 바꾸기(chmod·chown·install)와 밖(작업 폴더 등)을 가리키는 바로가기(ln) 만들기는 승인함으로 간다. 바로가기를 거쳐 밖을 읽거나 쓰는 것도 승인함으로 간다.
   - 차단 목록(비밀 키·인증 파일, 키체인, 브라우저·메신저·메일 데이터, 모든 .env 계열)은 어떤 도구로도 열 수 없다. 우회하려 하지 않는다.
 - **과제를 받으면 가장 먼저 과제를 이해한다.** 사용자가 왜 이 일을 시키는지(목적), 결과를 누가 어디에 쓰는지, 무엇이면 끝인지(완료 기준)를 지시·대화 이력·미션 기억(진행업무, 코드 지도)에서 파악한다. 모르면 추측하지 말고 "확인 필요"로 적는다.
 - 그다음 request_approval(kind: teamPlan) 으로 팀 구성안을 올린다. 승인 전에는 팀원을 부를 수 없다(앱이 막는다). 팀의 크기·모델·검수는 위에서 이해한 목적과 일의 크기에 맞춘다. 작은 일에 사람을 많이 붙이지 않는다.

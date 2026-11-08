@@ -22,6 +22,8 @@ import {
 } from '../../shared/types.js';
 import { appendJsonl, buildSdkEnv, friendlyError, looksLikeMissingSession } from '../engine/ranoSession.js';
 import { LeaderGuard, SUBAGENT_TOOL } from './leaderPermissions.js';
+import { missionTmpDir } from './missionTmp.js';
+import { PREVIEW_EXTS } from '../approvals/previewSafety.js';
 import { createLeaderMcpServer } from './leaderTools.js';
 import { buildLeaderSystemPrompt, CODE_MAP_FILE, codeMapText, HANDOFF_FILE, readLeaderContext } from './leaderPrompt.js';
 import { APPROVAL_STAGE_TOOLS, loadRoles, READ_ONLY_TOOLS } from './roles.js';
@@ -211,11 +213,13 @@ export class MissionLeader implements MissionLeaderApi {
     // 이 과제의 시안 폴더: 작업 리포 밖이라 승인 없이 쓸 수 있다
     const drafts = this.guard.draftsDir(mt.id);
     if (drafts) await mkdir(drafts, { recursive: true }).catch(() => undefined);
+    const tmpDir = missionTmpDir(this.config, this.mission.id);
     const appNote = [
       '',
       '---',
       '[앱 안내]',
-      `- 이 과제의 시안 폴더: ${drafts} (작업 리포 밖, 승인 없이 쓸 수 있음). 안마다 비교용 시안(HTML 와이어프레임 등)이 필요하면 여기에 만들고, 결정 카드의 options[].preview 에 파일 이름을 넣으세요.`,
+      `- 이 과제의 시안 폴더: ${drafts} (작업 리포 밖, 승인 없이 쓸 수 있음). 안마다 비교용 시안(HTML 와이어프레임 등)이 필요하면 여기에 만들고, 결정 카드의 options[].preview 에 파일 이름을 넣으세요. [시안 열기]로 열 수 있는 형식: ${[...PREVIEW_EXTS].join(' ')} (실행 권한이 붙은 파일·폴더·바로가기로 밖을 가리키는 파일은 열리지 않음).`,
+      `- 이 미션의 임시 폴더: ${tmpDir} (명령 결과 담기·읽기용, Bash 로만 승인 없이). 경로를 글자 그대로 적으세요(예: npm test > ${path.join(tmpDir, 'test.txt')} 2>&1). /tmp, $TMPDIR, mktemp 를 쓰면 승인함으로 가요.`,
       task.planFirst
         ? '- 이 과제는 "기획 먼저"예요. 안 2~3개와 권장안을 request_approval(kind: decision, planGate: true, items …)로 올려 사용자가 고르기 전에는 작업 폴더를 고칠 수 없어요(앱이 막음). 고른 뒤 그 안대로 구현하세요.'
         : '- 기획 후 구현이 필요한 과제(화면·기능 개편 등)라고 판단되면, 구현 전에 request_approval(kind: decision, planGate: true)로 안을 먼저 고르게 하세요.',
@@ -293,7 +297,13 @@ export class MissionLeader implements MissionLeaderApi {
     const connBlock = conns.length
       ? `\n\n## 외부 연결 (MCP)\n이 미션은 다음 외부 서비스 도구를 쓸 수 있어요: ${conns.map((c) => `${c.label}(도구 이름 mcp__${c.name}__…)`).join(', ')}.\n- 검색·조회는 바로 돼요. 만들기·고치기·댓글·라벨 같은 쓰기는 사용자 승인함을 거쳐요(한 번에 하나씩, 무엇을 왜 바꾸는지 먼저 말하세요).\n- 팀원에게 맡길 때도 같은 도구를 써요. 연결이 안 되면 "외부 연결 실패"라고 보고하세요.`
       : '';
-    const systemPrompt = buildLeaderSystemPrompt(ctx) + (mission.stagePolicy === 'approval' ? skillCatalog([], true) : '') + connBlock;
+    // 이 미션 전용 임시 폴더(~/rano/runs/tmp/<미션>): 세션을 시작할 때 없으면 만든다. 자동으로 지우지 않는다
+    const tmpDir = missionTmpDir(config, mission.id);
+    const tmpReady = await mkdir(tmpDir, { recursive: true }).then(
+      () => true,
+      () => false,
+    );
+    const systemPrompt = buildLeaderSystemPrompt({ ...ctx, tmpDir }) + (mission.stagePolicy === 'approval' ? skillCatalog([], true) : '') + connBlock;
 
     // 팀원도 같은 규칙을 따르도록 역할 프롬프트 끝에 규칙 파일을 붙인다(설정 파일은 불러오지 않으므로)
     const rulesBlock = ctx.rules.map((r) => `### ${r.file}\n${r.content.trim()}`).join('\n\n');
@@ -326,6 +336,8 @@ export class MissionLeader implements MissionLeaderApi {
       : null;
     const env = buildSdkEnv(config);
     delete env.MCP_TOOL_TIMEOUT; // 승인 대기(request_approval)가 도구 시간 제한에 걸리지 않게
+    // 시험 도구·mktemp·tempfile 이 쓰는 임시 폴더도 이 미션 임시 폴더로(모든 미션이 같이 쓰는 /tmp 대신)
+    if (tmpReady) env.TMPDIR = tmpDir;
 
     const options: Options = {
       model: config.models.repoLeader,

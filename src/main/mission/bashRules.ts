@@ -13,6 +13,13 @@ export interface BashContext {
   isBlocked: (absPath: string) => boolean; // 차단 목록 검사
   secretsUnder?: (absDir: string) => string[]; // 폴더 아래 차단·비밀 파일 목록(통째 검색 판단용). 함수가 없으면 있다고 본다. '*' 는 너무 많아 다 못 본 것
   allowChecks?: boolean; // 타입 검사·린트·시험 같은 확인 명령을 바로 허용할지
+  // 링크(바로가기)를 푼 실제 경로. 주면 읽는 파일은 원래 경로와 실제 경로가 "모두" 읽기 허용 폴더 안이어야 바로 허용한다
+  // (읽기 허용 폴더 안의 바로가기로 밖을 읽는 우회 막기. Read 도구와 같은 기준)
+  realPath?: (absPath: string) => string;
+  // 이미 있는 폴더인지. cp·install 대상이 폴더면 그 안의 <대상>/<원본 이름> 도 바뀌는 파일로 본다
+  isDir?: (absPath: string) => boolean;
+  // 폴더 아래(자기 자신 포함)에 바로가기가 있는지. cp -R 대상 폴더에 바로가기가 있으면 그것을 따라 밖을 덮어쓸 수 있어 승인함으로 보낸다
+  hasLinksUnder?: (absPath: string) => boolean;
 }
 
 export interface BashDecision {
@@ -22,6 +29,8 @@ export interface BashDecision {
   blockedPaths: string[]; // 차단 목록에 걸린 경로
   writePaths: string[]; // 바뀔 것으로 보이는 파일(절대 경로)
   fileOpsOnly?: boolean; // 판단 근거가 파일 쓰기·지우기(와 확인 명령)뿐인지. 시안·임시 폴더 허용 판단에 쓴다
+  modeChange?: boolean; // 파일 권한(실행 권한 등)을 바꾸는 명령(chmod·chown·install)이 있는지. 시안·임시 폴더에서도 승인함으로 보낸다
+  linkSources?: string[]; // 링크(ln, cp -l/-s)가 가리킬 수 있는 경로 후보(절대 경로). 시안·임시 폴더 바로 허용은 이것도 그 안일 때만
 }
 
 // 엄격한 순서 (뒤로 갈수록 엄격)
@@ -538,8 +547,16 @@ function nonOptions(args: string[]): string[] {
 
 /** Bash 명령 하나(여러 개 이어 쓴 것 포함)를 분류한다. */
 export function classifyBash(command: string, ctx: BashContext): BashDecision {
-  const out: BashDecision = { decision: 'allow', reasons: [], blockedPaths: [], writePaths: [] };
+  const out: BashDecision = { decision: 'allow', reasons: [], blockedPaths: [], writePaths: [], linkSources: [] };
   let level: BashKind | 'allow' = 'allow';
+  // 읽어도 되는 위치인지: 원래 경로가 읽기 허용 폴더 안이고, realPath 가 있으면 링크를 푼 실제 경로도 읽기 허용 폴더(또는 그 실제 경로) 안
+  const realRoots = ctx.realPath ? ctx.readRoots.map((r) => ctx.realPath!(r)) : [];
+  const readableAbs = (abs: string): boolean => {
+    if (!ctx.readRoots.some((r) => within(abs, r))) return false;
+    if (!ctx.realPath) return true;
+    const rp = ctx.realPath(abs);
+    return ctx.readRoots.some((r) => within(rp, r)) || realRoots.some((r) => within(rp, r));
+  };
   let nonRead = false; // 읽기만 하는 명령이 아닌 것이 섞였는지
   let otherBump = false; // 파일 쓰기·지우기 말고 다른 이유로 승인이 필요한지
   const bump = (k: BashKind, why: string, fileOp = false) => {
@@ -715,7 +732,7 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
       const args = words.slice(1);
       if (seg.heredoc && name !== 'cat' && name !== 'tee') bump('command', `heredoc 본문을 ${name} 로 실행`);
       const argFlags = flags.slice(1);
-      const isReadable = (p: string) => ctx.readRoots.some((r) => within(resolve(p), r));
+      const isReadable = (p: string) => readableAbs(resolve(p));
       /** 글롭·폴더 통째 읽기가 차단·비밀 파일을 건드릴 수 있는지 */
       const secretFiles = (dir: string): string[] => (ctx.secretsUnder ? ctx.secretsUnder(resolve(dir)) : ['*']);
       const touchesSecrets = (dir: string) => secretFiles(dir).length > 0;
@@ -1017,14 +1034,47 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
           files.forEach((f) => markWrite(f, `mv 로 파일 옮기기: ${f}`));
         }
         else if (name === 'cp' || name === 'ln' || name === 'install') {
-          const sources = files.slice(0, -1);
+          let sources = files.slice(0, -1);
+          let dest = files[files.length - 1];
+          // ln 대상 하나만 주면(ln -s /a/b) 지금 폴더에 같은 이름의 링크를 만든다
+          if (name === 'ln' && files.length === 1) {
+            sources = [files[0]];
+            dest = path.join(cwd, path.basename(files[0]));
+          }
           const outside = sources.filter((f) => !isReadable(f));
           if (outside.length) bump('command', `작업 폴더 밖 파일을 복사: ${outside.map(resolve).join(', ')}`);
           if (name === 'cp' && args.some((a) => /^-[a-zA-Z]*[rRa]/.test(a)) && sources.some(touchesSecrets)) bump('command', '비밀 파일이 있는 폴더를 통째로 복사');
           if (globRisk()) bump('command', '비밀 파일을 글롭으로 복사할 수 있음');
-          markWrite(files[files.length - 1], `${name} 로 파일 만들기`);
+          // 링크 만들기(ln, cp -l/-s): 링크가 가리킬 곳을 남긴다. 상대 경로 링크는 링크가 놓인 폴더 기준이라 후보를 모두 넣는다
+          if (name === 'ln' || (name === 'cp' && args.some((a) => /^-[a-zA-Z]*[ls]/.test(a)))) {
+            const d = resolve(dest);
+            for (const s of sources) {
+              const e = expandHome(s);
+              out.linkSources!.push(...new Set([resolve(s), path.resolve(d, e), path.resolve(path.dirname(d), e)]));
+            }
+          }
+          // install 은 따로 정하지 않으면 실행 권한(755)을 붙여 복사한다
+          if (name === 'install') out.modeChange = true;
+          markWrite(dest, `${name} 로 파일 만들기`);
+          if (name === 'cp' || name === 'install') {
+            const d = resolve(dest);
+            // 대상이 폴더면(이미 있는 폴더, '/' 로 끝남, 원본이 여러 개) 실제로 쓰이는 곳은 <대상>/<원본 이름>.
+            // 그 자리에 바로가기가 있으면 cp 는 그것을 따라가 덮어쓰므로, 그 경로도 바뀌는 파일에 넣어 실제 경로를 보게 한다
+            const intoDir = dest.endsWith('/') || sources.length > 1 || !!ctx.isDir?.(d);
+            if (intoDir) for (const s of sources) markWrite(path.join(d, path.basename(expandHome(s))), `${name} 로 폴더 안에 파일 만들기`);
+            // cp -R: 받는 폴더 아래 아무 곳의 바로가기든 따라 덮어쓸 수 있어, 바로가기가 있으면 승인함으로
+            const recursive = name === 'cp' && args.some((a) => /^-[a-zA-Z]*[rRa]/.test(a) || a === '--recursive' || a === '--archive');
+            if (recursive && ctx.hasLinksUnder?.(d)) bump('command', `복사 받는 폴더 안에 바로가기가 있음: ${d}`);
+          }
         }
-        else if (name === 'chmod' || name === 'chown') files.slice(1).forEach((f) => markWrite(f, `${name} 로 권한 바꾸기`));
+        else if (name === 'chmod' || name === 'chown') {
+          out.modeChange = true;
+          // chmod -x 처럼 '-' 로 시작하는 권한 값도 있으므로 chmod 는 알려진 옵션만 뺀다
+          const words2 = name === 'chmod' ? args.filter((a) => !/^-[RfvhHLPEC]+$/.test(a)) : files;
+          const targets2 = words2.slice(1);
+          if (!targets2.length) bump('command', `${name} (바꿀 파일을 알 수 없음)`);
+          targets2.forEach((f) => markWrite(f, `${name} 로 권한 바꾸기`));
+        }
         else if (name === 'dd') {
           const of = args.find((a) => a.startsWith('of='));
           if (of) markWrite(of.slice(3), 'dd 로 쓰기');
@@ -1039,7 +1089,7 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
       if (READ_ONLY_CMDS.has(name)) {
         const files = name === 'echo' || name === 'true' ? [] : nonOptions(args).filter((a) => !/^\d+$/.test(a));
         // ls 는 이름만 보여 주므로 작업 폴더 밖도 허용(차단 목록은 위에서 이미 막음)
-        const outside = (name === 'ls' ? seg.redirIn : [...files, ...seg.redirIn]).map(resolve).filter((p) => !ctx.readRoots.some((r) => within(p, r)));
+        const outside = (name === 'ls' ? seg.redirIn : [...files, ...seg.redirIn]).map(resolve).filter((p) => !readableAbs(p));
         if (outside.length) bump('command', `작업 폴더 밖을 읽음: ${outside.join(', ')}`);
         if (name === 'uniq' && files.length > 1) markWrite(files[1], 'uniq 로 파일 쓰기');
         if (['cat', 'head', 'tail', 'sort', 'uniq'].includes(name) && globRisk()) bump('command', '비밀 파일이 있는 폴더를 글롭으로 읽음');
