@@ -333,14 +333,17 @@ export class ApprovalsView {
     for (const b of [approveBtn, reviseBtn, rejectBtn]) b.type = 'button';
 
     let remember: HTMLInputElement | null = null;
-    const rememberText = a.rememberLabel ?? (a.rememberKey || (a.filePath && (a.kind === 'write' || a.kind === 'outsideWrite')) ? '이번 과제 동안 이 파일은 다시 묻지 않기' : '');
+    // 명령(Bash) 요청은 체크 칸을 띄우지 않는다: 명령은 매번 묻는다 (앱 안쪽 approvalQueue.ts grantKeyFor 와 같은 기준)
+    const bashRequest = a.tool === 'Bash' || !!a.rememberKey?.startsWith('bash:');
+    const fileTool = a.tool === 'Write' || a.tool === 'Edit' || a.tool === 'MultiEdit' || a.tool === 'NotebookEdit';
+    const rememberText = bashRequest ? '' : a.rememberLabel ?? (a.rememberKey || (fileTool && a.filePath && (a.kind === 'write' || a.kind === 'outsideWrite')) ? '이번 과제 동안 이 파일은 다시 묻지 않기' : '');
     if (rememberText && a.taskId) {
       const label = el('label', 'appr-remember');
       remember = el('input');
       remember.type = 'checkbox';
       label.appendChild(remember);
       label.appendChild(document.createTextNode(rememberText));
-      if (a.rememberKey?.startsWith('bash:')) label.title = '커밋·삭제·DB·배포·파일 쓰기는 이 칸과 상관없이 계속 물어요';
+      if (a.kind === 'write' || a.kind === 'outsideWrite') label.title = '명령(Bash)으로 이 파일을 바꾸는 일은 이 칸과 상관없이 매번 물어요';
       actions.append(approveBtn, label, reviseBtn, rejectBtn);
     } else {
       actions.append(approveBtn, reviseBtn, rejectBtn);

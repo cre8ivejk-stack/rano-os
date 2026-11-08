@@ -28,7 +28,7 @@ import {
   type RanoConfig,
 } from '../../shared/types.js';
 import { isBlockedPath } from '../engine/permissions.js';
-import { classifyBash } from './bashRules.js';
+import { classifyBash, type BashDecision, type BashKind } from './bashRules.js';
 import { CODE_MAP_FILE } from './leaderPrompt.js';
 import { fileKey } from '../approvals/approvalQueue.js';
 import { isConnectorReadTool } from '../connectors/readTools.js';
@@ -368,6 +368,7 @@ export interface ApprovalAsk {
   bash?: boolean; // Bash 명령으로 생긴 요청
   paths?: string[]; // Bash 명령이 바꾸거나 지울 수 있는 경로(절대 경로)
   fileOpsOnly?: boolean; // Bash 명령이 파일 일(쓰기·지우기)만 하는지
+  logTarget?: string; // Bash 기록용: 프로그램 끄기·지우기·인터넷 전송의 대상(끌 이름·지울 경로·보낼 호스트). 비밀 가림
 }
 
 export interface StageDecision {
@@ -433,11 +434,63 @@ export function redactPreview(text: string, maxLines = 30, maxChars = 1500): str
   return out;
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// 이름만 봐도 토큰인 글(GitHub·GitLab·Slack·OpenAI/Anthropic·Stripe·AWS·Google·npm·Hugging Face)
+const TOKEN_PREFIX = /\b(?:gh[pousr]_|github_pat_|glpat-|xox[abposr]-|sk-(?:ant-|proj-|live-)?|sk_(?:live|test)_|rk_(?:live|test)_|AKIA|ASIA|AIza|npm_|hf_|ya29\.)[A-Za-z0-9_\-.]{8,}/g;
+const LONG_RUN = /[A-Za-z0-9+/_\-]{32,}/g;
+
+/**
+ * 명령 글에서 비밀로 보이는 값을 가린다(승인 카드 자세히·권한 기록·제목에 쓴다).
+ * 머리글(Authorization·Cookie), Bearer 뒤 토큰, 아이디:비번(-u·--user·주소 안), 이름이 비밀스러운 설정값·옵션,
+ * --password=·-p<비번>, 이름만 봐도 토큰인 글, 32자 넘는 무작위 글('/' 가 든 경로는 32자 넘는 마디만, UUID 는 남김)
+ */
 export function redactCommand(cmd: string): string {
-  return cmd
-    .replace(/((?:secret|token|passw(?:or)?d|api[_-]?key|auth)[A-Za-z0-9_]*\s*[=:]\s*)("[^"]*"|'[^']*'|\S+)/gi, '$1(가림)')
-    .replace(/(^|\s)(--password[= ]|-p(?=[^\s-]))\S+/g, '$1$2(가림)') // mysql -pXXXX, --password=XXXX 만 가린다 (--porcelain 같은 옵션은 그대로)
-    .replace(LONG_RANDOM, '(가림)');
+  return String(cmd ?? '')
+    .replace(/((?:proxy-)?authorization\s*:\s*)(?:(bearer|basic|token|digest|negotiate)\s+)?("[^"]*"|'[^']*'|[^\s'"]+)/gi, (_m, h: string, s?: string) => `${h}${s ? `${s} ` : ''}(가림)`)
+    .replace(/(\bcookie\s*:\s*)[^'"\n]+/gi, '$1(가림)')
+    .replace(/\b(bearer)\s+(?!\(가림\))[A-Za-z0-9._~+\/=-]{4,}/gi, '$1 (가림)')
+    .replace(/(^|\s)(-u\s*|--user[= ]\s*|--proxy-user[= ]\s*|-U\s*)("[^"]*:[^"]*"|'[^']*:[^']*'|[^\s'"]*:[^\s'"]*)/g, '$1$2(가림)') // curl -u 아이디:비번
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\/\s@'"]+@/gi, '$1(가림)@') // https://아이디:비번@호스트
+    .replace(/((?:secret|token|passw(?:or)?d|api[_-]?key|auth)[A-Za-z0-9_-]*\s*[=:]\s*)(?!\(가림\)|(?:bearer|basic|token|digest|negotiate)\s)("[^"]*"|'[^']*'|[^\s'"]+)/gi, '$1(가림)')
+    .replace(/(--(?:token|api[-_]?key|secret|client[-_]?secret|access[-_]?token|auth[-_]?token|password|passwd|pass)[ =])(?!\(가림\))("[^"]*"|'[^']*'|\S+)/gi, '$1(가림)')
+    .replace(/(^|\s)(--password[= ]|-p(?=[^\s-]))(?!\(가림\))\S+/g, '$1$2(가림)') // mysql -pXXXX, --password=XXXX 만 가린다 (--porcelain 같은 옵션은 그대로)
+    .replace(TOKEN_PREFIX, '(가림)')
+    .replace(LONG_RUN, (m: string, at: number, all: string) => {
+      if (UUID.test(m)) return m;
+      if (m.includes('/')) {
+        // 무작위 같은 마디가 둘 이상이면 '/' 로 시작해도 통째로 가린다(/abcDEF…/XYZabc… 같은 토큰).
+        // '/', '~', '.' 으로 시작하지 않는데 '+' 가 들었거나 바로 뒤가 '=' 이어도 통째로 가린다
+        const prev = at > 0 ? all[at - 1] : '';
+        const pathLike = m[0] === '/' || prev === '~' || prev === '.';
+        if (m.split('/').filter(randomLooking).length >= 2) return '(가림)';
+        if (!pathLike && (m.includes('+') || all[at + m.length] === '=')) return '(가림)';
+        // 경로처럼 보이는 글(절대·상대 경로 모두): 마디마다 나눠 32자 넘는 마디만 가린다
+        return m.split('/').map((s) => (s.length >= 32 && !UUID.test(s) ? '(가림)' : s)).join('/');
+      }
+      return '(가림)';
+    });
+}
+
+/** 경로 마디가 무작위 글처럼 보이는지: 6자 이상이고 대·소문자·숫자가 모두 들었거나, 대문자와 숫자가 붙어 있거나, 대·소문자가 섞였는데 대문자가 30% 이상 */
+function randomLooking(s: string): boolean {
+  if (s.length < 6) return false;
+  const up = /[A-Z]/.test(s);
+  const lo = /[a-z]/.test(s);
+  const dg = /\d/.test(s);
+  if (up && lo && dg) return true;
+  if (/[A-Z]\d|\d[A-Z]/.test(s)) return true;
+  if (up && lo) {
+    const letters = s.replace(/[^A-Za-z]/g, '');
+    const ups = s.replace(/[^A-Z]/g, '').length;
+    return ups / letters.length >= 0.3;
+  }
+  return false;
+}
+
+/** 권한 기록(permissions.jsonl)용 명령 글: 비밀을 가리고 500자까지 */
+export function commandForLog(cmd: string, max = 500): string {
+  const t = redactCommand(cmd);
+  return t.length > max ? `${t.slice(0, max)}…(줄임)` : t;
 }
 
 function displayPath(abs: string): string {
@@ -459,6 +512,75 @@ const BASH_TITLES: Record<string, (m: MissionConfig) => string> = {
   outsideWrite: () => '작업 폴더 밖 파일을 명령으로 바꾸기',
   command: () => '명령 실행',
 };
+
+/** 제목에 넣을 짧은 이름(비밀 가림, 줄바꿈 없음, 40자까지) */
+function shortLabel(s: string, max = 40): string {
+  const t = redactCommand(s).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
+/** 파일 이름만(경로 없이). 여러 개면 "a.txt 외 2개" */
+function fileNames(paths: string[]): string {
+  const names = [...new Set(paths.map((p) => path.basename(p)).filter(Boolean))];
+  if (!names.length) return '';
+  return names.length === 1 ? shortLabel(names[0]) : `${shortLabel(names[0])} 외 ${names.length - 1}개`;
+}
+
+/**
+ * 명령 승인 카드 제목: "쉬운 말 종류: 대상 이름".
+ * 제목은 화면·맥 알림·휴대폰·events.jsonl·활동 기록으로 그대로 가므로 명령 인자 원문을 넣지 않는다
+ * (프로그램 이름, 파일은 이름만, 주소는 호스트만). 여러 종류가 섞이면 가장 위험한 것 하나 + "(그 밖에 N가지)".
+ * 승인 종류(kind)와 판단은 바꾸지 않는다.
+ */
+export function bashTitle(mission: MissionConfig, kind: BashKind, b: Pick<BashDecision, 'risks' | 'programs' | 'writePaths'>): string {
+  const risks = b.risks ?? [];
+  const of = (k: string) => risks.filter((r) => r.kind === k);
+  const prog = (b.programs ?? [])[0];
+  // [제목, 따로 세는 일인지] — 공용 임시 폴더·파일 쓰기는 "어디에"라서 다른 일이 있으면 세지 않는다
+  const cats: [string, boolean][] = [];
+  const kill = of('kill');
+  if (kill.length) cats.push([`프로그램 끄기: ${kill[0].program}`, true]);
+  const net = of('network');
+  if (net.length) cats.push([`인터넷으로 보내기·받기: ${net.flatMap((r) => r.targets)[0] ?? net[0].program}`, true]);
+  const del = of('delete');
+  if (kind === 'delete' || del.length) {
+    const files = fileNames(del.filter((r) => r.program !== 'find').flatMap((r) => r.targets)); // find 의 대상은 찾을 폴더라 이름을 쓰지 않는다
+    const who = files || del[0]?.program || '';
+    cats.push([`${BASH_TITLES.delete(mission)}${who ? `: ${who}` : ''}`, true]);
+  }
+  const mode = of('mode');
+  if (mode.length) {
+    const files = fileNames(mode.flatMap((r) => r.targets));
+    cats.push([`${mode.some((r) => r.addsExec) ? '실행 권한 붙이기' : '파일 권한 바꾸기'}${files ? `: ${files}` : ''}`, true]);
+  }
+  const tmp = of('tmp');
+  if (tmp.length) cats.push([`공용 임시 폴더에 쓰기: ${fileNames(tmp.flatMap((r) => r.targets))}`, false]);
+  if (kind === 'commit') cats.push([BASH_TITLES.commit(mission), true]);
+  if (kind === 'deploy') cats.push([`${BASH_TITLES.deploy(mission)}${prog ? `: ${prog}` : ''}`, true]);
+  if (kind === 'db') cats.push([`${BASH_TITLES.db(mission)}${prog ? `: ${prog}` : ''}`, true]);
+  const files = fileNames(b.writePaths ?? []);
+  if (kind === 'write' || kind === 'outsideWrite') cats.push([`${BASH_TITLES[kind](mission)}${files ? `: ${files}` : ''}`, false]);
+  // 코드 실행: 이미 프로그램 끄기·인터넷 전송으로 잡힌 같은 프로그램(osascript 의 quit 등)은 따로 세지 않는다
+  const shown = new Set([...kill, ...net].map((r) => r.program));
+  const code = of('code').filter((r) => !shown.has(r.program));
+  if (code.length) cats.push([`${BASH_TITLES.command(mission)}: ${code[0].program}`, true]);
+  if (!cats.length) cats.push([`${BASH_TITLES.command(mission)}${prog ? `: ${prog}` : ''}`, false]);
+  const [main] = cats[0];
+  const extra = cats.slice(1).filter(([, counts]) => counts).length;
+  return extra ? `${main} (그 밖에 ${extra}가지)` : main;
+}
+
+/** 권한 기록용 대상 칸: 프로그램 끄기(끌 이름·패턴), 지우기(지울 경로), 인터넷 전송(보낼 호스트). 없으면 undefined */
+export function bashLogTarget(b: Pick<BashDecision, 'risks'>): string | undefined {
+  const parts: string[] = [];
+  for (const r of b.risks ?? []) {
+    if (r.kind === 'kill') parts.push(`프로그램 끄기(${r.program}): ${r.targets.join(', ') || '(대상을 알 수 없음)'}`);
+    else if (r.kind === 'delete') parts.push(`지우기(${r.program}): ${r.targets.map(displayPath).join(', ') || '(경로를 알 수 없음)'}`);
+    else if (r.kind === 'network') parts.push(`인터넷 전송(${r.program}): ${r.targets.join(', ') || '(주소를 알 수 없음)'}`);
+  }
+  if (!parts.length) return undefined;
+  return commandForLog(parts.join(' / '));
+}
 
 const BASH_WHAT: Record<string, (m: MissionConfig) => string> = {
   commit: (m) => `${m.name} 리포에 지금까지 바뀐 내용을 기록(커밋)하거나 올리거나 되돌리려고 해요`,
@@ -646,13 +768,14 @@ export function decideApprovalStage(
       reason: `명령 승인 필요(${kind}): ${b.reasons.join('; ')}`,
       ask: {
         kind,
-        title: BASH_TITLES[kind](mission),
+        title: bashTitle(mission, kind, b),
         what: BASH_WHAT[kind](mission),
-        detail: `명령: ${redactCommand(command)}\n실행 위치: ${displayPath(cwd)}${files}${modeNote}${linkNote}\n판단 근거: ${b.reasons.join('; ')}`,
+        detail: `명령: ${redactCommand(command)}\n실행 위치: ${displayPath(cwd)}${files}${modeNote}${linkNote}\n판단 근거: ${redactCommand(b.reasons.join('; '))}`,
         filePath: b.writePaths.length === 1 ? b.writePaths[0] : undefined,
         bash: true,
         paths: b.writePaths,
         fileOpsOnly: !!b.fileOpsOnly,
+        ...(bashLogTarget(b) ? { logTarget: bashLogTarget(b) } : {}),
       },
     };
   }
@@ -934,8 +1057,8 @@ export class LeaderGuard {
     return { why: clip(w, 200), rec: clip(rec, 200) };
   }
 
-  private record(agent: string, tool: string, decision: 'allow' | 'deny', reason: string) {
-    this.deps.log({ at: new Date().toISOString(), agent, tool, decision, reason });
+  private record(agent: string, tool: string, decision: 'allow' | 'deny', reason: string, extra?: Pick<PermissionLogEntry, 'command' | 'target'>) {
+    this.deps.log({ at: new Date().toISOString(), agent, tool, decision, reason, ...(extra?.command ? { command: extra.command } : {}), ...(extra?.target ? { target: extra.target } : {}) });
   }
 
   private activity(who: string, text: string) {
@@ -1006,13 +1129,20 @@ export class LeaderGuard {
   ): Promise<PermissionResult> {
     const { approvals, mission } = this.deps;
     const taskId = this.task?.id;
-    const scope = rememberScope(ask, toolName, whoInfo);
+    // 명령(Bash) 요청은 "다시 묻지 않기"를 보지도 만들지도 않는다: 파일 기억이 있어도 그 파일로 출력하는 명령은 다시 묻는다
+    const isBash = toolName === 'Bash' || !!ask.bash;
+    const scope = isBash ? null : rememberScope(ask, toolName, whoInfo);
     if (scope && taskId && approvals?.isGranted(taskId, scope.key)) {
       this.record(whoInfo.logName, toolName, 'allow', `이번 과제 동안 다시 묻지 않기로 승인된 범위: ${scope.key}`);
       return { behavior: 'allow', updatedInput: input };
     }
+    // 카드가 뜨는 명령은 기록에 비밀을 가린 명령 글과 대상(끌 프로그램·지울 경로·보낼 호스트)을 남긴다
+    const extra = isBash
+      ? { command: commandForLog(typeof input.command === 'string' ? input.command : ''), ...(ask.logTarget ? { target: ask.logTarget } : {}) }
+      : undefined;
+    const rec = (decision: 'allow' | 'deny', reason: string) => this.record(whoInfo.logName, toolName, decision, reason, extra);
     if (!approvals) {
-      this.record(whoInfo.logName, toolName, 'deny', '승인함이 연결되지 않음');
+      rec('deny', '승인함이 연결되지 않음');
       return { behavior: 'deny', message: '지금은 승인함이 연결되지 않아 이 일을 할 수 없어요. 보고에 "승인이 필요한 일"로 적어 주세요.' };
     }
     this.activity(whoInfo.label, `승인을 기다리는 중: ${ask.title}`);
@@ -1033,25 +1163,26 @@ export class LeaderGuard {
           filePath: ask.filePath,
           ...(ask.change ? { change: ask.change } : {}),
           ...(scope ? { rememberKey: scope.key, rememberLabel: scope.label } : {}),
+          tool: isBash ? 'Bash' : toolName, // 승인함·화면이 Bash 요청이면 체크 칸·기억을 만들지 않게 (Bash 판단이면 도구 이름과 관계없이 'Bash')
         },
         signal,
       );
     } catch {
-      this.record(whoInfo.logName, toolName, 'deny', '승인 대기가 취소됨(앱 종료·작업 중단)');
+      rec('deny', '승인 대기가 취소됨(앱 종료·작업 중단)');
       return { behavior: 'deny', message: '승인을 기다리던 중에 작업이 멈췄어요. 이 일은 하지 않았어요.', interrupt: true };
     }
     if (d.decision === 'approve') {
-      this.record(whoInfo.logName, toolName, 'allow', `사용자 승인(${d.id})${d.rememberFile ? ', 이번 과제 동안 다시 묻지 않기' : ''}`);
+      rec('allow', `사용자 승인(${d.id})${d.rememberFile && !isBash ? ', 이번 과제 동안 다시 묻지 않기' : ''}`);
       this.activity(whoInfo.label, `승인됨: ${ask.title}`);
       return { behavior: 'allow', updatedInput: input };
     }
     const note = d.note?.trim() || '사유 없음';
     if (d.decision === 'revise') {
-      this.record(whoInfo.logName, toolName, 'deny', `사용자 수정 요청(${d.id})`);
+      rec('deny', `사용자 수정 요청(${d.id})`);
       this.activity(whoInfo.label, `수정 요청: ${ask.title}`);
       return { behavior: 'deny', message: `사용자가 수정을 요청했어요: ${note}. 반영해서 다시 시도하세요.` };
     }
-    this.record(whoInfo.logName, toolName, 'deny', `사용자 반려(${d.id})`);
+    rec('deny', `사용자 반려(${d.id})`);
     this.activity(whoInfo.label, `반려됨: ${ask.title}`);
     return { behavior: 'deny', message: `사용자가 반려했어요: ${note}. 다른 방법을 찾거나 보고에 적으세요.` };
   }
@@ -1153,17 +1284,15 @@ function clip(text: string, max: number): string {
 
 /**
  * "이번 과제 동안 다시 묻지 않기" 범위.
- * - 파일 쓰기(Write·Edit 또는 파일 하나를 바꾸는 명령): 그 파일
- * - 그 밖의 명령(kind command): 그 팀원의 명령 실행 전체. 커밋·삭제·DB·배포·쓰기로 분류된 명령은 해당 없음
+ * - 파일 쓰기(Write·Edit·NotebookEdit 도구): 그 파일
+ * - 명령(Bash): 어떤 종류든(command·write·outsideWrite 등) 범위를 만들지 않는다. 명령은 매번 묻는다
  * - 외부 연결 쓰기(kind external): 같은 도구
  * 결정·팀 구성·묶음·수치 등 나머지는 매번 묻는다.
  */
-export function rememberScope(ask: ApprovalAsk, toolName: string, who: { label: string; logName: string }): { key: string; label: string } | null {
-  if ((ask.kind === 'write' || ask.kind === 'outsideWrite') && ask.filePath) {
+export function rememberScope(ask: ApprovalAsk, toolName: string, _who?: { label: string; logName: string }): { key: string; label: string } | null {
+  if (toolName === 'Bash' || ask.bash) return null;
+  if ((ask.kind === 'write' || ask.kind === 'outsideWrite') && ask.filePath && WRITE_TOOLS.has(toolName)) {
     return { key: fileKey(ask.filePath), label: '이번 과제 동안 이 파일은 다시 묻지 않기' };
-  }
-  if (ask.kind === 'command' && ask.bash) {
-    return { key: `bash:${who.logName}`, label: `이번 과제 동안 ${who.label}의 명령은 다시 묻지 않기` };
   }
   if (ask.kind === 'external' && toolName.startsWith('mcp__')) {
     const tool = toolName.split('__').slice(2).join('__');

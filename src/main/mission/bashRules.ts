@@ -31,6 +31,133 @@ export interface BashDecision {
   fileOpsOnly?: boolean; // 판단 근거가 파일 쓰기·지우기(와 확인 명령)뿐인지. 시안·임시 폴더 허용 판단에 쓴다
   modeChange?: boolean; // 파일 권한(실행 권한 등)을 바꾸는 명령(chmod·chown·install)이 있는지. 시안·임시 폴더에서도 승인함으로 보낸다
   linkSources?: string[]; // 링크(ln, cp -l/-s)가 가리킬 수 있는 경로 후보(절대 경로). 시안·임시 폴더 바로 허용은 이것도 그 안일 때만
+  // ---- 제목·기록용 표시 (판단 결과 decision·kind 는 이것으로 바꾸지 않는다) ----
+  risks?: BashRisk[]; // 위험 종류 표시: 프로그램 끄기·인터넷 전송·코드 실행·권한 바꾸기·공용 임시 폴더·지우기
+  programs?: string[]; // 승인이 필요하다고 본 명령의 프로그램 이름(인자 없이, 나온 순서)
+}
+
+/** 위험 종류 표시. kill 프로그램 끄기 · network 인터넷 전송 · code 코드 실행 · mode 권한 바꾸기 · tmp 공용 임시 폴더에 쓰기 · delete 지우기 */
+export type BashRiskKind = 'kill' | 'network' | 'code' | 'mode' | 'tmp' | 'delete';
+export interface BashRisk {
+  kind: BashRiskKind;
+  program: string; // 프로그램 이름(인자 없이)
+  targets: string[]; // kill: 끌 프로그램 이름·패턴·번호 / network: 주소의 호스트 / mode·tmp·delete: 파일 절대 경로
+  addsExec?: boolean; // mode: 실행 권한을 붙이는지(chmod +x, 755, install 기본)
+}
+
+// 프로그램 끄기
+const KILL_CMDS = new Set(['kill', 'pkill', 'killall']);
+const LAUNCHCTL_STOP = new Set(['stop', 'kill', 'bootout', 'remove', 'unload', 'disable']);
+// 인터넷 전송 (ssh·scp·rsync 는 이미 배포로 분류해 늘 묻는다. 여기 넣지 않는다)
+const NET_CMDS = new Set(['curl', 'wget', 'nc', 'ncat', 'netcat', 'telnet', 'ftp', 'sftp', 'socat', 'gh', 'http', 'https', 'xh']);
+// 코드 실행(해석기·셸)
+const CODE_CMDS = new Set([
+  'python', 'python2', 'python3', 'node', 'nodejs', 'ruby', 'perl', 'php', 'deno', 'bun', 'npx', 'pnpx', 'osascript',
+  'sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'eval', 'source', '.', 'swift', 'lua', 'Rscript', 'tclsh', 'expect',
+]);
+const isCodeName = (n: string) => CODE_CMDS.has(n) || /^python\d+(\.\d+)?$/.test(n) || /^ruby\d/.test(n);
+// 공용 임시 폴더(다른 프로그램·사용자와 함께 쓰는 곳)
+const SHARED_TMP = ['/tmp', '/private/tmp', '/var/tmp', '/private/var/tmp'];
+// curl·wget 에서 값을 따로 받는 옵션(그 값은 주소가 아님)
+const NET_VALUE_SHORT = new Set(['o', 'd', 'H', 'u', 'X', 'A', 'e', 'b', 'c', 'T', 'F', 'w', 'K', 'x', 'r', 'm', 'y', 'Y', 'z', 'C', 'E', 'D', 'U', 'P']);
+const WGET_VALUE_SHORT = new Set(['O', 'o', 'a', 'i', 'P', 'e', 't', 'T', 'w', 'Q', 'l', 'A', 'R', 'D', 'I', 'X', 'U', 'B']);
+// nc·telnet·ftp 류(값 받는 옵션: 원본 포트·주소, 시간 제한, 프록시 등)
+const NC_VALUE_SHORT = new Set(['p', 's', 'w', 'x', 'X', 'i', 'I', 'O', 'T', 'V', 'e', 'q', 'P', 'b', 'l', 'o', 'F', 'S']);
+const NET_VALUE_LONG =/^--(data[\w-]*|header|user|proxy-user|request|output|user-agent|cookie|cookie-jar|form[\w-]*|referer|proxy|config|write-out|max-time|connect-timeout|retry[\w-]*|cert|key|cacert|resolve|upload-file|output-document|post-data|post-file|body-data|directory-prefix|password|http-user|http-password|load-cookies|save-cookies)$/;
+
+const URL_HOST = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@\/\s]*@)?(\[[0-9a-fA-F:.]+\]|[^\/:\s?#@]+)/i;
+const BARE_HOST = /^(?:[^@\/\s:]+@)?((?:[a-z0-9-]+\.)+[a-z]{2,}|\d{1,3}(?:\.\d{1,3}){3}|localhost)(?::\d+)?(?:[\/?#]|$)/i;
+
+/** 주소 글에서 호스트 이름만. 모양이 이상하면 undefined */
+function cleanHost(h: string | undefined): string | undefined {
+  if (!h) return undefined;
+  const v = h.toLowerCase().replace(/\.$/, '');
+  return /^[a-z0-9.\-\[\]:]{1,80}$/.test(v) ? v : undefined;
+}
+export function hostOf(word: string): string | undefined {
+  const u = URL_HOST.exec(word);
+  if (u) return cleanHost(u[1]);
+  const b = BARE_HOST.exec(word);
+  return b ? cleanHost(b[1]) : undefined;
+}
+
+/** 인터넷 전송 명령이 보낼 주소의 호스트들 */
+function netHosts(name: string, args: string[]): string[] {
+  const hosts: string[] = [];
+  const add = (h?: string) => {
+    if (h && !hosts.includes(h)) hosts.push(h);
+  };
+  if (name === 'gh') {
+    const i = args.findIndex((a) => a === '--hostname' || a.startsWith('--hostname='));
+    add(i < 0 ? 'github.com' : cleanHost(args[i].includes('=') ? args[i].split('=')[1] : args[i + 1]));
+    return hosts;
+  }
+  if (name === 'openssl') {
+    for (let k = 0; k < args.length; k++) {
+      if (args[k] === '-connect' || args[k] === '-host') add(cleanHost((args[k + 1] ?? '').replace(/:\d+$/, '')));
+    }
+    return hosts;
+  }
+  if (name === 'socat') {
+    for (const a of args) {
+      const m = /(?:tcp|udp|ssl|openssl)[46]?(?:-connect)?:([^:,\s]+)/i.exec(a);
+      if (m) add(cleanHost(m[1]));
+    }
+    return hosts;
+  }
+  // 주소(https://…)는 어디에 있든 호스트를 뽑는다
+  for (const a of args) {
+    const v = a.startsWith('--url=') ? a.slice(6) : a;
+    if (URL_HOST.test(v)) add(hostOf(v));
+  }
+  if (hosts.length) return hosts;
+  // 주소 모양이 없으면: 값 받는 옵션 뒤가 아닌 낱말 중 호스트처럼 보이는 것 (nc host port, curl example.com)
+  const valueShort = name === 'wget' ? WGET_VALUE_SHORT : name === 'curl' ? NET_VALUE_SHORT : NC_VALUE_SHORT;
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k];
+    if (a.startsWith('-')) {
+      const short = /^-([a-zA-Z#0-9]+)$/.exec(a);
+      if ((short && valueShort.has(short[1].slice(-1))) || NET_VALUE_LONG.test(a)) k++;
+      continue;
+    }
+    add(hostOf(a));
+    if (['nc', 'ncat', 'netcat', 'telnet', 'ftp', 'sftp'].includes(name) && hosts.length) break;
+  }
+  return hosts;
+}
+
+/** 끌 대상(이름·패턴·번호). 신호·옵션 값은 뺀다 */
+function killTargets(name: string, args: string[]): string[] {
+  const out: string[] = [];
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k];
+    if (a === '--') continue;
+    if (a.startsWith('-')) {
+      if (name === 'kill' && (a === '-s' || a === '-n')) k++;
+      else if (name === 'pkill' && /^-[UuGgtPFsJT]$/.test(a)) k++;
+      else if (name === 'killall' && /^-[ut]$/.test(a)) k++;
+      else if (name === 'killall' && a === '-c' && args[k + 1]) out.push(args[++k]);
+      continue;
+    }
+    out.push(a);
+  }
+  return out;
+}
+
+/** osascript 글에서 끄려는 앱 이름(tell application "X" to quit, quit app "X") */
+function quitApps(text: string): string[] {
+  if (!/\bquit\b/i.test(text)) return [];
+  const apps: string[] = [];
+  const re = /(?:application|app)\s+(?:id\s+)?"([^"]{1,80})"/gi;
+  for (let m = re.exec(text); m; m = re.exec(text)) apps.push(m[1]);
+  return apps.length ? apps : ['(앱 이름을 알 수 없음)'];
+}
+
+/** chmod 권한 값이 실행 권한을 붙이는지 */
+function modeAddsExec(mode: string | undefined): boolean {
+  if (!mode) return false;
+  if (/^[0-7]{3,4}$/.test(mode)) return /[1357]/.test(mode.slice(-3));
+  return /[+=][rwxXst]*[xX]/.test(mode);
 }
 
 // 엄격한 순서 (뒤로 갈수록 엄격)
@@ -545,10 +672,79 @@ function nonOptions(args: string[]): string[] {
   return args.filter((a) => !a.startsWith('-'));
 }
 
+/** launchctl 로 프로그램을 끄는지(stop·bootout 등, kickstart -k 는 끈 뒤 다시 켬). 표시만 쓴다 */
+function launchctlStops(args: string[]): boolean {
+  const sub = args[0] ?? '';
+  if (LAUNCHCTL_STOP.has(sub)) return true;
+  return sub === 'kickstart' && args.slice(1).some((a) => /^-[a-z]*k[a-z]*$/.test(a));
+}
+
+// 설정값만 바꾸는 줄에서 승인함으로 보낼 이름(뒤 명령의 실행 방식·위치를 바꿀 수 있는 것)
+const RISKY_ASSIGN_NAMES = new Set([
+  'PATH', 'HOME', 'PAGER', 'MANPAGER', 'GIT_PAGER', 'NODE_OPTIONS', 'NODE_PATH', 'BASH_ENV', 'ENV', 'ZDOTDIR', 'IFS', 'TMPDIR', 'CDPATH',
+  'PYTHONPATH', 'PYTHONSTARTUP', 'PYTHONHOME', 'EDITOR', 'VISUAL', 'SHELL', 'PROMPT_COMMAND', 'PERL5LIB', 'PERL5OPT', 'RUBYOPT', 'RUBYLIB',
+  'http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
+  // zsh 가 대문자 설정값과 묶어 둔 소문자 이름(path=x 는 PATH 를 바꾼다)
+  'path', 'cdpath', 'fpath', 'manpath', 'module_path', 'mailpath', 'psvar', 'fignore', 'watch',
+  // 그 밖에 실행할 프로그램·별명·함수·옵션을 바꿀 수 있는 zsh 특수 변수(HISTFILE·ZDOTDIR 같은 대문자 이름은 대문자 규칙으로 걸림)
+  'histchars', 'prompt', 'options', 'commands', 'functions', 'aliases', 'galiases', 'saliases', 'nameddirs', 'userdirs',
+]);
+const RISKY_ASSIGN_PREFIX = /^(GIT_|DYLD_|LD_|XDG_|NPM_CONFIG_|npm_config_|ELECTRON_)/;
+
+/** 고정 목록·접두어·대문자 규칙만 본다(앱이 켜진 환경 변수에 따라 결과가 바뀌지 않게) */
+function isRiskyAssignName(name: string): boolean {
+  if (!name) return false;
+  return /[A-Z]/.test(name) || RISKY_ASSIGN_NAMES.has(name) || RISKY_ASSIGN_PREFIX.test(name);
+}
+
+// 설정값 꼴: 이름=값, 이름[열쇠]=값(zsh·bash 배열·연관 배열), 이름+=값, 이름[열쇠]+=값
+const ASSIGN_RE = /^([A-Za-z_][A-Za-z0-9_]*)(\[[^\]]*\])?\+?=/;
+const isAssign = (w: string): boolean => ASSIGN_RE.test(w);
+/** 설정값 낱말의 이름(대괄호·+ 뺀 것)과, 대괄호·+= 꼴인지 */
+function assignParts(w: string): { name: string; complex: boolean } {
+  const m = ASSIGN_RE.exec(w);
+  if (!m) return { name: '', complex: false };
+  return { name: m[1], complex: m[0].length !== m[1].length + 1 };
+}
+/** 설정값 낱말에서 값 부분 */
+const assignValue = (w: string): string => w.slice((ASSIGN_RE.exec(w)?.[0].length ?? w.indexOf('=') + 1));
+
 /** Bash 명령 하나(여러 개 이어 쓴 것 포함)를 분류한다. */
 export function classifyBash(command: string, ctx: BashContext): BashDecision {
-  const out: BashDecision = { decision: 'allow', reasons: [], blockedPaths: [], writePaths: [], linkSources: [] };
+  const out: BashDecision = { decision: 'allow', reasons: [], blockedPaths: [], writePaths: [], linkSources: [], risks: [], programs: [] };
   let level: BashKind | 'allow' = 'allow';
+  let curName: string | undefined; // 지금 보는 명령의 프로그램 이름(제목용)
+  /** 위험 종류 표시 더하기(같은 종류·프로그램이면 대상만 합친다) */
+  const risk = (kind: BashRiskKind, program: string, targets: string[] = [], addsExec = false) => {
+    const prog = /^[A-Za-z0-9._+-]{1,40}$/.test(program) ? program : '(이름을 알 수 없음)';
+    let r = out.risks!.find((x) => x.kind === kind && x.program === prog);
+    if (!r) out.risks!.push((r = { kind, program: prog, targets: [] }));
+    for (const t of targets) if (t && !r.targets.includes(t) && r.targets.length < 20) r.targets.push(t);
+    if (addsExec) r.addsExec = true;
+  };
+  /** 다른 명령 안에 글로 들어간 명령(sh -c '…', 앞에 붙인 설정값, osascript do shell script)에서 프로그램 끄기·인터넷 전송을 대강 찾는다(표시만) */
+  const scanInline = (text: string) => {
+    if (!text) return;
+    const re = /(?:^|[\s;&|(`'"])(pkill|killall|kill|launchctl|curl|wget|nc|ncat|netcat|telnet|socat)(?=\s)/g;
+    for (let m = re.exec(text); m; m = re.exec(text)) {
+      const n = m[1];
+      // 이 명령 뒤 낱말들(다음 ; & | 까지)
+      const after = text
+        .slice(m.index + m[0].length)
+        .split(/[;&|)\n`]/)[0]
+        .trim()
+        .split(/\s+/)
+        .map((w) => w.replace(/^['"]+|['"]+$/g, ''))
+        .filter(Boolean);
+      if (KILL_CMDS.has(n)) risk('kill', n, killTargets(n, after));
+      else if (n === 'launchctl' && launchctlStops(after)) risk('kill', n, nonOptions(after.slice(1)));
+      else if (n !== 'launchctl') {
+        const u = /[a-z][a-z0-9+.-]*:\/\/[^\s'"]+/i.exec(text.slice(m.index));
+        risk('network', n, u ? [hostOf(u[0]) ?? ''] : []);
+      }
+    }
+    if (/\bquit\b/i.test(text) && /\b(application|app)\s+"/i.test(text)) risk('kill', 'osascript', quitApps(text));
+  };
   // 읽어도 되는 위치인지: 원래 경로가 읽기 허용 폴더 안이고, realPath 가 있으면 링크를 푼 실제 경로도 읽기 허용 폴더(또는 그 실제 경로) 안
   const realRoots = ctx.realPath ? ctx.readRoots.map((r) => ctx.realPath!(r)) : [];
   const readableAbs = (abs: string): boolean => {
@@ -564,6 +760,7 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
     out.reasons.push(why);
     nonRead = true;
     if (!fileOp) otherBump = true;
+    if (curName && /^[A-Za-z0-9._+-]{1,40}$/.test(curName) && !out.programs!.includes(curName)) out.programs!.push(curName);
   };
 
   const cmd = command.trim();
@@ -575,6 +772,7 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
   }
 
   const visit = (text: string, startCwd: string, depth: number, inherited?: Map<string, string[] | null>) => {
+    curName = undefined;
     const hd = stripHeredocs(text);
     if (!hd.ok) bump('command', 'heredoc 끝 표시가 없음');
     if (hd.expands) bump('command', 'heredoc 본문에 변수·명령 치환이 있음');
@@ -592,6 +790,7 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
       const abs = resolve(p);
       out.writePaths.push(abs);
       bump(ctx.targets.some((t) => within(abs, t)) ? 'write' : 'outsideWrite', why, true);
+      if (SHARED_TMP.some((t) => within(abs, t))) risk('tmp', curName ?? '(셸)', [abs]);
     };
 
 
@@ -613,7 +812,11 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
     // 먼저 for·변수 지정을 훑어 값을 알아 둔 뒤 $(…) 안의 명령을 검사한다
     for (const sg of splitSegments(tk.tokens)) {
       if (sg.words[0] === 'for' && sg.words[2] === 'in' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(sg.words[1]))
-        known.set(sg.words[1], sg.flags.slice(3).some((f) => f.glob || f.expand || f.subst || f.vars?.length) ? null : sg.words.slice(3));
+        // 반복 변수가 설정값(PATH·path 등)이면 값을 믿지 않는다(승인함 판단은 아래 본 검사에서)
+        known.set(
+          sg.words[1],
+          isRiskyAssignName(sg.words[1]) || sg.flags.slice(3).some((f) => f.glob || f.expand || f.subst || f.vars?.length) ? null : sg.words.slice(3),
+        );
     }
     for (const sub of tk.subs) {
       if (depth < 3) visit(sub, cwd, depth + 1, known);
@@ -624,12 +827,13 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
       // 변수 풀기: for 반복 변수·앞서 지정한 변수·PWD·HOME 은 값으로, 그 밖의 변수·확장은 승인함
       let unknownVar = false;
       const seg: Segment = { ...rawSeg, words: [], quoted: [], flags: [] };
-      const head = rawSeg.words.find((w, idx) => !SHELL_KEYWORDS.has(w) && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w) && idx >= 0);
+      const head = rawSeg.words.find((w, idx) => !SHELL_KEYWORDS.has(w) && !isAssign(w) && idx >= 0);
       const showsOnly = head === 'echo' || head === 'printf';
+      curName = head ? path.basename(head) : undefined;
       rawSeg.words.forEach((w, idx) => {
         const f = rawSeg.flags[idx] ?? { text: w };
         const vals = f.vars?.length || f.expand ? expandWord(w, f) : [w];
-        if (!vals || (f.subst && !showsOnly && !(/^[A-Za-z_][A-Za-z0-9_]*=/.test(w) && idx === 0))) unknownVar = true;
+        if (!vals || (f.subst && !showsOnly && !(isAssign(w) && idx === 0))) unknownVar = true;
         for (const v of vals ?? [w]) {
           seg.words.push(v);
           seg.quoted.push(rawSeg.quoted[idx]);
@@ -653,33 +857,58 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
       });
       seg.redirOut = redirOut;
       seg.redirIn = redirIn;
+      // 리다이렉션 대상의 차단 경로 검사·쓰기 표시는 어떤 줄이든 먼저 한다
+      // (`g=x > /tmp/a` · `{ g=x > docs/a.md; }` 처럼 설정값만 있는 줄도 빠지지 않게)
+      for (const w of [...seg.redirOut, ...seg.redirIn]) {
+        const eq = w.indexOf('=');
+        checkBlocked(w);
+        if (eq > 0) checkBlocked(w.slice(eq + 1));
+      }
+      for (const r of seg.redirOut) markWrite(r, `리다이렉션으로 파일 쓰기: ${r}`);
+      if (seg.redirOut.some((r) => !/^\/dev\/(null|stdout|stderr)$/.test(r))) nonRead = true;
       // for 변수 in 값들 / 변수=값 만 있는 줄: 값을 기억한다
       if (seg.words[0] === 'for' && seg.words[2] === 'in' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(seg.words[1])) {
         const vals = seg.words.slice(3);
         const bad = unknownVar || seg.flags.slice(3).some((f) => f.glob || f.expand);
-        known.set(seg.words[1], bad ? null : vals);
+        known.set(seg.words[1], bad || isRiskyAssignName(seg.words[1]) ? null : vals);
         for (const v of vals) checkBlocked(v);
+        // `for PATH in /x; do ls; done` · `for path in …` 는 반복마다 설정값을 바꾼다. 소문자 지역 변수(for f in …)는 그대로
+        if (isRiskyAssignName(seg.words[1])) bump('command', `반복 변수로 설정값 바꾸기: ${seg.words[1]}`);
         continue;
       }
-      if (seg.words.length && seg.words.every((w) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w))) {
-        seg.words.forEach((w, idx) => {
-          const eq = w.indexOf('=');
-          const f = seg.flags[idx];
-          known.set(w.slice(0, eq), unknownVar || f?.glob || f?.expand || f?.subst ? null : [w.slice(eq + 1)]);
-          checkBlocked(w.slice(eq + 1));
+      // 설정값만 있는 줄인지는 앞의 셸 문법 낱말({ · if · ! · do · then · while 등)을 뗀 뒤 본다
+      // (`{ functions[ls]=x; }` · `if PATH=/x; then …` · `do PATH=/x; done` 도 같은 판단을 받게)
+      let kw = 0;
+      while (kw < seg.words.length && SHELL_KEYWORDS.has(seg.words[kw])) kw++;
+      const assignWords = seg.words.slice(kw);
+      if (assignWords.length && assignWords.every(isAssign)) {
+        assignWords.forEach((w, i) => {
+          const { name: nm, complex } = assignParts(w);
+          const f = seg.flags[kw + i];
+          // 대괄호·+= 꼴은 원래 값에 덧붙이거나 일부만 바꾸므로 값을 알 수 없는 것으로 둔다
+          known.set(nm, complex || unknownVar || f?.glob || f?.expand || f?.subst ? null : [assignValue(w)]);
+          checkBlocked(assignValue(w));
         });
-        if (SECRET_NAME.test(seg.words.join(' '))) out.blockedPaths.push('(변수에 비밀 파일 이름)');
+        if (SECRET_NAME.test(assignWords.join(' '))) out.blockedPaths.push('(변수에 비밀 파일 이름)');
+        // 셸 문법 낱말이 앞에 있던 줄은 예전에 "경로를 알 수 없음"으로 승인함에 가던 것을 그대로 둔다(느슨해지지 않게)
+        if (kw > 0 && unknownVar) bump('command', '변수·확장을 써서 경로를 알 수 없음');
+        // `PATH=x; ls` 처럼 설정값을 바꾼 뒤 실행하면 뒤 명령이 무엇을 실행할지 바뀔 수 있다.
+        // 소문자 지역 변수(f=src/a.ts; wc -l $f)는 그대로 두고, 대문자가 든 이름·위험한 이름(zsh 소문자 묶음 포함)만 승인함으로
+        const parts = assignWords.map(assignParts);
+        const risky = parts.map((p) => p.name).filter(isRiskyAssignName);
+        if (risky.length) bump('command', `설정값을 바꾼 뒤 실행: ${[...new Set(risky)].join(', ')}`);
+        // 대괄호(functions[ls]=… · path[1,0]=…)·+= 꼴(PATH+=… · path+=…)은 이름과 상관없이 승인함으로
+        const complex = parts.filter((p) => p.complex).map((p) => p.name);
+        if (complex.length) bump('command', `대괄호·+= 꼴로 설정값 바꾸기: ${[...new Set(complex)].join(', ')}`);
         continue;
       }
       if (unknownVar) bump('command', '변수·확장을 써서 경로를 알 수 없음');
-      // 모든 단어·리다이렉션 대상의 차단 경로 검사
-      for (const w of [...seg.words, ...seg.redirOut, ...seg.redirIn]) {
+      // 모든 단어의 차단 경로 검사(리다이렉션 대상은 위에서 이미 봄)
+      for (const w of seg.words) {
         const eq = w.indexOf('=');
         checkBlocked(w);
         if (eq > 0) checkBlocked(w.slice(eq + 1)); // --file=... 형태
       }
-      for (const r of seg.redirOut) markWrite(r, `리다이렉션으로 파일 쓰기: ${r}`);
-      if (seg.redirOut.some((r) => !/^\/dev\/(null|stdout|stderr)$/.test(r))) nonRead = true;
 
       let words = seg.words.slice();
       let quoted = seg.quoted.slice();
@@ -696,13 +925,20 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
       let flags = seg.flags.slice();
       // 셸 문법 단어를 지운 만큼 flags 도 맞춘다
       flags = flags.slice(seg.words.length - words.length);
-      // 앞쪽 환경변수 지정(FOO=bar) 제거
-      while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) {
+      // 앞쪽 환경변수 지정(FOO=bar) 제거. 설정값은 프로그램이 무엇을 실행할지 바꿀 수 있어(GIT_EXTERNAL_DIFF·PAGER·NODE_OPTIONS 등)
+      // 하나라도 붙으면 바로 허용하지 않고 최소 일반 명령(승인함)으로 본다. 이미 더 엄격한 판단은 그대로(stricter)
+      const preset: string[] = [];
+      while (words.length && isAssign(words[0])) {
+        preset.push(words[0]);
         words.shift();
         quoted.shift();
         flags.shift();
       }
       if (!words.length) continue;
+      if (preset.length) {
+        bump('command', `앞에 설정값을 붙여 실행: ${[...new Set(preset.map((w) => assignParts(w).name))].join(', ')}`);
+        for (const w of preset) scanInline(assignValue(w));
+      }
       if (WRAPPERS.has(path.basename(words[0]))) {
         const wrapper = path.basename(words[0]);
         if (wrapper === 'time' && words.length === 1) continue;
@@ -710,11 +946,16 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
         quoted = quoted.slice(1);
         flags = flags.slice(1);
         let argFile = false; // xargs -a 파일: 파일 내용이 인자가 되어 오류 문구로 드러날 수 있다
-        while (words.length && (words[0].startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]))) {
+        let wrapPreset = false;
+        while (words.length && (words[0].startsWith('-') || isAssign(words[0]))) {
           const opt = words[0];
           words.shift();
           quoted.shift();
           flags.shift();
+          if (isAssign(opt)) {
+            wrapPreset = true; // env FOO=bar 명령 · time FOO=bar 명령
+            scanInline(assignValue(opt));
+          }
           if (wrapper !== 'xargs') continue;
           if (/^-a|^--arg-file/.test(opt)) argFile = true;
           if (XARGS_VALUE_OPT.test(opt) && words.length) {
@@ -726,10 +967,20 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
         // xargs 로 지문·크기·종류만 보는 명령(find -exec 와 같은 기준)을 돌리는 것은 읽기로 본다
         const safeXargs = wrapper === 'xargs' && !argFile && words.length > 0 && FIND_SAFE_EXEC.has(path.basename(words[0]));
         if (wrapper !== 'time' && !safeXargs) bump('command', `${wrapper} 로 감싼 명령`);
+        else if (wrapPreset) bump('command', `${wrapper} 뒤에 설정값을 붙여 실행`);
         if (!words.length) continue;
+      }
+      // 맨 앞 낱말에 '=' 나 '[' 가 들어 있으면(`a[x]=/y/cat` 처럼 설정값으로 못 읽은 꼴) basename 으로 줄여 보지 않고 일반 명령으로.
+      // 시험 명령 '[' · '[[' 는 그대로
+      if (words[0] !== '[' && words[0] !== '[[' && /[=[]/.test(words[0])) {
+        curName = undefined;
+        bump('command', "명령 이름에 '=' 또는 '[' 가 들어 있음");
+        scanInline(words.join(' '));
+        continue;
       }
       const name = path.basename(words[0]);
       const args = words.slice(1);
+      curName = name;
       if (seg.heredoc && name !== 'cat' && name !== 'tee') bump('command', `heredoc 본문을 ${name} 로 실행`);
       const argFlags = flags.slice(1);
       const isReadable = (p: string) => readableAbs(resolve(p));
@@ -782,7 +1033,10 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
         }
         const sub = args[k] ?? '';
         const rest = args.slice(k + 1);
-        if (GIT_DELETE.has(sub)) bump('delete', `git ${sub}`);
+        if (GIT_DELETE.has(sub)) {
+          bump('delete', `git ${sub}`);
+          risk('delete', 'git', sub === 'rm' ? nonOptions(rest).map((a) => path.resolve(gitCwd, expandHome(a))) : []);
+        }
         else if (GIT_COMMIT.has(sub)) bump('commit', `git ${sub}`);
         else if (GIT_READ.has(sub)) {
           const listing = rest.some((a) => /^(-a|-r|-l|-v|-vv|--list|--all|--remotes|--show-current|--contains|--no-contains|--merged|--no-merged|--points-at|--sort.*|--format.*)$/.test(a));
@@ -806,11 +1060,14 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
         const targets = nonOptions(args);
         bump('delete', `${name} 로 삭제`, targets.length > 0);
         for (const a of targets) out.writePaths.push(resolve(a));
+        risk('delete', name, targets.map(resolve));
         continue;
       }
       if (name === 'find') {
         if (args.includes('-delete') || args.some((a, idx) => (a === '-exec' || a === '-execdir' || a === '-ok') && DELETE_CMDS.has(path.basename(args[idx + 1] ?? '')))) {
           bump('delete', 'find 로 삭제');
+          const firstExpr = args.findIndex((a) => a.startsWith('-') || a === '(' || a === '!');
+          risk('delete', 'find', (firstExpr < 0 ? args : args.slice(0, firstExpr)).map(resolve));
         } else if (
           args.some((a) => /^-(ok|okdir|fprint|fprint0|fprintf|fls)$/.test(a)) ||
           args.some((a, idx) => (a === '-exec' || a === '-execdir') && !FIND_SAFE_EXEC.has(path.basename(args[idx + 1] ?? '')))
@@ -838,6 +1095,21 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
           out.reasons.push(`확인 명령: ${name} ${args.slice(0, 2).join(' ')}`.trim());
           nonRead = true; // 실행 폴더는 작업 대상 안이어야 한다
           continue;
+        }
+      }
+      // ---- 제목·기록용 위험 표시 (판단은 아래 원래 규칙대로) ----
+      if (KILL_CMDS.has(name)) risk('kill', name, killTargets(name, args));
+      if (name === 'launchctl' && launchctlStops(args)) risk('kill', name, nonOptions(args.slice(1)));
+      if (NET_CMDS.has(name) || (name === 'openssl' && /^s_(client|time)$/.test(args[0] ?? ''))) risk('network', name, netHosts(name, args));
+      if (isCodeName(name)) {
+        risk('code', name);
+        // sh -c '…' · osascript -e '…' · python -c '…' 처럼 글로 넘긴 명령 안의 프로그램 끄기·인터넷 전송도 표시
+        args.forEach((a, k) => {
+          if (k > 0 && /^-(c|e|-eval|-command)$/.test(args[k - 1])) scanInline(a);
+        });
+        if (name === 'osascript') {
+          const apps = quitApps(args.join(' '));
+          if (apps.length) risk('kill', name, apps);
         }
       }
       if (['npm', 'pnpm', 'yarn', 'bun'].includes(name)) {
@@ -936,7 +1208,11 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
             prog = a;
             continue;
           }
-          if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(a)) continue;
+          if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(a)) continue; // awk 변수=값
+          if (isAssign(a)) {
+            bad = true; // awk 에 없는 대괄호·+= 꼴: 파일 이름인지 알 수 없어 승인함으로
+            break;
+          }
           files.push(a);
         }
         if (bad || prog === undefined || !awkProgramIsPure(prog)) bump('command', 'awk (쓰기·실행이 섞였을 수 있음)');
@@ -957,6 +1233,16 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
         continue;
       }
       if (READ_CMDS.has(name)) {
+        // printf -v 이름 / -v이름: 출력 대신 설정값(PATH·functions[ls] 등)을 바꾼다. 앞쪽 옵션 자리(-- 나 첫 일반 낱말 전)만 본다
+        if (name === 'printf') {
+          for (const a of args) {
+            if (a === '--' || !a.startsWith('-')) break;
+            if (/^-v/.test(a)) {
+              bump('command', 'printf -v 로 설정값 바꾸기');
+              break;
+            }
+          }
+        }
         const isGrep = name === 'grep' || name === 'egrep' || name === 'fgrep' || name === 'rg';
         const files: string[] = [];
         let patternTaken = !isGrep;
@@ -1054,7 +1340,12 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
             }
           }
           // install 은 따로 정하지 않으면 실행 권한(755)을 붙여 복사한다
-          if (name === 'install') out.modeChange = true;
+          if (name === 'install') {
+            out.modeChange = true;
+            const mi = args.findIndex((a) => a === '-m' || /^-m./.test(a) || a.startsWith('--mode'));
+            const mode = mi < 0 ? undefined : args[mi] === '-m' || args[mi] === '--mode' ? args[mi + 1] : args[mi].replace(/^-m|^--mode=/, '');
+            risk('mode', name, [resolve(dest)], mi < 0 || modeAddsExec(mode));
+          }
           markWrite(dest, `${name} 로 파일 만들기`);
           if (name === 'cp' || name === 'install') {
             const d = resolve(dest);
@@ -1074,6 +1365,7 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
           const targets2 = words2.slice(1);
           if (!targets2.length) bump('command', `${name} (바꿀 파일을 알 수 없음)`);
           targets2.forEach((f) => markWrite(f, `${name} 로 권한 바꾸기`));
+          risk('mode', name, targets2.map(resolve), name === 'chmod' && modeAddsExec(words2[0]));
         }
         else if (name === 'dd') {
           const of = args.find((a) => a.startsWith('of='));
@@ -1101,6 +1393,7 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
     // 바로 허용은 실행 폴더가 작업 대상 안일 때만
     // 바꾸거나 실행하는 명령은 작업 대상 폴더 안에서만, 읽기만 하는 명령은 읽기 허용 폴더 안에서만 바로 허용
     const roots = nonRead ? ctx.targets : ctx.readRoots;
+    curName = undefined;
     if (!roots.some((t) => within(cwd, t)) || !roots.some((t) => within(startCwd, t))) {
       bump('command', '작업 대상 폴더 밖에서 실행');
     }

@@ -299,6 +299,7 @@ interface ApprovalRequest {
   rememberFile?: boolean;
   rememberKey?: string;
   rememberLabel?: string;
+  tool?: string; // 요청을 만든 도구. 'Bash' 면 "다시 묻지 않기" 체크 칸을 띄우지 않는다
   createdAt: string;
   decidedAt?: string;
   decisionItems?: DecisionItem[];

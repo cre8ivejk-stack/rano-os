@@ -14,6 +14,19 @@ export function fileKey(filePath: string): string {
   return `file:${path.resolve(filePath)}`;
 }
 
+/**
+ * 이 요청을 승인할 때 "이번 과제 동안 다시 묻지 않기"로 기억할 범위. 없으면 undefined.
+ * 명령(Bash) 요청은 어떤 종류든 기억하지 않는다(예전 bash: 범위도). 화면 체크 칸(renderer/approvals.ts)도 같은 기준.
+ * rememberKey 없이 filePath 로 파일 열쇠를 만드는 대체 규칙은 파일 고치기 도구(Write·Edit·NotebookEdit) 요청에만 쓴다
+ * (지금 문지기는 이 도구들 요청에 rememberKey 를 늘 붙이므로, 도구 표시가 없는 요청은 기억하지 않는 쪽이 안전하다)
+ */
+export const FILE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+export function grantKeyFor(item: Pick<ApprovalRequest, 'tool' | 'rememberKey' | 'filePath' | 'kind'>): string | undefined {
+  if (item.tool === 'Bash' || item.rememberKey?.startsWith('bash:')) return undefined;
+  if (item.rememberKey) return item.rememberKey;
+  return item.filePath && item.tool && FILE_TOOLS.has(item.tool) && (item.kind === 'write' || item.kind === 'outsideWrite') ? fileKey(item.filePath) : undefined;
+}
+
 export interface ApprovalQueueDeps {
   config: RanoConfig;
   emit: Emit;
@@ -38,7 +51,7 @@ function short(text: string, max: number): string {
 export class ApprovalQueue implements ApprovalQueueApi {
   private items: ApprovalRequest[] = []; // 최신순
   private readonly waiters = new Map<string, Waiter>();
-  private readonly grants = new Map<string, Set<string>>(); // taskId → 다시 묻지 않을 범위(file:경로 · bash:역할 · ext:도구). 메모리에만 둔다
+  private readonly grants = new Map<string, Set<string>>(); // taskId → 다시 묻지 않을 범위(file:경로 · ext:도구). 명령(Bash)은 기억하지 않는다. 메모리에만 둔다
   private readonly file: string;
   private readonly eventsFile: string;
 
@@ -119,7 +132,7 @@ export class ApprovalQueue implements ApprovalQueueApi {
     }
 
     const note = typeof d.note === 'string' && d.note.trim() ? d.note.trim() : undefined;
-    const grantKey = item.rememberKey ?? (item.filePath && (item.kind === 'write' || item.kind === 'outsideWrite') ? fileKey(item.filePath) : undefined);
+    const grantKey = grantKeyFor(item);
     const remember = d.decision === 'approve' && !!d.rememberFile && !!grantKey && !!item.taskId;
     // 결정 카드: 항목마다 고른 안. 없거나 잘못된 값이면 권장안으로 채운다(승인 때만)
     let choices: Record<string, string> | undefined;

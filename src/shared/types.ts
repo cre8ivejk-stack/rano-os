@@ -520,6 +520,8 @@ export interface PermissionLogEntry {
   tool: string;
   decision: 'allow' | 'deny';
   reason: string;
+  command?: string; // 승인 카드가 뜬 Bash 명령: 비밀을 가린 명령 글(500자까지)
+  target?: string; // 그 명령이 프로그램 끄기·지우기·인터넷 전송이면 대상(끌 이름·패턴, 지울 경로, 보낼 호스트)
 }
 
 // ================= 2단계 모듈 약속 =================
@@ -619,8 +621,9 @@ export interface ApprovalRequest {
   status: 'pending' | 'approved' | 'rejected' | 'revise' | 'expired';
   decisionNote?: string; // 반려·수정 요청 때 사용자가 남긴 말
   rememberFile?: boolean; // 승인하면서 "이번 과제 동안 다시 묻지 않기"를 골랐는지
-  rememberKey?: string; // 다시 묻지 않을 범위(file:경로 · bash:역할 · ext:도구). 있으면 승인함에 체크 칸이 나온다
+  rememberKey?: string; // 다시 묻지 않을 범위(file:경로 · ext:도구). 있으면 승인함에 체크 칸이 나온다. 명령(Bash) 요청에는 없다
   rememberLabel?: string; // 체크 칸 문구
+  tool?: string; // 요청을 만든 도구(Bash·Write·Edit·mcp__…). 'Bash' 면 체크 칸을 띄우지 않고 기억도 만들지 않는다
   createdAt: string;
   decidedAt?: string;
   // ---- 결정 필요(kind: decision) 카드: 항목마다 안을 고른다 ----
