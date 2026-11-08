@@ -10,6 +10,7 @@ interface ChatMessage {
   at: string; // ISO 시각
   attachments?: ChatAttachment[];
   via?: 'mobile'; // 휴대폰(텔레그램)에서 보낸 말
+  replyTo?: string[]; // 라노 답: 이 답이 답한 내 말 id (묶어 답하면 여럿)
 }
 
 type MemberState = 'idle' | 'working' | 'reviewing' | 'done';
@@ -49,11 +50,19 @@ interface MissionStatus {
   queued?: { title: string; from: 'rano' | 'user'; queuedAt: string; resumed?: boolean }[];
 }
 
+/** 라노가 쓰는 중인 답 화면의 회색 줄 하나 */
+interface LiveStep {
+  text: string;
+  tone: 'said' | 'doing' | 'done';
+}
+
 type RanoUiEvent =
-  | { kind: 'status'; status: 'idle' | 'thinking' }
-  | { kind: 'message'; message: ChatMessage }
+  | { kind: 'status'; status: 'idle' | 'thinking'; turn?: number; label?: string; users?: string[]; mobile?: boolean }
+  | { kind: 'message'; message: ChatMessage; turn?: number; mobile?: boolean; queued?: boolean; waitFor?: string }
   | { kind: 'activity'; text: string; at: string; missionId?: string }
-  | { kind: 'error'; text: string; at: string; missionId?: string }
+  | { kind: 'error'; text: string; at: string; missionId?: string; turn?: number; mobile?: boolean }
+  | { kind: 'live'; turn: number; text: string; steps: LiveStep[]; label?: string }
+  | { kind: 'report'; missionId: string; missionName: string; ok: boolean; firstLine: string; at: string }
   | { kind: 'mission'; status: MissionStatus }
   | { kind: 'leaderMessage'; missionId: string; message: ChatMessage }
   | { kind: 'approvals'; items: ApprovalRequest[] }
@@ -344,6 +353,8 @@ interface TaskOutput {
 interface RanoApi {
   loadHistory(): Promise<ChatMessage[]>;
   send(text: string, attachments?: NewAttachment[]): Promise<{ ok: boolean; message?: string }>;
+  unanswered(): Promise<string[]>; // 앱이 꺼져 답하지 못한 내 말 id
+  resend(messageId: string): Promise<{ ok: boolean; message?: string }>;
   attachmentData(a: ChatAttachment): Promise<string | null>;
   onEvent(cb: (e: RanoUiEvent) => void): () => void;
   missionList(): Promise<MissionStatus[]>;

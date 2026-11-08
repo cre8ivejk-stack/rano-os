@@ -15,11 +15,20 @@ import { autoCommit } from '../memory/autoCommit.js';
 import { oneLine } from './tracker.js';
 import { TaskQueueStore } from './taskQueue.js';
 
+/** 리더 보고 도착 카드 (라노 요약을 기다리지 않고 바로 화면에) */
+export interface ReportCard {
+  missionId: string;
+  missionName: string;
+  ok: boolean;
+  firstLine: string;
+}
+
 export interface MissionDispatcherDeps {
   config: RanoConfig;
   leaders: Map<string, MissionLeaderApi>;
   trackers: Map<string, MissionTrackerApi>;
-  notifyRano: (text: string) => Promise<void>;
+  notifyRano: (text: string, kind?: 'report' | 'direct') => Promise<void>;
+  onReport?: (card: ReportCard) => void; // 리더 보고가 오면 바로 (첫 줄 카드)
   todos?: TodoStoreApi; // 할 일 목록: 배정·보고에 맞춰 상태를 바꾼다
 }
 
@@ -30,11 +39,16 @@ function stamp(d = new Date()): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-function firstLine(text: string): string {
-  // 제목(# …)은 건너뛰고 첫 본문 줄을 쓴다. 본문이 없으면 제목이라도 쓴다.
+/** 보고 첫 줄: 제목(# …)은 건너뛰고 첫 본문 줄을 쓴다. 본문이 없으면 제목이라도 쓴다. 120자까지 */
+export function firstLine(text: string): string {
   const lines = String(text ?? '').split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
   const line = lines.find((l) => !l.startsWith('#')) ?? lines[0] ?? '(보고 없음)';
   return oneLine(line.replace(/^#+\s*/, '').replace(/^[-*]\s+/, ''), 120);
+}
+
+/** 보고 카드용 첫 줄: firstLine 에서 꾸밈 기호(**, `)만 더 뺀다 (화면에는 글자 그대로 넣는다) */
+export function reportFirstLine(report: string): string {
+  return firstLine(String(report ?? '').replace(/\*\*(.+?)\*\*/g, '$1').replace(/`([^`]+)`/g, '$1'));
 }
 
 export class MissionDispatcher implements MissionDispatcherApi {
@@ -133,7 +147,7 @@ export class MissionDispatcher implements MissionDispatcherApi {
     if (typeof found === 'string') throw new Error(found);
     const { mission, leader } = found;
     this.deps
-      .notifyRano(`[앱 알림] 사용자가 ${mission.name} 리더에게 직접 지시했습니다: ${text}${attachments.length ? ` (그림 ${attachments.length}개 첨부)` : ''}`)
+      .notifyRano(`[앱 알림] 사용자가 ${mission.name} 리더에게 직접 지시했습니다: ${text}${attachments.length ? ` (그림 ${attachments.length}개 첨부)` : ''}`, 'direct')
       .catch((e) => console.error('[dispatcher] 라노 알림 실패:', e));
     this.runInBackground(mission, leader, text, 'user', undefined, false, false, attachments);
   }
@@ -194,6 +208,13 @@ export class MissionDispatcher implements MissionDispatcherApi {
     const outcome = result.ok ? '완료' : '중단';
     const tracker = this.deps.trackers.get(mission.id);
 
+    // ⓪ 보고 첫 줄 카드를 바로 (라노 요약은 뒤에 따로 온다)
+    try {
+      this.deps.onReport?.({ missionId: mission.id, missionName: mission.name, ok: result.ok, firstLine: reportFirstLine(result.report) });
+    } catch (e) {
+      console.error('[dispatcher] 보고 카드 표시 실패:', e);
+    }
+
     // ① 미션 기억에 한 줄
     try {
       await this.appendProgress(mission, `- ${stamp()} · ${title} · ${outcome} · ${firstLine(result.report)}`);
@@ -211,9 +232,7 @@ export class MissionDispatcher implements MissionDispatcherApi {
     }
 
     // ③ 라노에게 보고
-    await this.deps.notifyRano(
-      `[앱 알림] ${mission.name} 리더 보고 (과제: ${title}, 결과: ${outcome})\n\n${result.report}`,
-    );
+    await this.deps.notifyRano(`[앱 알림] ${mission.name} 리더 보고 (과제: ${title}, 결과: ${outcome})\n\n${result.report}`, 'report');
   }
 
   // 제목·설명 아래, 기존 항목들 위에 새 줄을 넣는다(최신순)

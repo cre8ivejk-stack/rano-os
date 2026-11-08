@@ -35,6 +35,8 @@ import type {
 
 const CH_LOAD_HISTORY = 'rano:load-history';
 const CH_SEND = 'rano:send';
+const CH_UNANSWERED = 'rano:unanswered';
+const CH_RESEND = 'rano:resend';
 const CH_EVENT = 'rano:event';
 const CH_MISSION_LIST = 'mission:list';
 const CH_MISSION_HISTORY = 'mission:history';
@@ -125,6 +127,12 @@ const api: RanoApi = {
   send(text: string, attachments?: NewAttachment[]): Promise<{ ok: boolean; message?: string }> {
     const list = Array.isArray(attachments) ? attachments.slice(0, 6).map((x) => ({ name: String(x?.name ?? ''), mime: String(x?.mime ?? ''), data: String(x?.data ?? ''), ...(x?.marked === true ? { marked: true } : {}) })) : [];
     return ipcRenderer.invoke(CH_SEND, String(text), list);
+  },
+  unanswered(): Promise<string[]> {
+    return ipcRenderer.invoke(CH_UNANSWERED);
+  },
+  resend(messageId: string): Promise<{ ok: boolean; message?: string }> {
+    return ipcRenderer.invoke(CH_RESEND, String(messageId ?? ''));
   },
   attachmentData(a: ChatAttachment): Promise<string | null> {
     return ipcRenderer.invoke('rano:attachment-data', { id: String(a?.id ?? ''), mime: String(a?.mime ?? '') });

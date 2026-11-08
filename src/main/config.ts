@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import type { ConnectorConfig, MissionConfig, RanoConfig, Zone, ZoneConfig } from '../shared/types.js';
+import type { ConnectorConfig, MissionConfig, RanoConfig, RanoEffort, Zone, ZoneConfig } from '../shared/types.js';
 
 export function expandHome(p: string): string {
   if (p === '~') return homedir();
@@ -12,6 +12,14 @@ export function expandHome(p: string): string {
 
 export function defaultRootDir(): string {
   return process.env.RANO_ROOT ? expandHome(process.env.RANO_ROOT) : path.join(homedir(), 'rano');
+}
+
+const EFFORTS: RanoEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+/** 라노 생각 깊이: rano.json 맨 위 ranoEffort (low|medium|high|xhigh|max). 없거나 다른 값이면 'low' */
+export function ranoEffortFrom(raw: any): RanoEffort {
+  const v = typeof raw?.ranoEffort === 'string' ? raw.ranoEffort.trim().toLowerCase() : '';
+  return (EFFORTS as string[]).includes(v) ? (v as RanoEffort) : 'low';
 }
 
 /** 구역의 외부 역할 폴더(rano.json zones.<구역>.externalPool, 읽기만). 없으면 빈 목록 */
@@ -99,6 +107,7 @@ export function loadConfig(rootDir: string = defaultRootDir()): RanoConfig {
       repoLeader: raw.models?.repoLeader ?? 'claude-opus-5-5',
       member: raw.models?.member ?? 'claude-opus-5-5',
     },
+    ranoEffort: ranoEffortFrom(raw), // 라노 세션만 쓴다
     // ** 로 시작하는 패턴은 그대로 두고, ~ 경로만 절대 경로로 푼다
     blocked: (raw.blocked ?? []).map((p: string) => (p.startsWith('**') ? p : expandHome(p))),
     memoryDir: resolve(raw.memory?.dir ?? 'memory'),

@@ -8,7 +8,7 @@ import { OutputsView } from './outputs.js';
 import { TodoView } from './todo.js';
 import { proposalCard } from './orgProposal.js';
 import { ChatView, type SpeakerStyle } from './chatView.js';
-import { bindComposer, mustGet, setRoleLabels, setZoneInfo } from './dom.js';
+import { bindComposer, el, mustGet, setRoleLabels, setZoneInfo } from './dom.js';
 import { SetupGuide } from './setup.js';
 import { ImageTray } from './attach.js';
 import { skillSuggestCard } from './orgSkills.js';
@@ -87,15 +87,69 @@ const chat = new ChatView(mustGet('scroll'), mustGet('log'), mustGet('empty'), (
 });
 
 let thinking = false; // 앱 본체가 알려 준 상태
-let sending = false; // 보낸 뒤 답이 끝날 때까지
+let sending = false; // 보내는 순간(저장될 때까지)만. 라노가 바빠도 보낼 수 있다
+
+// ---- "쓰는 중" 자리: 생각 중 칸 안에 회색 진행 줄 + 흘려 쓰는 말풍선 (화면 전용, 저장 안 함) ----
+const thinkingNameEl = thinkingEl.querySelector<HTMLElement>('.thinking-name');
+const thinkingTextEl = thinkingEl.querySelector<HTMLElement>('.thinking-text');
+const thinkingDefault = thinkingTextEl ? Array.from(thinkingTextEl.childNodes).map((n) => n.cloneNode(true)) : [];
+const liveSteps = document.createElement('div');
+liveSteps.className = 'live-steps';
+liveSteps.style.display = 'flex';
+liveSteps.style.flexDirection = 'column';
+liveSteps.style.gap = '2px';
+liveSteps.style.margin = '0 4px 4px';
+thinkingEl.insertBefore(liveSteps, thinkingTextEl ?? null);
+let activeTurn: number | null = null; // 지금 도는 차례 번호 (다른 차례 조각은 버린다)
+let answeredTurn: number | null = null; // 답이 확정된 차례 (그 뒤 조각은 버린다)
+let liveHasText = false;
+const waitNotes = new Map<string, HTMLElement>(); // 내 말 id → "앞 일을 마치면 바로 답해요"
+
+function setThinkingName(label?: string): void {
+  if (thinkingNameEl) thinkingNameEl.textContent = label ? `라노 · ${label}` : '라노';
+}
+
+function resetLive(): void {
+  liveSteps.replaceChildren();
+  liveHasText = false;
+  if (thinkingTextEl) {
+    thinkingTextEl.replaceChildren(...thinkingDefault.map((n) => n.cloneNode(true)));
+    thinkingTextEl.style.whiteSpace = '';
+    thinkingTextEl.style.color = '';
+  }
+}
+
+function showLive(text: string, steps: LiveStep[]): void {
+  const stick = chat.isNearBottom();
+  liveSteps.replaceChildren(
+    ...steps.map((s) => {
+      const line = el('div', 'activity', s.tone === 'said' ? `“${s.text}”` : s.tone === 'doing' ? `● ${s.text}` : `✓ ${s.text}`);
+      if (s.tone === 'said') line.style.fontStyle = 'italic';
+      return line;
+    }),
+  );
+  if (thinkingTextEl) {
+    if (text) {
+      thinkingTextEl.textContent = `${text} ▍`; // 쓰는 중에는 꾸밈 없는 글. 확정되면 꾸밈이 적용된 말풍선으로 바뀐다
+      thinkingTextEl.style.whiteSpace = 'pre-wrap';
+      thinkingTextEl.style.color = 'var(--text)';
+      liveHasText = true;
+    } else if (liveHasText) {
+      thinkingTextEl.replaceChildren(...thinkingDefault.map((n) => n.cloneNode(true)));
+      thinkingTextEl.style.whiteSpace = '';
+      thinkingTextEl.style.color = '';
+      liveHasText = false;
+    }
+  }
+  if (stick) chat.scrollToBottom();
+}
 
 function refreshBusy(): void {
-  const busy = thinking || sending;
   const stick = chat.isNearBottom();
-  thinkingEl.hidden = !busy;
-  if (busy && stick) chat.scrollToBottom();
-  chatSendBtn.disabled = busy || (!chatInput.value.trim() && !tray.count);
-  chatSendBtn.textContent = busy ? '답을 기다리는 중' : '보내기';
+  thinkingEl.hidden = !thinking || (answeredTurn !== null && answeredTurn === activeTurn);
+  if (!thinkingEl.hidden && stick) chat.scrollToBottom();
+  chatSendBtn.disabled = sending || (!chatInput.value.trim() && !tray.count);
+  chatSendBtn.textContent = '보내기';
 }
 
 const { autosize } = bindComposer({
@@ -107,7 +161,7 @@ const { autosize } = bindComposer({
 
 async function submit(): Promise<void> {
   const text = chatInput.value.trim();
-  if ((!text && !tray.count) || thinking || sending) return;
+  if ((!text && !tray.count) || sending) return;
 
   sending = true;
   const images = tray.items();
@@ -124,6 +178,7 @@ async function submit(): Promise<void> {
     tray.restore(images);
   };
   try {
+    // 저장·화면 표시까지만 기다린다(라노 답은 이벤트로 온다)
     const r = await rano.send(text, images);
     if (r && r.ok === false) {
       chat.addError(r.message ?? '라노에게 말을 전하지 못했어요.', new Date().toISOString());
@@ -191,6 +246,48 @@ board.onNamesChange = () => {
   outputs.refresh();
 };
 
+// ---------- 대화 사이 카드 ----------
+/** 리더 보고 도착 카드: 라노 요약을 기다리지 않고 바로. 보고 첫 줄은 꾸밈 없는 글자로 */
+function reportCard(e: { missionId: string; missionName: string; ok: boolean; firstLine: string }): HTMLElement {
+  const card = el('div', 'item activity');
+  card.style.flexWrap = 'wrap';
+  card.appendChild(el('span', 'activity-text', `📋 ${e.missionName} 리더 보고 · ${e.ok ? '완료' : '중단'} — ${e.firstLine}`));
+  const go = el('button', 'btn btn-small btn-plain', '현황판에서 보기');
+  go.type = 'button';
+  go.addEventListener('click', () => {
+    showTab('board');
+    void board.open(e.missionId);
+  });
+  card.appendChild(go);
+  return card;
+}
+
+/** 답을 받지 못한 내 말 안내 (앱이 꺼졌거나 오류·끊김으로 답이 없던 말. 자동으로 다시 실행하지 않음) */
+function unansweredCard(id: string, text: string): HTMLElement {
+  const card = el('div', 'item activity');
+  card.style.flexWrap = 'wrap';
+  const short = text.replace(/\s+/g, ' ').trim();
+  card.appendChild(el('span', 'activity-text', `답을 받지 못한 말이에요: ‘${short.length > 40 ? `${short.slice(0, 40)}…` : short || '(그림)'}’`));
+  const again = el('button', 'btn btn-small', '다시 보내기');
+  again.type = 'button';
+  again.addEventListener('click', async () => {
+    again.disabled = true;
+    try {
+      const r = await rano.resend(id);
+      if (r?.ok) card.remove();
+      else {
+        chat.addError(r?.message ?? '다시 보내지 못했어요.', new Date().toISOString());
+        again.disabled = false;
+      }
+    } catch {
+      chat.addError('다시 보내지 못했어요. 잠시 뒤 다시 눌러 주세요.', new Date().toISOString());
+      again.disabled = false;
+    }
+  });
+  card.appendChild(again);
+  return card;
+}
+
 // ---------- 이벤트 ----------
 let historyLoaded = false;
 const pendingChat: RanoUiEvent[] = [];
@@ -199,11 +296,47 @@ function handleChatEvent(e: RanoUiEvent): void {
   switch (e.kind) {
     case 'message':
       chat.addMessage(e.message, false);
+      if (e.message.role === 'user' && e.queued) {
+        const what = e.waitFor ? `앞 일(${e.waitFor.replace(/\s*중$/, '')})을 마치면 바로 답해요` : '앞 일을 마치면 바로 답해요';
+        waitNotes.set(e.message.id, chat.addTransient(what, e.message.at, 'right'));
+        // 지금 쓰는 말풍선은 앞 차례 것: 방금 보낸 말의 답처럼 보이지 않게 표시를 붙인다
+        if (thinking && !e.waitFor) setThinkingName('앞 말에 답하는 중');
+      }
+      if (e.message.role === 'rano' && typeof e.turn === 'number' && e.turn === activeTurn) {
+        // 답이 확정되면 쓰던 말풍선·회색 줄은 지운다 (확정 말풍선이 대신 보임)
+        answeredTurn = e.turn;
+        resetLive();
+        refreshBusy();
+      }
       break;
     case 'status':
       thinking = e.status === 'thinking';
+      if (thinking) {
+        activeTurn = typeof e.turn === 'number' ? e.turn : null;
+        answeredTurn = null;
+        setThinkingName(e.label);
+        for (const id of e.users ?? []) {
+          waitNotes.get(id)?.remove();
+          waitNotes.delete(id);
+        }
+      } else {
+        // 안전망: 차례가 끝나면 쓰던 말풍선·회색 줄을 반드시 지운다
+        activeTurn = null;
+        answeredTurn = null;
+        setThinkingName();
+      }
+      resetLive();
       board.office.setRanoBusy(thinking);
       refreshBusy();
+      break;
+    case 'live':
+      // 지금 차례 것만. 다른 차례(앞 차례가 남긴 조각)나 답이 확정된 뒤 조각은 버린다
+      if (!thinking || e.turn !== activeTurn || e.turn === answeredTurn) break;
+      if (!e.text && !e.steps.length) resetLive();
+      else showLive(e.text, e.steps);
+      break;
+    case 'report':
+      chat.addCard(reportCard(e), e.at);
       break;
     case 'activity':
       chat.addActivity(e.text, e.at);
@@ -295,11 +428,23 @@ async function start(): Promise<void> {
   void todo.load();
   void org.load();
 
+  let history: ChatMessage[] = [];
   try {
-    const history = await rano.loadHistory();
-    if (Array.isArray(history)) for (const m of history) chat.addMessage(m, true);
+    const h = await rano.loadHistory();
+    if (Array.isArray(h)) history = h;
+    for (const m of history) chat.addMessage(m, true);
   } catch {
     chat.addError('이전 대화를 불러오지 못했어요. 새 대화는 그대로 할 수 있어요.', new Date().toISOString());
+  }
+  // 앱이 꺼져 답하지 못한 내 말: 표시만 하고, 다시 보내기는 사용자가 누를 때만
+  try {
+    const ids = await rano.unanswered();
+    for (const id of Array.isArray(ids) ? ids : []) {
+      const m = history.find((x) => x.id === id);
+      if (m) chat.addCard(unansweredCard(id, m.text ?? ''), new Date().toISOString());
+    }
+  } catch {
+    // 표시만 못 할 뿐 대화는 그대로
   }
 
   historyLoaded = true;

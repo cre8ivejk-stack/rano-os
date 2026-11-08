@@ -6,10 +6,13 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import path from 'node:path';
 import { powerSaveBlocker, safeStorage } from 'electron';
 import type { ApprovalQueueApi, ApprovalRequest, MobileStatus, NewAttachment, RanoConfig, RanoUiEvent } from '../../shared/types.js';
+import { MobileReplyTracker, TypingGate } from './mobileRules.js';
 
 // 시험할 때만 가짜 텔레그램 주소(이 맥 안)로 바꿀 수 있다. 평소에는 늘 텔레그램 공식 주소
 const API = process.env.RANO_TELEGRAM_TEST_API && /^http:\/\/127\.0\.0\.1:\d+$/.test(process.env.RANO_TELEGRAM_TEST_API) ? process.env.RANO_TELEGRAM_TEST_API : 'https://api.telegram.org';
 const MAX_TEXT = 3800; // 텔레그램 한 메시지 한도(4096) 안쪽
+const TYPING_EVERY_MS = 4500; // "입력 중" 표시는 몇 초 뒤 꺼지므로 이 간격으로 다시 보낸다
+const TYPING_MAX_MS = 10 * 60_000; // 혹시 답이 오지 않아도 10분 뒤에는 멈춘다
 
 interface Saved {
   token: string;
@@ -58,7 +61,9 @@ export class TelegramBridge {
   private abort: AbortController | null = null;
   private offset = 0;
   private lastError = '';
-  private mobileTurn = false; // 휴대폰에서 보낸 말에 대한 라노 답을 기다리는 중
+  private replies = new MobileReplyTracker(); // 휴대폰 말에 대한 답·오류를 휴대폰으로 보낼지, "입력 중"을 이어 갈지
+  private typingTimer: ReturnType<typeof setInterval> | null = null;
+  private typingGate = new TypingGate(TYPING_MAX_MS); // 10분 상한: 닿으면 목록·차례가 바뀔 때까지 다시 켜지 않음
   private sentApprovals = new Map<string, number>(); // 승인 요청 id → 텔레그램 메시지 id
   private seenAtStart = new Set<string>();
   private blockerId: number | null = null;
@@ -123,6 +128,33 @@ export class TelegramBridge {
       extra = {}; // 버튼은 마지막 조각에만 붙이지 않고 첫 조각에만
     }
     return id;
+  }
+
+  private sendTyping(): void {
+    if (!this.saved?.chatId) return;
+    void this.call('sendChatAction', { chat_id: this.saved.chatId, action: 'typing' }).catch(() => undefined);
+  }
+
+  /** 지금 "입력 중"을 이어 갈지: 기다리는 휴대폰 말이 있고, 상한(10분)에 닿아 멈춘 뒤 목록·차례가 그대로가 아닐 때 */
+  private wantTyping(): boolean {
+    return this.typingGate.shouldType(this.replies.typing && !!this.saved?.chatId, this.replies.typingKey, Date.now());
+  }
+
+  /** 휴대폰 말이 답을 기다리는 동안 "입력 중" 표시를 몇 초마다 다시 보낸다. 답이 가거나 차례가 끝나면 멈춘다.
+   * 10분 상한에 닿으면 멈추고, 기다리는 말 목록이 바뀌거나 차례가 끝날 때만 다시 켤 수 있다(mobileRules.TypingGate) */
+  private syncTyping(): void {
+    const want = this.wantTyping();
+    if (want && !this.typingTimer) {
+      this.typingTimer = setInterval(() => {
+        if (!this.wantTyping()) return this.stopTyping();
+        this.sendTyping();
+      }, TYPING_EVERY_MS);
+    } else if (!want) this.stopTyping();
+  }
+
+  private stopTyping(): void {
+    if (this.typingTimer) clearInterval(this.typingTimer);
+    this.typingTimer = null;
   }
 
   // ---------- 화면에서 쓰는 것 ----------
@@ -196,6 +228,7 @@ export class TelegramBridge {
     this.running = false;
     this.abort?.abort();
     this.abort = null;
+    this.stopTyping();
     this.applyKeepAwake();
   }
 
@@ -289,34 +322,19 @@ export class TelegramBridge {
       }
     }
     if (!text && !attachments.length) return;
-    this.mobileTurn = true;
-    await this.call('sendChatAction', { chat_id: saved.chatId, action: 'typing' }).catch(() => undefined);
+    // 받자마자 "입력 중" 한 번. 이후는 이 말이 저장되면(화면 이벤트) 답이 갈 때까지 이어서 보낸다
+    this.sendTyping();
     const r = await this.deps.sendToRano(text || '(사진)', attachments);
-    if (!r.ok) {
-      this.mobileTurn = false;
-      await this.say(r.message ?? '라노에게 전하지 못했어요.');
-    }
+    if (!r.ok) await this.say(r.message ?? '라노에게 전하지 못했어요.');
   }
 
   // ---------- 앱에서 일어난 일 → 휴대폰 ----------
+  // 흘려 쓰는 답(live)·진행 줄은 보내지 않는다. 마지막 답·오류·보고 카드만 (mobileRules.ts 규칙)
   onEvent(e: RanoUiEvent): void {
     if (!this.saved?.chatId) return;
-    // 맥에서 한 말도 함께 보낸다 (라노 답을 모두 받는 설정일 때). 휴대폰에서 보낸 말은 이미 휴대폰에 있으니 건너뛴다
-    if (e.kind === 'message' && e.message.role === 'user') {
-      const t = e.message.text ?? '';
-      if (this.saved.allRano !== false && e.message.via !== 'mobile' && !/\(휴대폰에서 (보냄|사진만 보냄)\)\s*$/.test(t)) {
-        const pics = e.message.attachments?.length ? ` (그림 ${e.message.attachments.length}개)` : '';
-        void this.say(`💻 ${t}${pics}`);
-      }
-      return;
-    }
-    if (e.kind === 'message' && e.message.role === 'rano') {
-      if (this.mobileTurn || this.saved.allRano !== false) void this.say(e.message.text);
-    } else if (e.kind === 'error' && !('missionId' in e && e.missionId) && this.mobileTurn) {
-      void this.say(`(오류) ${e.text}`);
-    } else if (e.kind === 'status' && e.status === 'idle') {
-      this.mobileTurn = false;
-    }
+    const out = this.replies.decide(e, this.saved.allRano !== false);
+    if (out) void this.say(out);
+    this.syncTyping();
   }
 
   /** 승인함이 바뀔 때: 새 요청은 버튼과 함께 보내고, 처리된 요청은 버튼을 지우고 결과를 적는다 */

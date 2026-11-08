@@ -9,8 +9,15 @@ export interface SpeakerStyle {
   rich: boolean; // 간단한 마크다운 표현
 }
 
+/** 답 위 인용 한 줄에 쓸 짧은 글 */
+function shortQuote(text: string, max = 30): string {
+  const t = String(text ?? '').replace(/\s+/g, ' ').trim() || '(그림)';
+  return t.length > max ? `${t.slice(0, max)}…` : t;
+}
+
 export class ChatView {
   private shownIds = new Set<string>();
+  private textById = new Map<string, string>(); // 인용 한 줄용: 말 id → 글
   private lastDayKey: string | null = null;
   private ready = false;
 
@@ -36,6 +43,7 @@ export class ChatView {
 
   clear(): void {
     this.shownIds.clear();
+    this.textById.clear();
     this.lastDayKey = null;
     this.ready = false;
     for (const node of Array.from(this.logEl.querySelectorAll('.item'))) node.remove();
@@ -59,12 +67,20 @@ export class ChatView {
     if (stick) this.scrollToBottom();
   }
 
+  /** 바로 앞(잠깐 뜨는 안내·날짜 줄은 건너뜀)에 있는 말 id */
+  private previousMessageId(): string | null {
+    let n = this.logEl.lastElementChild as HTMLElement | null;
+    while (n && (n.classList.contains('transient') || n.classList.contains('day'))) n = n.previousElementSibling as HTMLElement | null;
+    return n && n.classList.contains('msg') ? n.dataset.id ?? null : null;
+  }
+
   addMessage(m: ChatMessage, forceScroll: boolean): void {
     if (!m || typeof m.id !== 'string' || this.shownIds.has(m.id)) return;
     this.shownIds.add(m.id);
 
     const style = this.speaker(m.role);
     const row = el('div', `item msg ${style.side === 'right' ? 'msg-right' : 'msg-left'} ${style.className}`);
+    row.dataset.id = m.id;
     const meta = el('div', 'msg-meta');
     if (style.name) meta.appendChild(el('span', 'msg-name', style.name));
     // 휴대폰(텔레그램)에서 보낸 말은 📱 아이콘으로 표시 (예전 기록의 "(휴대폰에서 보냄)" 글도 아이콘으로 바꿔 보여 줌)
@@ -85,14 +101,35 @@ export class ChatView {
     else bubble.textContent = text;
 
     row.appendChild(meta);
+    // 답이 질문 바로 아래가 아니면(그 사이 보고·다른 말이 끼었으면) 답 위에 인용 한 줄
+    const replyTo = Array.isArray(m.replyTo) ? m.replyTo.filter((id) => typeof id === 'string') : [];
+    if (replyTo.length) {
+      const prev = this.previousMessageId();
+      const firstText = this.textById.get(replyTo[0]);
+      if ((!prev || !replyTo.includes(prev)) && firstText !== undefined) {
+        const quote = el('div', 'msg-meta', `↪ ‘${shortQuote(firstText)}’${replyTo.length > 1 ? ` 외 ${replyTo.length - 1}개` : ''}에 대한 답`);
+        quote.style.fontStyle = 'italic';
+        row.appendChild(quote);
+      }
+    }
     row.appendChild(bubble);
     if (Array.isArray(m.attachments) && m.attachments.length) row.appendChild(messageImages(m.attachments));
+    this.textById.set(m.id, text);
     this.append(row, m.at, forceScroll || style.side === 'right');
   }
 
   /** 대화 흐름 사이에 카드 같은 요소를 끼워 넣는다 (예: 라노의 미션 구성안) */
   addCard(node: HTMLElement, at: string): void {
     this.append(node, at, false);
+  }
+
+  /** 잠깐 뜨는 안내 줄(예: "앞 일을 마치면 바로 답해요"). 돌려준 요소를 지우면 사라진다. 인용 판단에서는 건너뛴다 */
+  addTransient(text: string, at: string, side: 'left' | 'right' = 'left'): HTMLElement {
+    const line = el('div', 'item activity transient');
+    line.appendChild(el('span', 'activity-text', text));
+    if (side === 'right') line.style.alignSelf = 'flex-end';
+    this.append(line, at, true);
+    return line;
   }
 
   addActivity(text: string, at: string): void {

@@ -176,11 +176,15 @@ export interface ConnectorCandidate {
   imported: boolean;
 }
 
+/** 라노 생각 깊이(엔진 effort). rano.json 의 ranoEffort 로 바꿀 수 있고, 없거나 잘못된 값이면 'low' */
+export type RanoEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
 export interface RanoConfig {
   rootDir: string; // 절대 경로 (~ 풀림)
   zones?: Record<Zone, ZoneConfig>; // 없으면 기본값(회사 ~/work, 개인 ~/personal)
   authMethod: 'max' | 'apiKey';
   models: { rano: string; repoLeader: string; member: string };
+  ranoEffort?: RanoEffort; // 라노 세션에만 쓰는 생각 깊이 (없으면 'low'). 리더·팀원에는 쓰지 않는다
   blocked: string[]; // 절대 경로 또는 ** 패턴 (~ 풀림)
   memoryDir: string; // 절대 경로
   memoryFiles: string[]; // 예: ['me.md', 'priorities.md', 'missions.md']
@@ -264,6 +268,7 @@ export interface ChatMessage {
   at: string; // ISO 시각
   attachments?: ChatAttachment[]; // 사용자가 붙인 그림
   via?: 'mobile'; // 휴대폰(텔레그램)에서 보낸 말
+  replyTo?: string[]; // 라노 답: 이 답이 답한 사용자 말 id (묶어 답하면 여럿). 예전 기록에는 없음
 }
 /** 대화 첨부 그림 */
 export interface ChatAttachment {
@@ -280,13 +285,24 @@ export interface NewAttachment {
   marked?: boolean;
 }
 
+/** 라노가 쓰는 중인 답 화면의 회색 줄 하나. said = 도구 전에 한 말(줄여 보임), doing = 지금 하는 일, done = 끝난 일 */
+export interface LiveStep {
+  text: string;
+  tone: 'said' | 'doing' | 'done';
+}
 
 // 화면으로 보내는 이벤트
 export type RanoUiEvent =
-  | { kind: 'status'; status: 'idle' | 'thinking' } // 라노가 생각 중인지
-  | { kind: 'message'; message: ChatMessage } // 대화에 새 말이 추가됨 (사용자·라노 모두)
+  // 라노가 생각 중인지. turn = 차례 번호, label = 앞 차례 표시(예: '보고 정리 중'), users = 이 차례가 답하는 내 말 id, mobile = 휴대폰 말이 든 차례
+  | { kind: 'status'; status: 'idle' | 'thinking'; turn?: number; label?: string; users?: string[]; mobile?: boolean }
+  // 대화에 새 말이 추가됨 (사용자·라노 모두). 사용자 말: queued = 앞 일을 마치길 기다림, waitFor = 그 앞 일 표시. 라노 답: turn·mobile
+  | { kind: 'message'; message: ChatMessage; turn?: number; mobile?: boolean; queued?: boolean; waitFor?: string }
   | { kind: 'activity'; text: string; at: string; missionId?: string } // 한 줄 보고. missionId 가 있으면 그 리포 리더 대화 패널에 표시
-  | { kind: 'error'; text: string; at: string; missionId?: string } // 쉬운 한국어 오류 문구. missionId 가 있으면 리포 리더 대화 패널에 표시
+  | { kind: 'error'; text: string; at: string; missionId?: string; turn?: number; mobile?: boolean } // 쉬운 한국어 오류 문구. missionId 가 있으면 리포 리더 대화 패널에 표시. mobile = 휴대폰으로도 보냄
+  // 라노가 쓰는 중인 답(화면 전용, events.jsonl 에 남기지 않음). 그 차례의 지금 모습 전체. text·steps 가 모두 비면 지움
+  | { kind: 'live'; turn: number; text: string; steps: LiveStep[]; label?: string }
+  // 리더 보고 도착 카드 (라노 요약을 기다리지 않고 바로). firstLine 은 보고 첫 본문 줄(꾸밈 없음, 120자)
+  | { kind: 'report'; missionId: string; missionName: string; ok: boolean; firstLine: string; at: string }
   // ---- 2단계 ----
   | { kind: 'mission'; status: MissionStatus } // 현황판 카드 갱신 (상태가 바뀔 때마다 전체를 보냄)
   | { kind: 'leaderMessage'; missionId: string; message: ChatMessage } // 리포 리더 대화창에 새 말 (role: user=사용자 직접 지시, rano=라노의 배정, leader=리포 리더)
@@ -304,7 +320,9 @@ export type RanoUiEvent =
 // ---------- IPC 채널 이름 (preload 는 샌드박스라 이 파일을 불러올 수 없으니 같은 문자열을 그대로 적는다) ----------
 export const IPC = {
   loadHistory: 'rano:load-history', // invoke → ChatMessage[]
-  send: 'rano:send', // invoke(text: string) → void (라노 답이 끝나면 resolve)
+  send: 'rano:send', // invoke(text: string) → { ok, message? } (내 말을 저장·화면에 띄우면 바로 resolve. 라노 답은 이벤트로 온다)
+  unanswered: 'rano:unanswered', // invoke → string[] (앱이 꺼져 답하지 못한 내 말 id. 다시 실행하지 않음)
+  resend: 'rano:resend', // invoke(messageId) → { ok, message? } (답하지 못한 내 말을 그대로 다시 줄에 세움)
   event: 'rano:event', // main → renderer, payload: RanoUiEvent
   // ---- 2단계 ----
   missionList: 'mission:list', // invoke → MissionStatus[]
@@ -369,6 +387,8 @@ export const IPC = {
 export interface RanoApi {
   loadHistory(): Promise<ChatMessage[]>;
   send(text: string, attachments?: NewAttachment[]): Promise<{ ok: boolean; message?: string }>;
+  unanswered(): Promise<string[]>; // 앱이 꺼져 답하지 못한 내 말 id
+  resend(messageId: string): Promise<{ ok: boolean; message?: string }>; // 그 말을 다시 줄에 세움
   attachmentData(a: ChatAttachment): Promise<string | null>; // 미리보기 data URL
   onEvent(cb: (e: RanoUiEvent) => void): () => void; // 해제 함수 반환
   // ---- 2단계 ----
@@ -503,13 +523,18 @@ export interface ConversationStoreApi {
   append(message: ChatMessage): Promise<void>;
   setSessionId(sessionId: string): Promise<void>;
 }
-// 엔진 담당이 구현: src/main/engine/ranoSession.ts
+// 엔진 담당이 구현: src/main/engine/ranoSession.ts (줄·차례 흐름은 ranoCore.ts, 줄 규칙은 ranoLanes.ts)
 //   export class RanoSession { constructor(deps: { config; memory: MemoryServiceApi; store: ConversationStoreApi; emit: Emit; memoryMcp: unknown }) }
 export interface RanoSessionApi {
-  send(text: string, attachments?: ChatAttachment[], via?: 'mobile'): Promise<void>; // 사용자 말 저장·emit → 라노 답 저장·emit. 동시에 두 번 오면 앞의 것이 끝난 뒤 처리
-  // 2단계: 앱이 라노에게 알림(리포 리더 보고, 사용자의 직접 지시 사실). 사용자 말풍선은 만들지 않고
-  // activity 한 줄을 emit 한 뒤 라노 차례를 돌린다. 라노 답은 평소처럼 저장·emit. send 와 같은 큐를 쓴다.
-  notify(text: string): Promise<void>;
+  // 사용자 말을 바로 저장·emit 하고 줄(사용자 칸)에 세운 뒤 resolve 한다(라노 답을 기다리지 않음).
+  // 앞 차례가 돌고 있으면 그 차례가 끝난 뒤, 그 사이 쌓인 내 말과 묶어 한 차례로 답한다.
+  send(text: string, attachments?: ChatAttachment[], via?: 'mobile'): Promise<void>;
+  // 2단계: 앱이 라노에게 알림(리포 리더 보고 = 'report', 사용자의 직접 지시 사실 = 'direct'). 사용자 말풍선은 만들지 않는다.
+  // 줄의 알림 칸(사용자 말 뒤)에 선다. 사용자 말 차례가 먼저 오면 그 프롬프트 앞에 붙고, 너무 오래 기다리면 따로 한 차례.
+  // 처리되면(붙었거나 따로 답했거나) resolve.
+  notify(text: string, kind?: 'report' | 'direct'): Promise<void>;
+  unanswered(): Promise<string[]>; // 앱이 꺼져 답하지 못한 내 말 id (줄에 서 있거나 지금 답하는 말은 뺌)
+  resend(messageId: string): Promise<{ ok: boolean; message?: string }>; // 답하지 못한 내 말을 그대로 다시 줄에 세움
 }
 //   2단계: RanoSession deps 에 missionMcp(라노의 미션 도구 서버)가 추가된다. mcpServers 에 함께 넣고 권한 허용.
 // 엔진 담당이 구현: src/main/engine/permissions.ts
@@ -556,10 +581,10 @@ export interface MissionLeaderApi {
 // 조율·현황 담당이 구현: src/main/mission/dispatcher.ts
 //   export class MissionDispatcher implements MissionDispatcherApi
 //   constructor(deps: { config: RanoConfig; leaders: Map<string, MissionLeaderApi>; trackers: Map<string, MissionTrackerApi>;
-//                      notifyRano: (text: string) => Promise<void> })
-//   assign/userSend 는 기다리지 않고 바로 접수 문구를 돌려준다. 리더 일이 끝나면 미션 기억(진행업무.md)에 한 줄 남기고
-//   미션 홈 자동 저장(autoCommit, 기억 담당 모듈 재사용) 후 notifyRano 로 보고를 전달한다.
-//   userSend 는 시작할 때 notifyRano 로 "사용자가 ○○ 리더에게 직접 지시함: …" 을 알린다 (결정 11).
+//                      notifyRano: (text: string, kind?: 'report' | 'direct') => Promise<void>; onReport?: (card) => void })
+//   assign/userSend 는 기다리지 않고 바로 접수 문구를 돌려준다. 리더 일이 끝나면 onReport 로 보고 첫 줄 카드를 바로 띄우고,
+//   미션 기억(진행업무.md)에 한 줄 남기고 미션 홈 자동 저장(autoCommit, 기억 담당 모듈 재사용) 후 notifyRano 로 보고를 전달한다.
+//   userSend 는 시작할 때 notifyRano(…, 'direct') 로 "사용자가 ○○ 리더에게 직접 지시함: …" 을 알린다 (결정 11).
 export interface MissionDispatcherApi {
   assign(missionId: string, text: string, todoId?: string, planFirst?: boolean): Promise<string>; // 라노가 배정. 접수 문구 반환. todoId 를 주면 그 할 일과 연결
   userSend(missionId: string, text: string): Promise<void>; // 사용자가 미션 카드에서 직접 지시

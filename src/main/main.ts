@@ -126,9 +126,11 @@ async function boot() {
     config,
     leaders,
     trackers,
-    notifyRano: async (text: string) => {
-      await session?.notify(text);
+    notifyRano: async (text: string, kind?: 'report' | 'direct') => {
+      await session?.notify(text, kind);
     },
+    // 리더 보고가 오면 라노 요약을 기다리지 않고 첫 줄 카드를 바로 띄운다 (휴대폰은 비밀처럼 보이는 글을 가려 보냄)
+    onReport: (card) => emit({ kind: 'report', ...card, at: new Date().toISOString() }),
     todos,
   });
   session = new RanoSession({
@@ -146,6 +148,7 @@ async function boot() {
   dispatcherForQuit = dispatcher;
 
   ipcMain.handle(IPC.loadHistory, async () => (await store.load()).messages);
+  // 보내기: 내 말을 저장·화면에 띄우면 바로 돌아간다(라노 답은 이벤트로 온다). 라노가 바빠도 보낼 수 있다
   ipcMain.handle(IPC.send, async (_e, text: unknown, attachments: unknown) => {
     const t = typeof text === 'string' ? text.trim() : '';
     const list = Array.isArray(attachments) ? (attachments as NewAttachment[]) : [];
@@ -155,6 +158,9 @@ async function boot() {
     await rano.send(t || '(그림만 보냈어요)', saved.saved);
     return { ok: true };
   });
+  // 앱이 꺼져 답하지 못한 내 말(자동으로 다시 실행하지 않음) · 그 말 다시 보내기
+  ipcMain.handle(IPC.unanswered, async () => rano.unanswered().catch(() => []));
+  ipcMain.handle(IPC.resend, async (_e, id: unknown) => (typeof id === 'string' && id ? rano.resend(id) : { ok: false, message: '다시 보낼 말을 찾지 못했어요' }));
   ipcMain.handle(IPC.attachmentData, (_e, a: any) => attachmentDataUrl(config.runsDir, { id: String(a?.id ?? ''), mime: String(a?.mime ?? '') }));
   ipcMain.handle(IPC.missionList, async () => dispatcher.statuses());
   ipcMain.handle(IPC.missionHistory, async (_e, missionId: unknown) => {
