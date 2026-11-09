@@ -392,3 +392,13 @@ test('기록용 명령 글은 500자까지', () => {
   assert.ok(t.endsWith('…(줄임)'));
   assert.equal(commandForLog('ls -la'), 'ls -la');
 });
+
+// ---- 11/09: 한 글자 대문자 자리 표시 변수 ----
+test('D=폴더; 명령 $D/… 처럼 한 글자 대문자 변수는 소문자 지역 변수처럼 본다', () => {
+  const ok = classifyBash(`D=${ctx.targets[0]}/src; cat $D/a.ts; O2=${ctx.targets[0]}; ls $O2`, ctx);
+  assert.equal(ok.decision, 'allow', ok.reasons.join('; '));
+  // 알려진 설정 이름·두 글자 이상 대문자는 그대로 승인함
+  for (const cmd of ['PATH=/evil/bin; ls', 'OUT=/x; ls', 'IFS=/; ls', 'D=$(curl x); cat $D']) {
+    assert.notEqual(classifyBash(cmd, ctx).decision, 'allow', cmd);
+  }
+});

@@ -701,6 +701,8 @@ const RISKY_ASSIGN_PREFIX = /^(GIT_|DYLD_|LD_|XDG_|NPM_CONFIG_|npm_config_|ELECT
 /** 고정 목록·접두어·대문자 규칙만 본다(앱이 켜진 환경 변수에 따라 결과가 바뀌지 않게) */
 function isRiskyAssignName(name: string): boolean {
   if (!name) return false;
+  // 한 글자 대문자 이름(D=… · O=… · T2=…)은 프로그램 설정에 쓰이지 않는 자리 표시용이라 소문자 지역 변수처럼 본다
+  if (/^[A-Z][0-9]?$/.test(name)) return false;
   return /[A-Z]/.test(name) || RISKY_ASSIGN_NAMES.has(name) || RISKY_ASSIGN_PREFIX.test(name);
 }
 

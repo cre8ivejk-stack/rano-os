@@ -5,6 +5,7 @@ import { MISSION_MCP_NAME, type MemberState, type MissionDispatcherApi, type Mis
 import { zoneText } from '../admin/paths.js';
 import { shareWithMission } from '../engine/attachments.js';
 import { userAskedSync } from './syncIntent.js';
+import { withUserWords } from './userWords.js';
 
 const STATE_LABEL: Record<MemberState, string> = { idle: '대기', working: '작업 중', reviewing: '검수 중', done: '완료' };
 const TASK_LABEL = { running: '진행 중', done: '완료', failed: '중단' } as const;
@@ -73,9 +74,12 @@ export function createMissionMcpServer(dispatcher: MissionDispatcherApi, config:
             body += `\n\n[첨부 그림] 사용자가 붙인 그림이에요. Read 도구로 열어 보세요(팀원에게도 이 경로를 넘기세요). 그림 위의 빨강·파랑·노랑 펜·네모·화살표·번호는 사용자가 고치고 싶은 곳을 직접 표시한 거예요:\n${shared.paths.map((p) => `- ${p}`).join('\n')}`;
         }
         // 사용자가 직접 받아오기(pull)를 시켰으면 그 과제의 받아오기는 승인 없이(라노가 쓴 지시가 아니라 사용자가 쓴 말로 판단)
+        // 사용자가 직접 쓴 말을 지시에 함께 붙인다(리더가 범위를 이 말로 판단)
         let preSync = false;
         try {
-          preSync = userText ? userAskedSync(await userText()) : false;
+          const words = userText ? await userText() : '';
+          preSync = userAskedSync(words);
+          body = withUserWords(body, words);
         } catch {
           preSync = false;
         }

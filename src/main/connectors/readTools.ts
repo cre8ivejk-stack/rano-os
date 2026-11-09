@@ -7,7 +7,7 @@ const WRITE_WORDS = new Set([
   'enable', 'disable', 'report', 'feedback', 'request', 'prepare', 'finalize', 'materialize', 'configure', 'setup', 'repair', 'install', 'migrate',
   'batch', 'reset', 'kill', 'restart', 'grant', 'revoke', 'share', 'invite', 'mark', 'label', 'tag', 'lock', 'unlock', 'pin', 'unpin', 'fork', 'copy', 'smoke',
 ]);
-const READ_WORDS = new Set(['get', 'list', 'search', 'read', 'fetch', 'view', 'find', 'query', 'lookup', 'check', 'inspect', 'describe', 'preview', 'diff', 'validate', 'detect', 'diagnose', 'ask', 'show', 'count', 'status']);
+const READ_WORDS = new Set(['get', 'list', 'search', 'read', 'fetch', 'view', 'find', 'query', 'lookup', 'check', 'inspect', 'describe', 'preview', 'diff', 'validate', 'detect', 'diagnose', 'ask', 'show', 'count', 'status', 'wait']);
 const SENSITIVE_WORDS = new Set(['env', 'vars', 'secret', 'secrets', 'kms', 'credential', 'credentials', 'password', 'token', 'tokens', 'url', 'object']);
 
 /**
