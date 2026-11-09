@@ -158,7 +158,7 @@ export class MissionLeader implements MissionLeaderApi {
     return this.pending > 0;
   }
 
-  run(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; planFirst?: boolean; attachments?: ChatAttachment[] }): Promise<{ ok: boolean; report: string; taskId?: string }> {
+  run(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; planFirst?: boolean; preSync?: boolean; attachments?: ChatAttachment[] }): Promise<{ ok: boolean; report: string; taskId?: string }> {
     this.pending++;
     const work = () => this.handle(task);
     const next = this.queue.then(work, work).finally(() => {
@@ -195,7 +195,7 @@ export class MissionLeader implements MissionLeaderApi {
     }
   }
 
-  private async handle(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; planFirst?: boolean; attachments?: ChatAttachment[] }): Promise<{ ok: boolean; report: string; taskId?: string }> {
+  private async handle(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; planFirst?: boolean; preSync?: boolean; attachments?: ChatAttachment[] }): Promise<{ ok: boolean; report: string; taskId?: string }> {
     // 앱이 꺼지는 중이면 줄 서 있던 과제는 시작하지 않는다 (대화·현황판에 흔적을 남기지 않고, 다음 실행 때 이어 간다)
     if (this.closed) return { ok: false, report: '앱이 종료되는 중이라 시작하지 않았어요' };
     this.safe(() => task.onStart?.());
@@ -216,7 +216,7 @@ export class MissionLeader implements MissionLeaderApi {
     this.currentTask = mt;
     this.reviewSeq = { tick: 0, lastWork: 0, lastReview: 0 };
     this.leaderEdits = [];
-    this.guard.setTask({ id: mt.id, title: mt.title, planFirst: !!task.planFirst });
+    this.guard.setTask({ id: mt.id, title: mt.title, planFirst: !!task.planFirst, preSync: !!task.preSync });
     // 이 과제의 시안 폴더: 작업 리포 밖이라 승인 없이 쓸 수 있다
     const drafts = this.guard.draftsDir(mt.id);
     if (drafts) await mkdir(drafts, { recursive: true }).catch(() => undefined);
@@ -226,6 +226,9 @@ export class MissionLeader implements MissionLeaderApi {
       '---',
       '[앱 안내]',
       `- 이 과제의 시안 폴더: ${drafts} (작업 리포 밖, 승인 없이 쓸 수 있음). 안마다 비교용 시안(HTML 와이어프레임 등)이 필요하면 여기에 만들고, 결정 카드의 options[].preview 에 파일 이름을 넣으세요. [시안 열기]로 열 수 있는 형식: ${[...PREVIEW_EXTS].join(' ')} (실행 권한이 붙은 파일·폴더·바로가기로 밖을 가리키는 파일은 열리지 않음).`,
+      ...(task.preSync
+        ? ['- 사용자가 직접 원격 최신 받아오기를 시켰어요. 이번 과제의 받아오기 명령(git fetch, git pull --ff-only, git merge --ff-only, git stash, git stash pop)은 승인 없이 돼요. 다른 명령을 섞지 말고 따로 실행하세요. 커밋·푸시는 그대로 승인함을 거쳐요.']
+        : []),
       `- 이 미션의 임시 폴더: ${tmpDir} (명령 결과 담기·읽기용, Bash 로만 승인 없이). 경로를 글자 그대로 적으세요(예: npm test > ${path.join(tmpDir, 'test.txt')} 2>&1). /tmp, $TMPDIR, mktemp 를 쓰면 승인함으로 가요.`,
       task.planFirst
         ? '- 이 과제는 "기획 먼저"예요. 안 2~3개와 권장안을 request_approval(kind: decision, planGate: true, items …)로 올려 사용자가 고르기 전에는 작업 폴더를 고칠 수 없어요(앱이 막음). 고른 뒤 그 안대로 구현하세요.'

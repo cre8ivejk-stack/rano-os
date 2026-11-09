@@ -407,6 +407,7 @@ export interface ApprovalAsk {
   bash?: boolean; // Bash 명령으로 생긴 요청
   paths?: string[]; // Bash 명령이 바꾸거나 지울 수 있는 경로(절대 경로)
   fileOpsOnly?: boolean; // Bash 명령이 파일 일(쓰기·지우기)만 하는지
+  syncOnly?: boolean; // Bash 명령의 기록 바꾸기가 원격 최신 받아오기·보관/되살리기뿐인지
   logTarget?: string; // Bash 기록용: 프로그램 끄기·지우기·인터넷 전송의 대상(끌 이름·지울 경로·보낼 호스트). 비밀 가림
 }
 
@@ -588,7 +589,7 @@ export function killTitleTarget(kill: Pick<BashRisk, 'program' | 'targets'>[]): 
  * (프로그램 이름, 파일은 이름만, 주소는 호스트만). 여러 종류가 섞이면 가장 위험한 것 하나 + "(그 밖에 N가지)".
  * 승인 종류(kind)와 판단은 바꾸지 않는다.
  */
-export function bashTitle(mission: MissionConfig, kind: BashKind, b: Pick<BashDecision, 'risks' | 'programs' | 'writePaths'>): string {
+export function bashTitle(mission: MissionConfig, kind: BashKind, b: Pick<BashDecision, 'risks' | 'programs' | 'writePaths' | 'syncOnly'>): string {
   const risks = b.risks ?? [];
   const of = (k: string) => risks.filter((r) => r.kind === k);
   const prog = (b.programs ?? [])[0];
@@ -614,7 +615,7 @@ export function bashTitle(mission: MissionConfig, kind: BashKind, b: Pick<BashDe
   }
   const tmp = of('tmp');
   if (tmp.length) cats.push([`공용 임시 폴더에 쓰기: ${fileNames(tmp.flatMap((r) => r.targets))}`, false]);
-  if (kind === 'commit') cats.push([BASH_TITLES.commit(mission), true]);
+  if (kind === 'commit') cats.push([b.syncOnly ? `${mission.name} 리포에 원격 최신 받아오기(보관·되살리기 포함, 커밋 아님)` : BASH_TITLES.commit(mission), true]);
   if (kind === 'deploy') cats.push([`${BASH_TITLES.deploy(mission)}${prog ? `: ${prog}` : ''}`, true]);
   if (kind === 'db') cats.push([`${BASH_TITLES.db(mission)}${prog ? `: ${prog}` : ''}`, true]);
   const files = fileNames(b.writePaths ?? []);
@@ -834,6 +835,7 @@ export function decideApprovalStage(
         bash: true,
         paths: b.writePaths,
         fileOpsOnly: !!b.fileOpsOnly,
+        ...(b.syncOnly ? { syncOnly: true } : {}),
         ...(bashLogTarget(b) ? { logTarget: bashLogTarget(b) } : {}),
       },
     };
@@ -938,7 +940,7 @@ export class LeaderGuard {
   private readonly commandGrants = new Map<string, CommandGrant[]>(); // 과제 → 실행 목록 승인
   private readonly soloTasks = new Set<string>(); // 빠른 모드(리더 혼자) 과제
   private readonly deleteGrants = new Map<string, string[]>(); // 과제 → 리더 확인 승인으로 지워도 되는 위치(실제 경로)
-  private task:{ id: string; title: string; planFirst?: boolean } | null = null;
+  private task:{ id: string; title: string; planFirst?: boolean; preSync?: boolean } | null = null;
 
   private readonly deps: LeaderGuardDeps;
 
@@ -955,7 +957,7 @@ export class LeaderGuard {
     return `${this.deps.mission.id}-leader`;
   }
 
-  setTask(task: { id: string; title: string; planFirst?: boolean } | null) {
+  setTask(task: { id: string; title: string; planFirst?: boolean; preSync?: boolean } | null) {
     this.task = task;
     this.memberTask.clear();
     this.lastText.clear();
@@ -1215,8 +1217,12 @@ export class LeaderGuard {
       const g = this.deleteGranted(d.ask.paths);
       if (g) return { type: 'allow', reason: `리더 확인 승인으로 미리 허락된 삭제: ${g.map(displayPath).join(', ')}` };
     }
+    // 사용자가 직접 받아오기를 시킨 과제: 받아오기만 하는 명령은 승인 없이(지시가 곧 승인). 다른 명령이 섞이면 평소대로
+    if (d.type === 'ask' && d.ask?.bash && d.ask.syncOnly && this.task?.preSync) {
+      return { type: 'allow', reason: '사용자가 직접 시킨 원격 최신 받아오기' };
+    }
     // 실행 목록으로 미리 승인받은 명령: 글자·실행 위치·스크립트 내용이 모두 같을 때만(실제 실행 위치를 아는 훅에서만 본다)
-    if (useGrants && d.type === 'ask' && d.ask?.bash && RUN_PLAN_KINDS.has(d.ask.kind) && typeof input.command === 'string') {
+    if (useGrants && d.type === 'ask' && d.ask?.bash && (RUN_PLAN_KINDS.has(d.ask.kind) || (d.ask.kind === 'commit' && d.ask.syncOnly)) && typeof input.command === 'string') {
       const g = this.commandGranted(input.command, cwd);
       if (g) return { type: 'allow', reason: `실행 목록 승인으로 미리 허락된 명령${g.files.length ? ` (스크립트 ${g.files.length}개 내용 같음)` : ''}` };
     }

@@ -513,7 +513,7 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
       '승인이 필요한 명령(스크립트 실행, 개발 서버 띄우기, 확인 명령 등)을 여러 번 돌려야 할 때, 돌릴 명령 목록을 한 번에 승인받는 도구입니다. 리더와 팀원 모두 씁니다.',
       '방법: ① 돌릴 스크립트를 먼저 시안 폴더나 미션 임시 폴더에 다 만든다(승인 없음). ② commands 에 실제로 실행할 명령을 글자 그대로 넣는다. ③ 승인되면 그 글자 그대로 Bash 로 실행한다.',
       '승인 뒤에도 명령 글자가 한 글자라도 다르거나, 실행 위치가 다르거나, 명령이 쓰는 스크립트 파일 내용이 바뀌면 다시 묻습니다. 스크립트를 고쳐야 하면 목록을 다시 올리세요.',
-      '커밋·삭제·DB·배포·작업 폴더 파일 쓰기는 목록에 넣을 수 없어요(하나씩 승인). 이미 바로 되는 명령(읽기·확인)은 넣지 않아도 됩니다.',
+      '커밋·푸시·삭제·DB·배포·작업 폴더 파일 쓰기는 목록에 넣을 수 없어요(하나씩 승인). 원격 최신 받아오기(git fetch, git pull --ff-only, git merge --ff-only)와 작업 잠시 보관·되살리기(git stash, git stash pop)는 넣을 수 있어요. 이미 바로 되는 명령(읽기·확인)은 넣지 않아도 됩니다.',
       '모든 글은 비개발자도 읽을 수 있는 쉬운 한국어로 씁니다.',
     ].join('\n'),
     {
@@ -557,8 +557,8 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
           problems.push(`${i + 1}. ${command} — ${d.message ?? '막힌 명령이에요'}`);
           continue;
         }
-        if (!d.ask || !RUN_PLAN_KINDS.has(d.ask.kind)) {
-          problems.push(`${i + 1}. ${command} — 커밋·삭제·DB·배포·작업 폴더 쓰기는 목록에 넣을 수 없어요. 따로 실행하면 하나씩 물어요`);
+        if (!d.ask || !(RUN_PLAN_KINDS.has(d.ask.kind) || (d.ask.kind === 'commit' && d.ask.syncOnly))) {
+          problems.push(`${i + 1}. ${command} — 커밋·푸시·삭제·DB·배포·작업 폴더 쓰기는 목록에 넣을 수 없어요(원격 최신 받아오기 git pull --ff-only · 작업 잠시 보관 git stash · 되살리기 git stash pop 은 넣을 수 있어요). 따로 실행하면 하나씩 물어요`);
           continue;
         }
         const files = scriptFilesIn(command, cwd).map((p) => ({ path: p, hash: fileFingerprint(p) }));

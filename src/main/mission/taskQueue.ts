@@ -16,6 +16,7 @@ export interface QueueEntry {
   queuedAt: string;
   resumed?: boolean;
   planFirst?: boolean; // 기획(안 선택) 먼저
+  preSync?: boolean; // 사용자가 직접 받아오기를 시킴
   attachments?: ChatAttachment[]; // 사용자가 직접 지시하며 붙인 그림
 }
 
@@ -43,8 +44,8 @@ export class TaskQueueStore {
     return this.entries.map((e) => ({ ...e }));
   }
 
-  add(e: { text: string; from: 'rano' | 'user'; todoId?: string; resumed?: boolean; planFirst?: boolean; attachments?: ChatAttachment[] }): QueueEntry {
-    const entry: QueueEntry = { id: randomUUID(), text: e.text, from: e.from, state: 'queued', queuedAt: new Date().toISOString(), ...(e.todoId ? { todoId: e.todoId } : {}), ...(e.resumed ? { resumed: true } : {}), ...(e.planFirst ? { planFirst: true } : {}), ...(e.attachments?.length ? { attachments: e.attachments } : {}) };
+  add(e: { text: string; from: 'rano' | 'user'; todoId?: string; resumed?: boolean; planFirst?: boolean; preSync?: boolean; attachments?: ChatAttachment[] }): QueueEntry {
+    const entry: QueueEntry = { id: randomUUID(), text: e.text, from: e.from, state: 'queued', queuedAt: new Date().toISOString(), ...(e.todoId ? { todoId: e.todoId } : {}), ...(e.resumed ? { resumed: true } : {}), ...(e.planFirst ? { planFirst: true } : {}), ...(e.preSync ? { preSync: true } : {}), ...(e.attachments?.length ? { attachments: e.attachments } : {}) };
     this.entries.push(entry);
     this.save();
     return { ...entry };

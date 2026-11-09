@@ -430,3 +430,33 @@ test('팀원도 실행 목록 도구를 쓸 수 있고, 다른 리더 도구는 
   assert.equal(await judgeAs(g, 'mcp__rano-leader__propose_commands', { title: 'x' }, 'a1'), 'allow');
   assert.equal(await judgeAs(g, 'mcp__rano-leader__request_approval', { kind: 'other' }, 'a1'), 'deny');
 });
+
+test('받아오기(pull --ff-only·stash·stash pop)는 실행 목록에 넣을 수 있고, 커밋·푸시는 안 됨', async () => {
+  const g = newGuard();
+  g.markTeamApproved('t1');
+  const sync = 'git stash push -u -m pre-pull && git merge --ff-only origin/develop && git stash pop';
+  const pre = g.previewCommand(sync, TARGET, false);
+  assert.equal(pre.type, 'ask');
+  assert.equal(pre.ask?.kind, 'commit');
+  assert.equal(pre.ask?.syncOnly, true);
+  assert.match(pre.ask!.title, /받아오기/);
+  g.grantCommands('t1', [{ command: sync, cwd: TARGET, files: [] }]);
+  assert.equal(await hookAs(g, 'Bash', bash(sync), 'a1', TARGET), 'allow');
+  // 커밋·푸시는 목록 승인이 있어도 다시 묻는다
+  const commit = 'git commit -m x';
+  g.grantCommands('t1', [{ command: commit, cwd: TARGET, files: [] }]);
+  assert.equal(await hookAs(g, 'Bash', bash(commit), 'a1', TARGET), 'ask');
+  assert.notEqual(g.previewCommand('git push', TARGET, false).ask?.syncOnly, true);
+});
+
+test('사용자가 직접 받아오기를 시킨 과제: 받아오기만 바로, 섞이거나 커밋이면 승인함', async () => {
+  const g = new LeaderGuard({ config, mission, log: () => {} });
+  g.setTask({ id: 'p1', title: 'pull', preSync: true });
+  for (const c of ['git fetch origin', 'git stash push -u -m pre-pull', 'git pull --ff-only', 'git merge --ff-only origin/develop', 'git stash pop'])
+    assert.equal(await judge(g, 'Bash', bash(c)), 'allow', c);
+  for (const c of ['git pull', 'git commit -m x', 'git push', 'git stash pop && curl https://example.com', 'git pull --rebase'])
+    assert.equal(await judge(g, 'Bash', bash(c)), 'ask', c);
+  // 시키지 않은 과제는 평소대로
+  const h = newGuard();
+  assert.equal(await judge(h, 'Bash', bash('git pull --ff-only')), 'ask');
+});

@@ -29,6 +29,7 @@ export interface BashDecision {
   blockedPaths: string[]; // 차단 목록에 걸린 경로
   writePaths: string[]; // 바뀔 것으로 보이는 파일(절대 경로)
   fileOpsOnly?: boolean; // 판단 근거가 파일 쓰기·지우기(와 확인 명령)뿐인지. 시안·임시 폴더 허용 판단에 쓴다
+  syncOnly?: boolean; // 기록을 바꾸는 git 명령이 원격 최신 받아오기(fast-forward)·작업 잠시 보관/되살리기뿐인지(새 커밋·푸시 없음)
   modeChange?: boolean; // 파일 권한(실행 권한 등)을 바꾸는 명령(chmod·chown·install)이 있는지. 시안·임시 폴더에서도 승인함으로 보낸다
   linkSources?: string[]; // 링크(ln, cp -l/-s)가 가리킬 수 있는 경로 후보(절대 경로). 시안·임시 폴더 바로 허용은 이것도 그 안일 때만
   // ---- 제목·기록용 표시 (판단 결과 decision·kind 는 이것으로 바꾸지 않는다) ----
@@ -533,7 +534,7 @@ const READ_CMDS = new Set([
   'basename', 'dirname', 'realpath', 'readlink', 'jq', 'tree', 'xxd', 'od', 'printf', 'test', '[', 'rev', 'fold', 'expand',
 ]);
 // 파일을 읽지 않고 상태만 보여 주는 명령(인자는 경로가 아님)
-const INFO_CMDS = new Set(['which', 'date', 'uname', 'lsof', 'whereis', 'type', 'sleep']); // ps 는 다른 프로세스의 환경 변수를 보여 줄 수 있어 뺀다
+const INFO_CMDS = new Set(['which', 'date', 'uname', 'lsof', 'whereis', 'type', 'sleep', 'read']); // read: 앞 명령의 출력을 변수에 담기만 한다 // ps 는 다른 프로세스의 환경 변수를 보여 줄 수 있어 뺀다
 // find -exec 로 돌려도 내용을 드러내지 않는 명령(지문·크기·종류)
 const FIND_SAFE_EXEC = new Set(['md5', 'shasum', 'wc', 'ls', 'stat', 'file', 'du']);
 // 셸 문법 단어
@@ -611,7 +612,13 @@ const XARGS_VALUE_OPT = /^-[nILPdsEJRa]$/;
 
 /** awk 프로그램이 출력만 하는지(명령 실행·파일 쓰기·다른 파일 읽기·환경 변수 보기가 없는지). '>' 는 비교일 수도 있지만 쓰기와 구분하지 않고 승인함으로 보낸다 */
 function awkProgramIsPure(prog: string): boolean {
-  return !/system|getline|ENVIRON|PROCINFO|close\s*\(|fflush|@include|@load|[|>]/.test(prog);
+  if (/system|getline|ENVIRON|PROCINFO|close\s*\(|fflush|@include|@load/.test(prog)) return false;
+  // 글자 묶음("…")은 지우고 본다. 비교(>, >=, <)·논리(||)는 괜찮고, print·printf 뒤의 > >> | (파일 쓰기·명령에 넘기기)만 막는다
+  const code = prog.replace(/"(?:\\.|[^"\\])*"/g, '""');
+  if (/\b(print|printf)\b[^;{}\n]*(>|(?<!\|)\|(?!\|))/.test(code)) return false;
+  // print 밖의 한 개짜리 | 는 쓰임이 명령 넘기기뿐이라 막는다(|| 는 논리)
+  if (/(?<!\|)\|(?!\|)/.test(code)) return false;
+  return true;
 }
 
 // 비밀이 있을 법한 이름. 경로로 풀지 못해도(따옴표 속 글롭 등) 보이면 막는다.
@@ -754,7 +761,9 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
     return ctx.readRoots.some((r) => within(rp, r)) || realRoots.some((r) => within(rp, r));
   };
   let nonRead = false; // 읽기만 하는 명령이 아닌 것이 섞였는지
-  let otherBump = false; // 파일 쓰기·지우기 말고 다른 이유로 승인이 필요한지
+  let otherBump = false;
+  let syncBumps = 0; // 받아오기 git 명령 수
+  let nonSyncCommit = 0; // 그 밖의 기록 바꾸기(커밋·푸시·되돌리기 등) 수 // 파일 쓰기·지우기 말고 다른 이유로 승인이 필요한지
   const bump = (k: BashKind, why: string, fileOp = false) => {
     level = stricter(level, k);
     out.reasons.push(why);
@@ -796,6 +805,7 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
 
     const known = new Map<string, string[] | null>(inherited ?? []); // 변수 → 값들(null 이면 알 수 없음)
     /** 단어 안의 변수를 알려진 값으로 바꾼 후보들. 알 수 없는 변수가 있으면 null */
+    const readVars = new Set<string>(); // read 로 값을 담은 변수
     const expandWord = (w: string, f: Token): string[] | null => {
       if (f.expand) return null;
       let outs = [w];
@@ -829,10 +839,18 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
       const seg: Segment = { ...rawSeg, words: [], quoted: [], flags: [] };
       const head = rawSeg.words.find((w, idx) => !SHELL_KEYWORDS.has(w) && !isAssign(w) && idx >= 0);
       const showsOnly = head === 'echo' || head === 'printf';
+      if (head === 'read')
+        for (const w of rawSeg.words.slice(rawSeg.words.indexOf('read') + 1)) {
+          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(w)) continue;
+          if (/[A-Z]/.test(w)) bump('command', `read 로 설정값 바꾸기: ${w}`); // read PATH 처럼 실행 방식을 바꿀 수 있는 이름
+          else readVars.add(w);
+        }
       curName = head ? path.basename(head) : undefined;
       rawSeg.words.forEach((w, idx) => {
         const f = rawSeg.flags[idx] ?? { text: w };
-        const vals = f.vars?.length || f.expand ? expandWord(w, f) : [w];
+        // read 로 담은 변수(앞 명령 출력)는 echo·printf 로 보여 주기만 하면 괜찮다(경로로 쓰면 알 수 없음)
+        const onlyReadVars = showsOnly && !f.expand && !!f.vars?.length && f.vars.every((v) => readVars.has(v) || SAFE_VARS.has(v));
+        const vals = onlyReadVars ? [w] : f.vars?.length || f.expand ? expandWord(w, f) : [w];
         if (!vals || (f.subst && !showsOnly && !(isAssign(w) && idx === 0))) unknownVar = true;
         for (const v of vals ?? [w]) {
           seg.words.push(v);
@@ -935,7 +953,9 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
         flags.shift();
       }
       if (!words.length) continue;
-      if (preset.length) {
+      // while IFS= read -r f 처럼 read 앞의 IFS 는 읽는 방식만 바꾸므로 괜찮다
+      const readOnlyPreset = path.basename(words[0]) === 'read' && preset.every((w) => assignParts(w).name === 'IFS');
+      if (preset.length && !readOnlyPreset) {
         bump('command', `앞에 설정값을 붙여 실행: ${[...new Set(preset.map((w) => assignParts(w).name))].join(', ')}`);
         for (const w of preset) scanInline(assignValue(w));
       }
@@ -1037,7 +1057,20 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
           bump('delete', `git ${sub}`);
           risk('delete', 'git', sub === 'rm' ? nonOptions(rest).map((a) => path.resolve(gitCwd, expandHome(a))) : []);
         }
-        else if (GIT_COMMIT.has(sub)) bump('commit', `git ${sub}`);
+        else if (sub === 'stash' && ['list', 'show'].includes(rest[0] ?? '')) {
+          // 보관 목록·내용 보기는 읽기
+          if (rest.some((a) => /^--(output|ext-diff|textconv)/.test(a))) bump('command', 'git stash show 의 쓰기·실행 옵션');
+        } else if (GIT_COMMIT.has(sub)) {
+          // 원격 최신 받아오기(fast-forward 만)·작업 잠시 보관/되살리기: 새 커밋·푸시가 없는 "받아오기" 일
+          const ffOnly = rest.includes('--ff-only') && !rest.some((a) => /^(--rebase|-r|--no-ff|--squash|--commit|-s|--strategy.*|-X|--autostash|--allow-unrelated-histories|--no-verify|--edit|-e)$/.test(a));
+          const sync =
+            (sub === 'pull' && ffOnly) ||
+            (sub === 'merge' && ffOnly) ||
+            (sub === 'stash' && (rest.length === 0 || ['push', 'save', 'pop', 'apply'].includes(rest[0] ?? '')) && !rest.some((a) => /^(-p|--patch)$/.test(a)));
+          bump('commit', sync ? `git ${sub}${rest[0] && !rest[0].startsWith('-') ? ` ${rest[0]}` : ''} (받아오기)` : `git ${sub}`);
+          if (sync) syncBumps++;
+          else nonSyncCommit++;
+        }
         else if (GIT_READ.has(sub)) {
           const listing = rest.some((a) => /^(-a|-r|-l|-v|-vv|--list|--all|--remotes|--show-current|--contains|--no-contains|--merged|--no-merged|--points-at|--sort.*|--format.*)$/.test(a));
           if (sub === 'branch' && nonOptions(rest).length && !listing) bump('command', 'git branch 로 가지 만들기·지우기');
@@ -1051,6 +1084,9 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
               if (ctx.isBlocked(abs) || /(^|\/)\.env(\.|$)/.test(m[1])) out.blockedPaths.push(abs);
             }
           }
+        } else if (sub === 'fetch' && !rest.some((a) => /^--(upload-pack|exec)|^-[a-zA-Z]*u/.test(a))) {
+          bump('command', 'git fetch (받아오기)');
+          syncBumps++;
         } else bump('command', `git ${sub || '(하위 명령 없음)'}`);
         continue;
       }
@@ -1407,6 +1443,9 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
     return out;
   }
   out.fileOpsOnly = !otherBump;
+  // 받아오기만 하는 명령: 승인이 필요한 이유가 모두 받아오기(fetch·pull --ff-only·보관·되살리기)일 때만. 다른 명령이 섞이면 아님
+  out.syncOnly =
+    ['commit', 'command'].includes(level as string) && syncBumps > 0 && nonSyncCommit === 0 && out.reasons.length > 0 && out.reasons.every((r) => r.endsWith('(받아오기)'));
   if (level === 'allow') {
     out.decision = 'allow';
     if (!out.reasons.length) out.reasons.push('작업 폴더 안 읽기 명령');

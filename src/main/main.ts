@@ -139,7 +139,13 @@ async function boot() {
     store,
     emit,
     memoryMcp: createMemoryMcpServer(memory),
-    missionMcp: createMissionMcpServer(dispatcher, config),
+    missionMcp: createMissionMcpServer(dispatcher, config, async () => {
+      // 라노가 마지막으로 답한 뒤 사용자가 보낸 말들(여러 말을 모아 한 번에 답하므로)
+      const msgs = (await store.load()).messages;
+      const out: string[] = [];
+      for (let i = msgs.length - 1; i >= 0 && msgs[i].role === 'user'; i--) out.unshift(msgs[i].text);
+      return out.join('\n');
+    }),
     todoMcp: createTodoMcpServer(todos, config),
     todoText: () => todos.describe(),
     orgMcp: createOrgMcpServer(org, emit, config),

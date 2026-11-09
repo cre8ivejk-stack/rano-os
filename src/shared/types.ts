@@ -573,7 +573,7 @@ export interface MissionTrackerApi {
 //   run 은 큐로 하나씩 처리. 시작 시 tracker.taskStart, 팀원 호출 시 memberStart/End, 끝나면 tracker.taskEnd.
 //   대화 기록(store)과 emit({kind:'leaderMessage'}) 로 지시(role rano/user)와 리더 답(role leader)을 남긴다.
 export interface MissionLeaderApi {
-  run(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; planFirst?: boolean; attachments?: ChatAttachment[] }): Promise<{ ok: boolean; report: string; taskId?: string }>; // planFirst: 기획(안 선택) 먼저, 고른 뒤 구현 // onStart: 앞 과제가 끝나고 이 과제를 실제로 시작할 때
+  run(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; planFirst?: boolean; preSync?: boolean; attachments?: ChatAttachment[] }): Promise<{ ok: boolean; report: string; taskId?: string }>; // preSync: 사용자가 직접 받아오기를 시킴(받아오기는 승인 없이) // planFirst: 기획(안 선택) 먼저, 고른 뒤 구현 // onStart: 앞 과제가 끝나고 이 과제를 실제로 시작할 때
   busy(): boolean;
   close?(): void; // 3단계: 앱을 끌 때 진행 중인 일과 승인 대기를 정리
 }
@@ -586,7 +586,7 @@ export interface MissionLeaderApi {
 //   미션 기억(진행업무.md)에 한 줄 남기고 미션 홈 자동 저장(autoCommit, 기억 담당 모듈 재사용) 후 notifyRano 로 보고를 전달한다.
 //   userSend 는 시작할 때 notifyRano(…, 'direct') 로 "사용자가 ○○ 리더에게 직접 지시함: …" 을 알린다 (결정 11).
 export interface MissionDispatcherApi {
-  assign(missionId: string, text: string, todoId?: string, planFirst?: boolean): Promise<string>; // 라노가 배정. 접수 문구 반환. todoId 를 주면 그 할 일과 연결
+  assign(missionId: string, text: string, todoId?: string, planFirst?: boolean, preSync?: boolean): Promise<string>; // 라노가 배정. 접수 문구 반환. todoId 를 주면 그 할 일과 연결
   userSend(missionId: string, text: string): Promise<void>; // 사용자가 미션 카드에서 직접 지시
   statuses(): MissionStatus[];
   resumePending?(): void; // 앱을 켤 때 한 번: 지난번에 기다리던 과제를 이어서 맡기고, 하다 멈춘 과제를 정리한다

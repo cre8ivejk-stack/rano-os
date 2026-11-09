@@ -1,5 +1,6 @@
 // 라노·사용자의 지시를 미션 리포 리더에게 넘기고, 끝나면 미션 기억에 남긴 뒤 라노에게 보고를 전달한다.
 import { promises as fs } from 'node:fs';
+import { userAskedSync } from './syncIntent.js';
 import path from 'node:path';
 import type {
   MissionConfig,
@@ -44,6 +45,23 @@ export function firstLine(text: string): string {
   const lines = String(text ?? '').split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
   const line = lines.find((l) => !l.startsWith('#')) ?? lines[0] ?? '(보고 없음)';
   return oneLine(line.replace(/^#+\s*/, '').replace(/^[-*]\s+/, ''), 120);
+}
+
+/**
+ * 미션 기억(진행업무)에 남길 한 줄: 보고의 "4. 결과" 절 첫 내용(없으면 첫 줄).
+ * 첫 줄은 "한 일"이라 반려·중단된 일도 "했습니다"처럼 읽힐 수 있어, 실제 결과를 남긴다.
+ */
+export function progressLine(report: string): string {
+  const text = String(report ?? '').replace(/\*\*(.+?)\*\*/g, '$1').replace(/`([^`]+)`/g, '$1');
+  const lines = text.split('\n');
+  const at = lines.findIndex((l) => /^[\s>#_*-]*4\s*[.)]\s*결과(?!물)/.test(l));
+  if (at >= 0) {
+    const rest = lines[at].replace(/^[\s>#_*-]*4\s*[.)]\s*결과\s*[:：]?\s*/, '').trim();
+    if (rest) return oneLine(rest, 120);
+    const next = lines.slice(at + 1).map((l) => l.trim()).find((l) => l && !/^[\s>#_*-]*[1-9]\s*[.)]/.test(l) && !l.startsWith('```'));
+    if (next) return oneLine(next.replace(/^#+\s*/, '').replace(/^[-*]\s+/, ''), 120);
+  }
+  return firstLine(text);
 }
 
 /** 보고 카드용 첫 줄: firstLine 에서 꾸밈 기호(**, `)만 더 뺀다 (화면에는 글자 그대로 넣는다) */
@@ -91,7 +109,7 @@ export class MissionDispatcher implements MissionDispatcherApi {
           const t = todos.get(e.todoId);
           if (t && t.status !== 'done') this.safeTodo(() => todos.update(e.todoId!, { status: 'active', queued: busy, note: busy ? '앞 과제가 끝나면 시작' : '' }, 'app'));
         }
-        this.runInBackground(mission, leader, e.text, e.from, e.todoId, true, !!e.planFirst, e.attachments ?? []);
+        this.runInBackground(mission, leader, e.text, e.from, e.todoId, true, !!e.planFirst, e.attachments ?? [], !!e.preSync);
       }
       if (waiting.length) tracker?.activity('앱', `앱을 다시 켜서 기다리던 과제 ${waiting.length}건을 이어서 맡겼어요`);
       this.pushQueue(mission.id);
@@ -120,7 +138,7 @@ export class MissionDispatcher implements MissionDispatcherApi {
     return { mission, leader };
   }
 
-  async assign(missionId: string, text: string, todoId?: string, planFirst?: boolean): Promise<string> {
+  async assign(missionId: string, text: string, todoId?: string, planFirst?: boolean, preSync?: boolean): Promise<string> {
     const found = this.find(missionId);
     if (typeof found === 'string') return found;
     if (!String(text ?? '').trim()) return '배정할 과제 내용이 비어 있어요.';
@@ -136,7 +154,7 @@ export class MissionDispatcher implements MissionDispatcherApi {
     if (todo && todos) {
       this.safeTodo(() => todos.update(todo!.id, { status: 'active', queued: wasBusy, note: wasBusy ? '앞 과제가 끝나면 시작' : '' }, 'app'));
     }
-    this.runInBackground(mission, leader, text, 'rano', todo?.id, false, !!planFirst);
+    this.runInBackground(mission, leader, text, 'rano', todo?.id, false, !!planFirst, [], !!preSync);
     return wasBusy
       ? `${mission.name} 리더가 앞 과제를 하는 중이에요. 앞 과제가 끝나면 이어서 진행해요. 진행 상황은 현황판에서 볼 수 있어요.`
       : `${mission.name} 리더에게 배정했어요. 진행 상황은 현황판에서 볼 수 있어요. 끝나면 보고가 도착해요.`;
@@ -149,7 +167,7 @@ export class MissionDispatcher implements MissionDispatcherApi {
     this.deps
       .notifyRano(`[앱 알림] 사용자가 ${mission.name} 리더에게 직접 지시했습니다: ${text}${attachments.length ? ` (그림 ${attachments.length}개 첨부)` : ''}`, 'direct')
       .catch((e) => console.error('[dispatcher] 라노 알림 실패:', e));
-    this.runInBackground(mission, leader, text, 'user', undefined, false, false, attachments);
+    this.runInBackground(mission, leader, text, 'user', undefined, false, false, attachments, userAskedSync(text)); // 사용자가 직접 쓴 말
   }
 
   private safeTodo(fn: () => void) {
@@ -164,10 +182,10 @@ export class MissionDispatcher implements MissionDispatcherApi {
     return [...this.deps.trackers.values()].map((t) => t.status());
   }
 
-  private runInBackground(mission: MissionConfig, leader: MissionLeaderApi, text: string, from: 'rano' | 'user', todoId?: string, resumed = false, planFirst = false, attachments: ChatAttachment[] = []) {
+  private runInBackground(mission: MissionConfig, leader: MissionLeaderApi, text: string, from: 'rano' | 'user', todoId?: string, resumed = false, planFirst = false, attachments: ChatAttachment[] = [], preSync = false) {
     const todos = this.deps.todos;
     const queue = this.queues.get(mission.id);
-    const entry = queue?.add({ text, from, todoId, resumed, planFirst, attachments });
+    const entry = queue?.add({ text, from, todoId, resumed, planFirst, preSync, attachments });
     this.pushQueue(mission.id);
     const onStart = () => {
       if (this.closing) return;
@@ -179,7 +197,7 @@ export class MissionDispatcher implements MissionDispatcherApi {
       }
     };
     leader
-      .run({ text, from, onStart, planFirst, ...(attachments.length ? { attachments } : {}) })
+      .run({ text, from, onStart, planFirst, ...(preSync ? { preSync: true } : {}), ...(attachments.length ? { attachments } : {}) })
       .catch((e) => ({ ok: false, report: `리더 실행 중 오류가 났어요: ${e instanceof Error ? e.message : String(e)}` }))
       .then((result) => {
         if (this.closing) return; // 앱이 꺼지며 멈춘 과제는 다음 실행 때 이어 간다
@@ -217,7 +235,7 @@ export class MissionDispatcher implements MissionDispatcherApi {
 
     // ① 미션 기억에 한 줄
     try {
-      await this.appendProgress(mission, `- ${stamp()} · ${title} · ${outcome} · ${firstLine(result.report)}`);
+      await this.appendProgress(mission, `- ${stamp()} · ${title} · ${outcome} · ${progressLine(result.report)}`);
     } catch (e) {
       console.error('[dispatcher] 진행업무.md 기록 실패:', e);
       tracker?.activity('앱', '미션 기억(진행업무)에 기록하지 못했어요');
