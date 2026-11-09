@@ -1,4 +1,5 @@
 // 미션 팀원(서브에이전트) 역할 파일을 읽어 SDK 의 AgentDefinition 으로 바꾼다. 역할 파일은 읽기만 한다.
+import { PROPOSE_COMMANDS_TOOL } from './leaderPermissions.js';
 import type { AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -94,6 +95,8 @@ export function approvalNote(tmpDir: string): string {
 - 쓰기나 명령 직전에는 무엇을 왜 하는지 쉬운 한국어로 한두 줄 먼저 말한다. 그 말이 승인함의 "왜"로 쓰인다. 권장안이 있으면 "권장: …" 한 줄로 덧붙인다.
 - 리포 리더가 "시안 폴더에 고친 파일을 만들라"고 하면 작업 폴더 대신 그 시안 폴더에 고친 뒤의 전체 내용을 쓴다(묶음 승인용, 승인 없이 쓸 수 있다).
 - 확인용 임시 스크립트는 이 과제의 시안 폴더에 Write 로 만든다(승인 없음. Write·Edit 도구는 시안 폴더에만 승인 없이 쓴다). 명령 결과는 이 미션 임시 폴더 ${tmpDir} 에 Bash 로 담고 읽는다(예: npm test > ${tmpDir}/test.txt 2>&1, 승인 없음). 경로는 글자 그대로 적는다. /tmp, $TMPDIR, mktemp 를 쓰면 승인함으로 간다. 읽기·grep·sed -n·find 와 타입 검사·린트·시험 명령도 바로 된다. 만든 스크립트를 node·python 으로 실행하는 것은 승인함을 거치므로, 여러 번 나눠 돌리지 말고 한 스크립트에 모아 한 번에 돌린다.
+- 서로 상관없는 읽기·검색(Read·Grep·Glob·읽기 명령)은 한 번의 답에 도구를 여러 개 함께 불러 동시에 한다. 앞 결과를 봐야 정할 수 있는 것만 차례로 한다. 큰 파일은 필요한 줄 범위만 읽는다.
+- 승인이 필요한 명령(스크립트 실행·개발 서버 띄우기 등)을 두 번 이상 돌려야 하면, 스크립트를 먼저 다 만든 뒤 propose_commands 도구로 돌릴 명령 목록을 한 번에 승인받는다. 승인되면 목록의 명령을 글자 그대로 같은 위치에서 실행한다(스크립트를 고치면 다시 물으니, 고칠 땐 목록을 다시 올린다).
 - 시안 폴더·임시 폴더 안이라도 권한 바꾸기(chmod·chown·install)와 밖(작업 폴더 등)을 가리키는 바로가기(ln) 만들기는 승인함으로 간다.
 - 커밋·삭제·DB·배포는 리포 리더가 따로 지시한 경우에만 시도한다. 반려되면 우회하지 말고 결과 보고에 적는다.
 - 비밀 키·인증 파일, .env 계열 파일은 열지 않는다. 앱이 막는다.
@@ -137,6 +140,8 @@ export function loadRoles(config: RanoConfig, mission: MissionConfig): Record<st
       const kept = parsed.tools ? parsed.tools.filter((t) => allowed.includes(t) || isConn(t)) : [...allowed];
       tools = kept.some((t) => allowed.includes(t)) ? kept : [...READ_ONLY_TOOLS, ...kept];
       if (!parsed.tools && conns.length) tools = undefined; // 리더가 가진 도구(켜진 연결 포함)를 그대로 물려받는다
+      // 실행 목록 한 번에 승인 도구는 팀원도 쓴다(승인이 필요한 명령을 여러 번 돌릴 때)
+      if (tools && !tools.includes(PROPOSE_COMMANDS_TOOL)) tools = [...tools, PROPOSE_COMMANDS_TOOL];
     }
     out[role] = {
       description: parsed.description,

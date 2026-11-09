@@ -6,7 +6,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { LEADER_MCP_NAME, type ApprovalQueueApi, type BundleFile, type DecisionItem, type MissionConfig, type MissionTrackerApi } from '../../shared/types.js';
-import { fileChangeFor, type LeaderGuard } from './leaderPermissions.js';
+import { fileChangeFor, fileFingerprint, RUN_PLAN_KINDS, scriptFilesIn, redactCommand, type CommandGrant, type LeaderGuard } from './leaderPermissions.js';
 import { checkPreviewFile, PREVIEW_EXTS } from '../approvals/previewSafety.js';
 
 export const LEADER_APPROVAL_KINDS = ['teamPlan', 'decision', 'numbers', 'reverseDecision', 'estimate', 'external', 'other'] as const;
@@ -70,6 +70,14 @@ export async function updateTeamFile(home: string, plan: { title: string; what: 
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   await fs.writeFile(tmp, out, 'utf-8');
   await fs.rename(tmp, file);
+}
+
+/** 카드에 보일 스크립트 내용: 비밀로 보이는 줄은 가린다 */
+function maskText(t: string): string {
+  return t
+    .split('\n')
+    .map((l) => (/(secret|token|passw(or)?d|api[_-]?key|private[_-]?key|authorization|bearer\s|client_secret)/i.test(l) || /[A-Za-z0-9+/_\-]{32,}/.test(l) ? '(비밀로 보여 가림)' : l))
+    .join('\n');
 }
 
 export function createLeaderMcpServer(deps: LeaderToolsDeps) {
@@ -168,6 +176,7 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
       // 읽고 정리만 하는 과제의 팀 구성: 묻지 않고 바로 시작한다(바꾸는 일은 이 과제 동안 앱이 막음). 모델은 리더 추천대로
       if (args.kind === 'teamPlan' && args.readOnly) {
         guard.markTeamApproved(task.id);
+        guard.markSolo(task.id, false);
         guard.markReadOnly(task.id, true);
         if (recModels.size) guard.setMemberModels(task.id, Object.fromEntries([...recModels].map(([r, v]) => [r, v.model])));
         guard.setReviewSkipped(task.id, !!recSkip);
@@ -308,6 +317,7 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
       if (d.decision === 'approve') {
         if (args.kind === 'teamPlan') {
           guard.markTeamApproved(task.id);
+          guard.markSolo(task.id, false); // 팀 모드로 바뀜
           guard.markReadOnly(task.id, false); // 바꾸는 일까지 하는 구성으로 다시 승인받음
           // 사용자가 고른 모델(바꾸지 않았으면 리더 추천)을 이 과제 동안 적용한다
           const picked: Record<string, 'opus' | 'sonnet'> = {};
@@ -495,5 +505,153 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
     },
   );
 
-  return createSdkMcpServer({ name: LEADER_MCP_NAME, version: '0.1.0', tools: [requestApproval, proposeChanges] });
+  // 실행 목록 한 번에 승인: 승인이 필요한 명령을 여러 번 돌릴 때(검증·화면 확인 등) 목록을 한 장의 카드로 올린다.
+  // 승인되면 이번 과제 동안 목록의 명령은 글자·실행 위치·스크립트 내용이 같을 때만 다시 묻지 않는다
+  const proposeCommands = tool(
+    'propose_commands',
+    [
+      '승인이 필요한 명령(스크립트 실행, 개발 서버 띄우기, 확인 명령 등)을 여러 번 돌려야 할 때, 돌릴 명령 목록을 한 번에 승인받는 도구입니다. 리더와 팀원 모두 씁니다.',
+      '방법: ① 돌릴 스크립트를 먼저 시안 폴더나 미션 임시 폴더에 다 만든다(승인 없음). ② commands 에 실제로 실행할 명령을 글자 그대로 넣는다. ③ 승인되면 그 글자 그대로 Bash 로 실행한다.',
+      '승인 뒤에도 명령 글자가 한 글자라도 다르거나, 실행 위치가 다르거나, 명령이 쓰는 스크립트 파일 내용이 바뀌면 다시 묻습니다. 스크립트를 고쳐야 하면 목록을 다시 올리세요.',
+      '커밋·삭제·DB·배포·작업 폴더 파일 쓰기는 목록에 넣을 수 없어요(하나씩 승인). 이미 바로 되는 명령(읽기·확인)은 넣지 않아도 됩니다.',
+      '모든 글은 비개발자도 읽을 수 있는 쉬운 한국어로 씁니다.',
+    ].join('\n'),
+    {
+      title: z.string().describe('한 줄 제목 (예: "장비별 분석 화면 확인 명령 4개")'),
+      why: z.string().describe('왜 이 명령들을 돌리는지'),
+      recommendation: z.string().describe('권장안 한 줄'),
+      commands: z
+        .array(
+          z.object({
+            command: z.string().describe('실행할 명령, 글자 그대로'),
+            purpose: z.string().describe('이 명령이 하는 일 한 줄(쉬운 말)'),
+            cwd: z.string().optional().describe('실행 위치(절대 경로). 비우면 작업 폴더'),
+          }),
+        )
+        .min(1)
+        .max(15),
+    },
+    async (args, extra) => {
+      const task = guard.currentTask();
+      if (!deps.approvals) return text('지금은 승인함이 연결되지 않았어요. 보고에 "승인이 필요한 일"로 적어 주세요.', true);
+      if (!task) return text('진행 중인 과제가 없어 승인을 올릴 수 없어요.', true);
+      const who = guard.lastProposer ?? { label: guard.leaderLabel, isSub: false };
+      const root = mission.targets[0] ?? mission.home;
+      const home = process.env.HOME ?? '';
+      const show = (p: string) => (home && p.startsWith(home + '/') ? '~' + p.slice(home.length) : p);
+      const grants: CommandGrant[] = [];
+      const skipped: string[] = [];
+      const problems: string[] = [];
+      const lines: string[] = [];
+      const details: string[] = [];
+      const shown = new Map<string, number>(); // 이미 내용을 보여 준 스크립트 → 몇 번 명령에서
+      for (const [i, c] of args.commands.entries()) {
+        const command = c.command.trim();
+        const cwd = c.cwd ? path.resolve(c.cwd.replace(/^~(?=\/|$)/, home || '~')) : root;
+        const d = guard.previewCommand(command, cwd, who.isSub);
+        if (d.type === 'allow') {
+          skipped.push(`${i + 1}. 이미 바로 되는 명령이라 넣지 않았어요: ${command}`);
+          continue;
+        }
+        if (d.type === 'deny') {
+          problems.push(`${i + 1}. ${command} — ${d.message ?? '막힌 명령이에요'}`);
+          continue;
+        }
+        if (!d.ask || !RUN_PLAN_KINDS.has(d.ask.kind)) {
+          problems.push(`${i + 1}. ${command} — 커밋·삭제·DB·배포·작업 폴더 쓰기는 목록에 넣을 수 없어요. 따로 실행하면 하나씩 물어요`);
+          continue;
+        }
+        const files = scriptFilesIn(command, cwd).map((p) => ({ path: p, hash: fileFingerprint(p) }));
+        grants.push({ command, cwd, files });
+        lines.push(`${grants.length}. ${c.purpose.trim()}`);
+        const previews = files.map((f) => {
+          if (f.hash === '-') return `  스크립트 ${show(f.path)}: 아직 없음(나중에 생기면 다시 물어요)`;
+          const seenAt = shown.get(f.path);
+          if (seenAt) return `  스크립트 ${show(f.path)}: ${seenAt}번과 같은 파일`;
+          shown.set(f.path, grants.length);
+          let body = '';
+          try {
+            body = readFileSync(f.path, 'utf-8');
+          } catch {
+            body = '(읽지 못함)';
+          }
+          const clipped = body.length > 4000 ? `${body.slice(0, 4000)}\n…(뒷부분 ${body.length - 4000}자 생략)` : body;
+          return `  스크립트 ${show(f.path)} 내용:\n${maskText(clipped)
+            .split('\n')
+            .map((l) => `    ${l}`)
+            .join('\n')}`;
+        });
+        details.push(
+          [`${grants.length}. 명령: ${redactCommand(command)}`, `  실행 위치: ${show(cwd)}`, `  판단: ${d.ask.title}`, ...previews].join('\n'),
+        );
+      }
+      if (problems.length) return text(`목록에 넣을 수 없는 명령이 있어 올리지 않았어요. 빼거나 따로 실행하세요:\n- ${problems.join('\n- ')}${skipped.length ? `\n참고: ${skipped.join(' / ')}` : ''}`, true);
+      if (!grants.length) return text(`승인이 필요한 명령이 없어요. 그대로 실행하세요.${skipped.length ? `\n${skipped.join('\n')}` : ''}`);
+      const extraSignal = (extra as { signal?: AbortSignal } | undefined)?.signal;
+      const signal = extraSignal && deps.signal ? AbortSignal.any([extraSignal, deps.signal]) : extraSignal ?? deps.signal;
+      deps.emitActivity?.(`${who.label}: 승인을 기다리는 중: ${args.title}`);
+      let d;
+      try {
+        d = await deps.approvals.request(
+          {
+            missionId: mission.id,
+            taskId: task.id,
+            who: who.label,
+            kind: 'command',
+            title: `실행 목록 ${grants.length}개: ${args.title}`,
+            what: lines.join('\n'),
+            why: args.why,
+            recommendation: args.recommendation,
+            detail: `승인하면 이번 과제 동안 아래 명령은 글자·실행 위치·스크립트 내용이 그대로일 때만 다시 묻지 않아요. 하나라도 바뀌면 다시 물어요.\n\n${details.join('\n\n')}`,
+            tool: 'Bash',
+          },
+          signal,
+        );
+      } catch {
+        return text('승인을 기다리던 중에 작업이 멈췄어요. 이 명령들은 실행하지 마세요.', true);
+      }
+      const note = d.note?.trim();
+      if (d.decision === 'approve') {
+        // 승인을 기다리는 동안 스크립트가 바뀌었으면 그 명령은 묶지 않는다(카드에 보인 내용과 달라짐)
+        const changed = grants.filter((g) => g.files.some((f) => fileFingerprint(f.path) !== f.hash));
+        const ok = grants.filter((g) => !changed.includes(g));
+        guard.grantCommands(task.id, ok);
+        deps.emitActivity?.(`${who.label}: 승인됨: ${args.title}`);
+        return text(
+          `사용자가 실행 목록을 승인했어요${note ? ` (메모: ${note})` : ''}. 아래 명령을 글자 그대로, 같은 위치에서 실행하세요(스크립트를 고치면 다시 물어요).\n${ok.map((g) => `- ${g.command}`).join('\n')}${changed.length ? `\n승인을 기다리는 동안 스크립트가 바뀐 명령은 빠졌어요: ${changed.map((g) => g.command).join(' / ')}` : ''}`,
+        );
+      }
+      if (d.decision === 'revise') return text(`사용자가 수정을 요청했어요: ${note || '사유 없음'}. 반영해서 다시 올리세요.`);
+      return text(`사용자가 반려했어요: ${note || '사유 없음'}. 이 명령들은 실행하지 말고 보고에 적으세요.`);
+    },
+  );
+
+  // 빠른 모드: 범위가 분명한 작은·중간 일은 팀 구성안 없이 리더가 혼자 바로 한다(사용자에게 묻지 않음, 검수 역할 없음)
+  const workSolo = tool(
+    'work_solo',
+    [
+      '빠른 모드로 시작합니다: 팀 구성안을 올리지 않고 리더가 혼자 바로 일합니다(사용자에게 묻지 않음).',
+      '범위가 분명한 작은·중간 일(파일 몇 개 고치기, 한 가지 조사·확인, 문구·설정 수정, 이미 정한 안의 단순 후속)에만 씁니다.',
+      '검수 역할은 부르지 않고 결과를 직접 확인해 짧게 보고합니다. 파일 쓰기·명령·커밋은 평소처럼 승인함을 거칩니다.',
+      '일이 커지면 request_approval(kind: teamPlan)으로 팀 구성안을 올려 팀 모드로 바꿉니다.',
+    ].join('\n'),
+    { reason: z.string().describe('빠른 모드로 하는 이유 한 줄(쉬운 한국어, 예: "문서 두 개의 오탈자 수정이라")') },
+    async (args) => {
+      const task = guard.currentTask();
+      if (!task) return text('진행 중인 과제가 없어요.', true);
+      if (guard.isTeamApproved(task.id)) return text('이미 팀 구성안이 승인된 과제예요. 승인된 팀으로 진행하세요.', true);
+      guard.markSolo(task.id, true);
+      guard.setReviewSkipped(task.id, true);
+      const reason = args.reason.trim().slice(0, 200);
+      try {
+        deps.tracker?.activity(guard.leaderLabel, `빠른 모드: 혼자 바로 처리 (${reason})`);
+      } catch {
+        // 무시
+      }
+      deps.emitActivity?.(`${guard.leaderLabel}: 빠른 모드로 혼자 바로 처리해요 (${reason})`);
+      return text('빠른 모드로 시작했어요. 팀원 없이 직접 읽고 고치고 확인하세요. 서로 상관없는 읽기·검색은 한 번에 여러 개 함께 부르세요. 끝나면 짧은 보고(1. 한 일 · 4. 결과 · 6. 승인이 필요한 일)를 남기세요.');
+    },
+  );
+
+  return createSdkMcpServer({ name: LEADER_MCP_NAME, version: '0.1.0', tools: [requestApproval, proposeChanges, proposeCommands, workSolo] });
 }

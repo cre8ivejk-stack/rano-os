@@ -14,6 +14,7 @@ import type {
   PostToolUseHookInput,
   PreToolUseHookInput,
 } from '@anthropic-ai/claude-agent-sdk';
+import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -38,6 +39,44 @@ export const SUBAGENT_TOOL = 'Agent'; // sdk.d.ts BUILTIN_TOOL_NAMES 기준 서�
 const READ_TOOLS = new Set(['Read', 'Grep', 'Glob']);
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
 const LEADER_TOOL_PREFIX = `mcp__${LEADER_MCP_NAME}__`;
+/** 실행 목록 한 번에 승인 도구(리더·팀원 모두 쓸 수 있음) */
+export const PROPOSE_COMMANDS_TOOL = `${LEADER_TOOL_PREFIX}propose_commands`;
+/** 실행 목록으로 미리 승인할 수 있는 명령 종류. 커밋·삭제·DB·배포·작업 폴더 쓰기는 하나씩 묻는다 */
+export const RUN_PLAN_KINDS = new Set(['command', 'outsideWrite']);
+/** 실행 목록 승인에서 내용까지 묶어 둘 스크립트 파일 */
+const SCRIPT_EXT = /\.(m?js|cjs|ts|mts|cts|tsx|jsx|py|sh|bash|zsh|rb|pl|php|sql|json|ya?ml|toml)$/i;
+
+/** 명령에 들어 있는 스크립트 파일(있는 보통 파일)의 절대 경로. 내용이 바뀌면 다시 묻도록 지문을 묶는다 */
+export function scriptFilesIn(command: string, cwd: string): string[] {
+  const out = new Set<string>();
+  for (const raw of command.split(/[\s;&|()<>]+/)) {
+    const w = raw.replace(/^['"]|['"]$/g, '');
+    if (!w || w.startsWith('-') || !SCRIPT_EXT.test(w)) continue;
+    const abs = path.resolve(cwd, expandHome(w));
+    try {
+      if (statSync(abs).isFile()) out.add(abs);
+    } catch {
+      // 없는 파일은 묶지 않는다(나중에 생기면 지문이 달라 다시 묻는다)
+      out.add(abs);
+    }
+  }
+  return [...out];
+}
+
+/** 파일 지문(없으면 '-') */
+export function fileFingerprint(abs: string): string {
+  try {
+    return createHash('sha256').update(readFileSync(abs)).digest('hex');
+  } catch {
+    return '-';
+  }
+}
+
+export interface CommandGrant {
+  command: string; // 글자 그대로
+  cwd: string; // 실행 위치
+  files: { path: string; hash: string }[]; // 묶어 둔 스크립트 지문
+}
 
 /** Grep 에 glob 이 없을 때 강제로 넣는 제외 패턴(.env, .env.local 등 이름이 .env 로 시작하는 파일) */
 export const GREP_EXCLUDE_GLOB = '!.env*';
@@ -676,7 +715,7 @@ export function decideApprovalStage(
 
   // 리더 전용 도구(request_approval)
   if (toolName.startsWith(LEADER_TOOL_PREFIX)) {
-    if (actor.isSubagent) return { type: 'deny', reason: '팀원이 리더 도구를 쓰려 함', message: '승인 요청은 리포 리더가 올려요. 필요한 내용을 결과 보고에 적어 주세요.' };
+    if (actor.isSubagent && toolName !== PROPOSE_COMMANDS_TOOL) return { type: 'deny', reason: '팀원이 리더 도구를 쓰려 함', message: '승인 요청은 리포 리더가 올려요. 필요한 내용을 결과 보고에 적어 주세요.' };
     if (mcpServer && !(mcpServer.source === 'sdk' && mcpServer.name === LEADER_MCP_NAME)) {
       return { type: 'deny', reason: '앱이 등록하지 않은 도구 서버', message: MSG_UNKNOWN };
     }
@@ -896,6 +935,8 @@ export class LeaderGuard {
   private readonly readOnlyTasks = new Set<string>(); // 읽고 정리만 하기로 한 과제(팀 구성안 자동 승인)
   private readonly reviewSkippedTasks = new Set<string>(); // 팀 구성안에서 검수 생략으로 정한 과제
   private readonly taskModels = new Map<string, Record<string, 'opus' | 'sonnet'>>(); // 과제 → 역할별로 승인된 모델
+  private readonly commandGrants = new Map<string, CommandGrant[]>(); // 과제 → 실행 목록 승인
+  private readonly soloTasks = new Set<string>(); // 빠른 모드(리더 혼자) 과제
   private readonly deleteGrants = new Map<string, string[]>(); // 과제 → 리더 확인 승인으로 지워도 되는 위치(실제 경로)
   private task:{ id: string; title: string; planFirst?: boolean } | null = null;
 
@@ -1006,6 +1047,45 @@ export class LeaderGuard {
     return null;
   }
 
+  /** 빠른 모드: 리더가 팀 없이 혼자 하는 과제 */
+  markSolo(taskId: string, on: boolean) {
+    if (on) this.soloTasks.add(taskId);
+    else this.soloTasks.delete(taskId);
+  }
+
+  isSolo(taskId?: string): boolean {
+    const id = taskId ?? this.task?.id;
+    return !!id && this.soloTasks.has(id);
+  }
+
+  /** 실행 목록 승인: 이번 과제 동안 이 명령들은 글자·실행 위치·스크립트 내용이 같을 때만 다시 묻지 않는다 */
+  grantCommands(taskId: string, grants: CommandGrant[]) {
+    const list = this.commandGrants.get(taskId) ?? [];
+    this.commandGrants.set(taskId, [...list, ...grants]);
+  }
+
+  /** 실행 목록 승인에 맞는 명령인지(글자·위치·스크립트 지문이 모두 같아야 함) */
+  private commandGranted(command: string, cwd: string): CommandGrant | null {
+    const id = this.task?.id;
+    const list = id ? this.commandGrants.get(id) : undefined;
+    if (!list?.length) return null;
+    const cmd = command.trim();
+    const here = path.resolve(cwd);
+    for (const g of list) {
+      if (g.command !== cmd || path.resolve(g.cwd) !== here) continue;
+      if (g.files.every((f) => fileFingerprint(f.path) === f.hash)) return g;
+    }
+    return null;
+  }
+
+  /** 실행 목록에 넣을 명령을 미리 판단한다(실제 실행 위치·팀원 여부 기준) */
+  previewCommand(command: string, cwd: string, isSub: boolean): StageDecision {
+    return this.decide('Bash', { command }, cwd, isSub, undefined, false);
+  }
+
+  /** 마지막으로 실행 목록 도구를 부른 사람(승인 카드의 "누가") */
+  lastProposer: { label: string; isSub: boolean } | null = null;
+
   /** 리더의 확인 승인으로 이번 과제 동안 이 위치들을 지우는 명령은 다시 묻지 않는다 */
   grantDeletes(taskId: string, absPaths: string[]) {
     const list = this.deleteGrants.get(taskId) ?? [];
@@ -1100,7 +1180,7 @@ export class LeaderGuard {
     this.activity('앱', `차단: ${whoLabel}가 ${where}를 열려다 막혔어요`);
   }
 
-  private decide(toolName: string, input: Record<string, unknown>, cwd: string, isSub: boolean, mcpServer?: { name: string; source: string }): StageDecision {
+  private decide(toolName: string, input: Record<string, unknown>, cwd: string, isSub: boolean, mcpServer?: { name: string; source: string }, useGrants = true): StageDecision {
     const { config, mission } = this.deps;
     const ext = decideConnectorTool(config, mission, toolName, input, mcpServer);
     if (ext) {
@@ -1134,6 +1214,11 @@ export class LeaderGuard {
     if (d.type === 'ask' && d.ask?.kind === 'delete' && d.ask.bash && d.ask.fileOpsOnly && d.ask.paths?.length) {
       const g = this.deleteGranted(d.ask.paths);
       if (g) return { type: 'allow', reason: `리더 확인 승인으로 미리 허락된 삭제: ${g.map(displayPath).join(', ')}` };
+    }
+    // 실행 목록으로 미리 승인받은 명령: 글자·실행 위치·스크립트 내용이 모두 같을 때만(실제 실행 위치를 아는 훅에서만 본다)
+    if (useGrants && d.type === 'ask' && d.ask?.bash && RUN_PLAN_KINDS.has(d.ask.kind) && typeof input.command === 'string') {
+      const g = this.commandGranted(input.command, cwd);
+      if (g) return { type: 'allow', reason: `실행 목록 승인으로 미리 허락된 명령${g.files.length ? ` (스크립트 ${g.files.length}개 내용 같음)` : ''}` };
     }
     return d;
   }
@@ -1211,7 +1296,9 @@ export class LeaderGuard {
   readonly canUseTool: CanUseTool = async (toolName, input, options) => {
     const whoInfo = this.who(options.agentID);
     const cwd = this.deps.mission.targets[0] ?? this.deps.mission.home;
-    const d = this.decide(toolName, input, cwd, whoInfo.isSub, options.mcpServer);
+    // 실행 목록 승인은 실제 실행 위치를 아는 훅(PreToolUse)에서만 맞춰 본다. 여기서는 위치를 몰라 쓰지 않는다
+    const d = this.decide(toolName, input, cwd, whoInfo.isSub, options.mcpServer, false);
+    if (d.type === 'allow' && toolName === PROPOSE_COMMANDS_TOOL) this.lastProposer = { label: whoInfo.label, isSub: whoInfo.isSub };
     if (d.type === 'allow') {
       this.record(whoInfo.logName, toolName, 'allow', d.reason);
       return { behavior: 'allow', updatedInput: d.updatedInput ?? input };
@@ -1241,6 +1328,7 @@ export class LeaderGuard {
               const toolInput = (input.tool_input && typeof input.tool_input === 'object' ? input.tool_input : {}) as Record<string, unknown>;
               const cwd = input.cwd || mission.targets[0] || mission.home;
               const d = this.decide(input.tool_name, toolInput, cwd, isSub, input.mcp_server);
+              if (d.type === 'allow' && input.tool_name === PROPOSE_COMMANDS_TOOL) this.lastProposer = { label: whoInfo.label, isSub };
               // 스킬을 꺼내 쓰는지: 스킬 보관함의 SKILL.md 를 읽으면 대화창에 알린다
               if (d.type === 'allow' && input.tool_name === 'Read' && typeof toolInput.file_path === 'string') {
                 const sk = /\/skills\/([a-z0-9][a-z0-9-]{1,60})\/SKILL\.md$/.exec(toolInput.file_path);

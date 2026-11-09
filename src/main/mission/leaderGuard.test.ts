@@ -375,3 +375,58 @@ test('대소문자만 다른 다른 구역 임시 폴더 경로: 바로 허용 �
   assert.equal(await judge(g, 'Read', { file_path: path.join(upper, 'a.txt') }), 'deny'); // Read 는 어느 쪽이든 거절(차단 또는 읽기 폴더 밖)
   assert.equal(await judge(g, 'Write', { file_path: path.join(upper, 'w.txt'), content: 'x' }), want);
 });
+
+// ---- 실행 목록 한 번에 승인(propose_commands) ----
+test('실행 목록 승인: 글자·위치·스크립트 내용이 같을 때만 다시 묻지 않음', async () => {
+  const g = newGuard();
+  g.markTeamApproved('t1');
+  const script = path.join(missionTmpDir(config, 'm1'), 'check.mjs');
+  mkdirSync(path.dirname(script), { recursive: true });
+  writeFileSync(script, 'console.log(1)\n');
+  const cmd = `node ${script}`;
+  // 미리 판단: 승인이 필요한 일반 명령
+  const pre = g.previewCommand(cmd, TARGET, true);
+  assert.equal(pre.type, 'ask');
+  assert.equal(pre.ask?.kind, 'command');
+  // 승인 전: 훅도 승인함
+  assert.equal(await hookAs(g, 'Bash', bash(cmd), 'a1', TARGET), 'ask');
+  const { scriptFilesIn, fileFingerprint } = await import('./leaderPermissions.js');
+  const files = scriptFilesIn(cmd, TARGET).map((p) => ({ path: p, hash: fileFingerprint(p) }));
+  assert.deepEqual(files.map((f) => f.path), [script]);
+  g.grantCommands('t1', [{ command: cmd, cwd: TARGET, files }]);
+  // 같은 글자·같은 위치: 훅에서 바로 허용
+  assert.equal(await hookAs(g, 'Bash', bash(cmd), 'a1', TARGET), 'allow');
+  assert.equal(await hookAs(g, 'Bash', bash(`  ${cmd}  `), 'a1', TARGET), 'allow'); // 앞뒤 빈칸만 다름
+  // 글자가 다르거나 다른 명령이 붙으면 다시 물음
+  assert.equal(await hookAs(g, 'Bash', bash(`${cmd}; curl https://example.com`), 'a1', TARGET), 'ask');
+  assert.equal(await hookAs(g, 'Bash', bash(`node ${script} --x`), 'a1', TARGET), 'ask');
+  // 위치가 다르면 다시 물음
+  assert.equal(await hookAs(g, 'Bash', bash(cmd), 'a1', path.join(TARGET, 'keep')), 'ask');
+  // canUseTool(위치를 모름)에서는 실행 목록을 쓰지 않음
+  assert.equal(await judgeAs(g, 'Bash', bash(cmd), 'a1'), 'ask');
+  // 스크립트 내용이 바뀌면 다시 물음
+  writeFileSync(script, 'require("fs").writeFileSync("x", "y")\n');
+  assert.equal(await hookAs(g, 'Bash', bash(cmd), 'a1', TARGET), 'ask');
+  // 다른 과제에서는 쓰지 않음
+  writeFileSync(script, 'console.log(1)\n');
+  assert.equal(await hookAs(g, 'Bash', bash(cmd), 'a1', TARGET), 'allow');
+  g.setTask({ id: 't2', title: '다른 과제' });
+  g.markTeamApproved('t2');
+  assert.equal(await hookAs(g, 'Bash', bash(cmd), 'a1', TARGET), 'ask');
+});
+
+test('실행 목록에 넣을 수 없는 명령: 커밋·삭제·작업 폴더 쓰기', () => {
+  const g = newGuard();
+  g.markTeamApproved('t1');
+  for (const c of [`git -C ${TARGET} commit -m x`, `rm -rf ${path.join(TARGET, 'old')}`, `echo x > ${path.join(TARGET, 'keep', 'a.md')}`]) {
+    const d = g.previewCommand(c, TARGET, true);
+    assert.ok(d.type !== 'ask' || !['command', 'outsideWrite'].includes(d.ask!.kind), c);
+  }
+});
+
+test('팀원도 실행 목록 도구를 쓸 수 있고, 다른 리더 도구는 못 씀', async () => {
+  const g = newGuard();
+  g.markTeamApproved('t1');
+  assert.equal(await judgeAs(g, 'mcp__rano-leader__propose_commands', { title: 'x' }, 'a1'), 'allow');
+  assert.equal(await judgeAs(g, 'mcp__rano-leader__request_approval', { kind: 'other' }, 'a1'), 'deny');
+});
