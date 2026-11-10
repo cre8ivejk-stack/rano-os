@@ -180,7 +180,9 @@ export class OrgView {
     const top = el('div', 'org-card-top');
     top.appendChild(el('h4', 'org-card-title', m.name));
     top.appendChild(el('span', m.zone === 'work' ? 'kind' : 'kind org-zone-personal', `${zoneInfo(m.zone).label} 구역`));
-    top.appendChild(el('span', m.writeMode === 'approval' ? 'kind kind-write' : 'kind', m.writeMode === 'approval' ? '승인함을 거쳐 쓰기' : '읽기 전용'));
+    top.appendChild(
+      el('span', m.writeMode === 'readOnly' ? 'kind' : 'kind kind-write', m.writeMode === 'trusted' ? '믿는 미션' : m.writeMode === 'approval' ? '승인함을 거쳐 쓰기' : '읽기 전용'),
+    );
     if (m.archived) top.appendChild(el('span', 'badge result-expired', '보관함'));
     card.appendChild(top);
     if (m.goal) card.appendChild(el('p', 'org-card-goal', m.goal));

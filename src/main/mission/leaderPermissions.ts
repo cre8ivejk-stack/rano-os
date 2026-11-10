@@ -690,6 +690,38 @@ export function decideConnectorTool(
   };
 }
 
+// ------------------------------------------------------------------
+// 믿는 미션 (2026-11-10 사용자 결정)
+// 작업 리포 안 고치기·시험·코드 실행은 승인 없이. 커밋·push·삭제·DB·배포·리포 밖·인터넷 전송·프로그램 끄기·권한 바꾸기는 그대로 승인함
+// ------------------------------------------------------------------
+
+/** 믿는 미션이라도 승인함으로 보내는 판단 근거(리포 밖, 비밀, git 바꾸기, 관리자 권한, 경로를 알 수 없음, 실행 환경 바꾸기 등) */
+const TRUST_ASK_REASON = /밖|비밀|차단|git|sudo|권한|바로가기|알 수 없|해석하지|너무 깊|압축|\bPATH\b|GIT_|NODE_OPTIONS|LD_|DYLD_|BASH_ENV|\bENV\b|IFS/;
+/** 믿는 미션이라도 승인함으로 보내는 위험 표시 */
+const TRUST_ASK_RISKS = new Set(['kill', 'network', 'mode', 'delete']);
+/** 리포 안이라도 승인함으로 보내는 곳: git 내부(.git: 훅·설정), 에이전트 설정(.claude) */
+const TRUST_ASK_PATH = /(^|\/)\.(git|claude)(\/|$)/;
+
+/** 믿는 미션에서 이 경로 쓰기를 바로 허용하는지: 원래·실제 경로 모두 작업 리포 안이고 .git·.claude 밖 */
+export function trustedRepoPath(mission: MissionConfig, abs: string): boolean {
+  const cands = [...new Set([abs, real(abs)])];
+  return cands.every((c) => mission.targets.some((t) => inAny(c, [t]) && !TRUST_ASK_PATH.test(path.relative(path.resolve(t), c))));
+}
+
+/** 믿는 미션에서 이 명령을 바로 허용하는지 (classifyBash 결과로 판단). scratch: 리포 말고 바로 쓸 수 있는 라노 공간(이 미션 임시 폴더·이 과제 시안 폴더) */
+export function trustedBash(
+  mission: MissionConfig,
+  kind: BashKind,
+  b: Pick<BashDecision, 'reasons' | 'writePaths' | 'risks' | 'linkSources' | 'modeChange'>,
+  scratch: string[] = [],
+): boolean {
+  if (kind !== 'write' && kind !== 'command') return false; // 커밋·삭제·DB·배포·리포 밖 쓰기는 그대로
+  if (b.modeChange || (b.linkSources ?? []).length) return false;
+  if ((b.risks ?? []).some((r) => TRUST_ASK_RISKS.has(r.kind))) return false;
+  if (b.reasons.some((r) => TRUST_ASK_REASON.test(r))) return false;
+  return b.writePaths.every((p) => trustedRepoPath(mission, p) || scratch.some((s) => insideBoth(p, s)));
+}
+
 /** 3단계 판단. 승인함을 기다리는 일은 하지 않는다(type 'ask' 로 돌려줌). */
 export function decideApprovalStage(
   config: RanoConfig,
@@ -697,9 +729,11 @@ export function decideApprovalStage(
   toolName: string,
   input: Record<string, unknown>,
   cwd: string,
-  actor: { isSubagent: boolean; teamApproved: boolean; draftsDir?: string; planBlocked?: boolean; memberModels?: Record<string, 'opus' | 'sonnet'> },
+  actor: { isSubagent: boolean; teamApproved: boolean; draftsDir?: string; planBlocked?: boolean; memberModels?: Record<string, 'opus' | 'sonnet'>; trustRepo?: boolean },
   mcpServer?: { name: string; source: string },
 ): StageDecision {
+  // 믿는 미션 규칙은 미션이 믿는 미션이고, 기획 결정 전·읽기만 하는 과제가 아닐 때만(부르는 쪽이 actor.trustRepo 로 알려 줌)
+  const trust = !!(actor.trustRepo && mission.trustRepo && !actor.planBlocked);
   // 읽기·검색: 2단계와 같음
   if (READ_TOOLS.has(toolName)) {
     const d = decideLeaderTool(config, mission, toolName, input, cwd, actor.isSubagent);
@@ -743,6 +777,7 @@ export function decideApprovalStage(
     if (mission.directWriteDirs.length && insideAll(mission.directWriteDirs)) {
       return { type: 'allow', reason: `바로 쓰기 폴더 안: ${abs}` };
     }
+    if (trust && trustedRepoPath(mission, abs)) return { type: 'allow', reason: `믿는 미션, 작업 리포 안 쓰기(${toolName}): ${abs}` };
     const preview =
       toolName === 'Edit'
         ? `바꾸기 전(앞부분):\n${redactPreview(String(input.old_string ?? ''), 15, 700)}\n\n바꾼 뒤(앞부분):\n${redactPreview(String(input.new_string ?? ''), 15, 700)}`
@@ -820,6 +855,24 @@ export function decideApprovalStage(
     // 명령 결과를 이 미션 임시 폴더에 담기만 하는 명령(예: npm test > ~/rano/runs/tmp/<미션>/x.txt)은 허용. 쓰기 말고 다른 판단 근거가 있으면 승인함으로
     if (kind === 'outsideWrite' && onlyIn(tmpDir))
       return { type: 'allow', reason: `미션 임시 폴더에 결과 담기: ${b.writePaths.map(displayPath).join(', ')}` };
+    if (trust) {
+      // 믿는 미션: 이 미션 임시 폴더·이 과제 시안 폴더도 작업 폴더처럼 보고 다시 판단한다(결과 담기·시안 코드 실행)
+      const scratch = [tmpDir, ...(actor.draftsDir ? [actor.draftsDir] : [])];
+      const bt = classifyBash(command, {
+        cwd,
+        targets: [...mission.targets.map((t) => path.resolve(t)), ...scratch],
+        readRoots: roots,
+        isBlocked: (p) => !!blockedHit(config, p),
+        secretsUnder: (dir) => secretsUnderDir(config, dir),
+        allowChecks: true,
+        realPath: (p) => real(p),
+        isDir: isDirPath,
+        hasLinksUnder,
+      });
+      if (bt.decision === 'allow') return { type: 'allow', reason: `믿는 미션, 읽기·확인 명령: ${bt.reasons.join('; ')}` };
+      if (bt.decision === 'ask' && trustedBash(mission, bt.kind ?? 'command', bt, scratch))
+        return { type: 'allow', reason: `믿는 미션, 작업 폴더 안 명령(${bt.kind ?? 'command'}): ${bt.reasons.join('; ')}` };
+    }
     const files = b.writePaths.length ? `\n바뀔 수 있는 파일: ${b.writePaths.map(displayPath).join(', ')}${realPathNote(mission, b.writePaths)}` : '';
     const modeNote = b.modeChange ? '\n주의: 파일 권한(실행 권한 등)을 바꾸는 명령이에요. 시안 폴더 안이라도 확인을 받아요' : '';
     const linkNote = b.linkSources?.length ? `\n주의: 바로가기(링크)를 만드는 명령이에요. 가리키는 곳: ${[...new Set(b.linkSources)].map(displayPath).join(', ')}` : '';
@@ -1201,7 +1254,7 @@ export class LeaderGuard {
       toolName,
       input,
       cwd,
-      { isSubagent: isSub, teamApproved: this.isTeamApproved(), draftsDir: this.draftsDir(), planBlocked: this.planBlocked(), memberModels: this.memberModels() },
+      { isSubagent: isSub, teamApproved: this.isTeamApproved(), draftsDir: this.draftsDir(), planBlocked: this.planBlocked(), memberModels: this.memberModels(), trustRepo: !this.isReadOnlyTask() },
       mcpServer,
     );
     // 기획 결정 전에는 작업 폴더를 바꾸는 명령(커밋·삭제·쓰기 명령 등)도 승인함에 올리지 않고 막는다

@@ -131,6 +131,7 @@ export function loadConfig(rootDir: string = defaultRootDir()): RanoConfig {
         reviewerRoles: m.reviewerRoles ?? [],
         stagePolicy: m.stagePolicy === 'approval' ? 'approval' : 'readOnly',
         directWriteDirs: (m.directWriteDirs ?? []).map(resolve),
+        trustRepo: m.stagePolicy === 'approval' && m.trustRepo === true,
         connectors: Array.isArray(m.connectors) ? m.connectors.filter((x: unknown) => typeof x === 'string') : [],
       }),
     ),

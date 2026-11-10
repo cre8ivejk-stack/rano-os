@@ -494,7 +494,7 @@ interface MissionDraft {
   target: string;
   readonlyRefs: string[];
   blocked: string[];
-  writeMode: 'readOnly' | 'approval';
+  writeMode: 'readOnly' | 'approval' | 'trusted';
   writeConfirmed: boolean;
   roles: string[];
   reviewerRoles: string[];
@@ -508,7 +508,7 @@ interface MissionSummary {
   target: string;
   readonlyRefs: string[];
   blocked: string[];
-  writeMode: 'readOnly' | 'approval';
+  writeMode: 'readOnly' | 'approval' | 'trusted';
   roles: string[];
   reviewerRoles: string[];
   archived: boolean;

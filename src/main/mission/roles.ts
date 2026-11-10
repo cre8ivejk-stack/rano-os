@@ -104,6 +104,20 @@ export function approvalNote(tmpDir: string): string {
 - 결과는 쉬운 한국어로, 근거가 된 파일 위치와 함께 보고한다.`;
 }
 
+/** 믿는 미션 팀원 안내: 작업 폴더 안 고치기·시험·코드 실행은 바로 된다 */
+export function trustedNote(tmpDir: string): string {
+  return `
+
+## 지금 권한 (믿는 미션)
+- 읽기·검색, 작업 폴더 안 파일 고치기·만들기(Write·Edit·Bash), 타입 검사·시험·린트, 작업 폴더 안 스크립트 실행은 승인 없이 바로 된다. 묶음 승인·실행 목록 없이 바로 고치고 바로 확인한다.
+- 그대로 승인함을 거치는 일: 커밋·push·가지 바꾸기 등 git 기록 바꾸기, 지우기, DB 바꾸기, 배포, 작업 폴더 밖 쓰기, 인터넷으로 보내기(curl 등), 프로그램 끄기, 권한 바꾸기, .git·.claude 폴더 고치기. 이런 일은 리포 리더가 따로 지시한 경우에만 하고, 직전에 무엇을 왜 하는지 쉬운 한국어로 한두 줄 먼저 말한다.
+- 명령 결과는 작업 폴더 안이나 이 미션 임시 폴더 ${tmpDir} 에 담는다. /tmp, $TMPDIR, mktemp 는 쓰지 않는다.
+- 운영 DB·운영 서비스에 접속하는 스크립트는 만들거나 돌리지 않는다. 필요하면 결과 보고에 적는다.
+- 서로 상관없는 읽기·검색은 한 번에 여러 도구를 함께 불러 동시에 한다.
+- 비밀 키·인증 파일, .env 계열 파일은 열지 않는다. 앱이 막는다.
+- 결과는 쉬운 한국어로, 근거가 된 파일 위치와 함께 보고한다.`;
+}
+
 /** 역할 파일을 mission.roleDirs 앞에서부터 찾아 처음 있는 것의 경로와 내용을 돌려준다. 없으면 null. */
 export function findRoleFile(mission: MissionConfig, role: string): { file: string; text: string } | null {
   const dirs = mission.roleDirs?.length ? mission.roleDirs : [mission.rolesDir];
@@ -146,7 +160,7 @@ export function loadRoles(config: RanoConfig, mission: MissionConfig): Record<st
     }
     out[role] = {
       description: parsed.description,
-      prompt: parsed.body + (readOnly ? READ_ONLY_NOTE : approvalNote(missionTmpDir(config, mission.id))) + (readOnly ? '' : skillPromptFor(role) + skillCatalog(roleSkills()[role] ?? [])),
+      prompt: parsed.body + (readOnly ? READ_ONLY_NOTE : mission.trustRepo ? trustedNote(missionTmpDir(config, mission.id)) : approvalNote(missionTmpDir(config, mission.id))) + (readOnly ? '' : skillPromptFor(role) + skillCatalog(roleSkills()[role] ?? [])),
       tools,
       // 라노 데이터 폴더의 역할 파일에 model: sonnet/opus 가 있으면 그 모델, 아니면 라노 설정. 과제마다 고른 모델은 팀원을 부를 때 덮어쓴다
       model: modelFor(config, isOwnRoleFile(config, found.file) ? parsed.model : 'default'),

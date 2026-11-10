@@ -14,6 +14,7 @@ import type {
   RoleInfo,
   Zone,
   MissionDoc,
+  WriteMode,
 } from '../../shared/types.js';
 import { expandHome } from '../config.js';
 import { inspectFolder, type InspectContext } from './folderInspect.js';
@@ -39,7 +40,9 @@ export interface OrgAdminApi {
   missionDocs(id: string): MissionDoc[];
 }
 
-const WRITE_LABEL = { readOnly: '읽기만', approval: '승인함을 거쳐 쓰기' } as const;
+const WRITE_LABEL = { readOnly: '읽기만', approval: '승인함을 거쳐 쓰기', trusted: '믿는 미션(리포 안 고치기는 묻지 않기)' } as const;
+/** rano.json 미션 → 쓰기 방식 */
+const writeModeOf = (m: any): WriteMode => (m?.stagePolicy !== 'approval' ? 'readOnly' : m.trustRepo === true ? 'trusted' : 'approval');
 const zoneOf = (z: unknown): Zone => (z === 'personal' ? 'personal' : 'work');
 
 export function createOrgAdmin(deps: OrgAdminDeps): OrgAdminApi {
@@ -101,7 +104,7 @@ export function createOrgAdmin(deps: OrgAdminDeps): OrgAdminApi {
       target,
       readonlyRefs: (m.readonlyRefs ?? []).map(resolve),
       blocked: target ? blockedOf(raw).filter((b) => !b.startsWith('**') && isInside(b, target)) : [],
-      writeMode: m.stagePolicy === 'approval' ? 'approval' : 'readOnly',
+      writeMode: writeModeOf(m),
       roles: Array.isArray(m.roles) ? [...m.roles] : [],
       reviewerRoles: Array.isArray(m.reviewerRoles) ? [...m.reviewerRoles] : [],
       archived,
@@ -129,9 +132,9 @@ export function createOrgAdmin(deps: OrgAdminDeps): OrgAdminApi {
     const ctx = inspectCtx(raw, editingId);
     const target = await inspectFolder(ctx, draft.target, 'target', zone);
     if (!target.ok) return { error: `작업 폴더를 쓸 수 없어요: ${target.problems.join(', ')}` };
-    if (draft.writeMode !== 'readOnly' && draft.writeMode !== 'approval') return { error: '쓰기 방식을 골라 주세요' };
-    if (draft.writeMode === 'approval' && draft.writeConfirmed !== true)
-      return { error: '승인함을 거쳐 쓰기를 고르려면 확인 창에서 확인해 주세요' };
+    if (!['readOnly', 'approval', 'trusted'].includes(draft.writeMode)) return { error: '쓰기 방식을 골라 주세요' };
+    if (draft.writeMode !== 'readOnly' && draft.writeConfirmed !== true)
+      return { error: `${WRITE_LABEL[draft.writeMode]}를 고르려면 확인 창에서 확인해 주세요` };
 
     const roleList = Array.isArray(draft.roles) ? [...new Set(draft.roles.map(String))] : [];
     const reviewers = Array.isArray(draft.reviewerRoles) ? [...new Set(draft.reviewerRoles.map(String))] : [];
@@ -213,7 +216,10 @@ export function createOrgAdmin(deps: OrgAdminDeps): OrgAdminApi {
     lines.push('');
     lines.push(`## 권한 (${today()} 앱 조직 화면에서 정함)`);
     lines.push('- 읽기·검색은 바로 한다');
-    if (d.writeMode === 'approval') {
+    if (d.writeMode === 'trusted') {
+      lines.push('- **믿는 미션:** 작업 폴더 안 파일 고치기·시험·코드 실행은 묻지 않고 한다');
+      lines.push('- 커밋·push·삭제·DB·배포·작업 폴더 밖 쓰기·인터넷 전송은 승인함을 거친다');
+    } else if (d.writeMode === 'approval') {
       lines.push('- **쓰기는 파일 하나까지 모두 승인함에서 사용자 승인을 받은 뒤** 한다');
       lines.push('- 커밋·push·삭제·명령 실행은 승인함을 거친다');
     } else {
@@ -244,8 +250,8 @@ export function createOrgAdmin(deps: OrgAdminDeps): OrgAdminApi {
         ? ''
         : [
             '읽기',
-            ...(ri.canWrite ? [d.writeMode === 'approval' ? '파일 쓰기(승인함)' : '파일 쓰기(지금은 읽기만)'] : []),
-            ...(ri.canRun ? [d.writeMode === 'approval' ? '명령(승인함)' : '명령(지금은 읽기만)'] : []),
+            ...(ri.canWrite ? [d.writeMode === 'trusted' ? '파일 쓰기(작업 폴더 안은 바로)' : d.writeMode === 'approval' ? '파일 쓰기(승인함)' : '파일 쓰기(지금은 읽기만)'] : []),
+            ...(ri.canRun ? [d.writeMode === 'trusted' ? '명령(커밋·삭제·배포 등은 승인함)' : d.writeMode === 'approval' ? '명령(승인함)' : '명령(지금은 읽기만)'] : []),
           ].join(', ');
       const tag = d.reviewerRoles.includes(r) ? '[검수] ' : '';
       lines.push(`| ${r} | ${cell(tag + (ri?.description ?? ''))} | ${tools} |`);
@@ -298,7 +304,8 @@ export function createOrgAdmin(deps: OrgAdminDeps): OrgAdminApi {
         rolesDir: `${homeRel}/roles`,
         roles: roleList,
         reviewerRoles: reviewers,
-        stagePolicy: draft.writeMode,
+        stagePolicy: draft.writeMode === 'readOnly' ? 'readOnly' : 'approval',
+        ...(draft.writeMode === 'trusted' ? { trustRepo: true } : {}),
         _설명: `앱 조직 화면에서 만듦 (${today()})`,
         directWriteDirs: [],
       });
@@ -320,7 +327,11 @@ export function createOrgAdmin(deps: OrgAdminDeps): OrgAdminApi {
         );
         await writeFile(path.join(home, 'memory', '진행업무.md'), '# 진행업무\n\n', 'utf-8');
         const decision =
-          draft.writeMode === 'approval' ? `- ${today()} 사용자가 앱에서 승인함을 거친 쓰기를 허용\n` : '';
+          draft.writeMode === 'trusted'
+            ? `- ${today()} 사용자가 앱에서 믿는 미션(작업 폴더 안 고치기는 묻지 않기)을 허용\n`
+            : draft.writeMode === 'approval'
+              ? `- ${today()} 사용자가 앱에서 승인함을 거친 쓰기를 허용\n`
+              : '';
         await writeFile(path.join(home, 'memory', '결정로그.md'), `# 결정로그\n\n${decision}`, 'utf-8');
         await writeFile(path.join(home, 'roles', '.gitkeep'), '', 'utf-8');
       } catch {
@@ -391,7 +402,9 @@ export function createOrgAdmin(deps: OrgAdminDeps): OrgAdminApi {
       m.name = name;
       m.goal = draft.goal?.trim() ?? '';
       m.readonlyRefs = refsNew;
-      m.stagePolicy = draft.writeMode;
+      m.stagePolicy = draft.writeMode === 'readOnly' ? 'readOnly' : 'approval';
+      if (draft.writeMode === 'trusted') m.trustRepo = true;
+      else delete m.trustRepo;
       m.roles = roleList;
       m.reviewerRoles = reviewers;
       const added = addBlocked(nextRaw, draft.blocked);

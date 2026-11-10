@@ -211,6 +211,7 @@ export interface MissionConfig {
   stagePolicy: 'readOnly' | 'approval'; // 2단계 readOnly: 읽기만. 3단계 approval: 쓰기는 승인 규칙대로
   connectors?: string[]; // 이 미션이 쓰는 외부 연결 이름
   directWriteDirs: string[]; // 3단계: 승인 없이 바로 쓸 수 있는 폴더(절대 경로). 비어 있으면 모든 쓰기가 승인함 (2026-11-04 사용자 결정: 비움)
+  trustRepo?: boolean; // 믿는 미션: 작업 리포 안 고치기·시험·코드 실행은 승인 없이. 커밋·push·삭제·DB·배포·리포 밖·인터넷 전송은 그대로 승인함 (stagePolicy approval 일 때만)
   // rano.json 에 archived: true 인 미션은 loadConfig 가 config.missions 에서 뺀다(현황판·리더 없음). 조직 화면은 원본에서 읽는다.
 }
 
@@ -780,6 +781,9 @@ export interface RoleDraft {
 }
 
 /** 미션 만들기·고치기 입력 */
+/** 쓰기 방식: 읽기만 · 파일 하나까지 승인함 · 믿는 미션(리포 안 고치기·시험은 묻지 않음) */
+export type WriteMode = 'readOnly' | 'approval' | 'trusted';
+
 export interface MissionDraft {
   name: string;
   goal: string; // 헌장 '목표'에 들어감
@@ -787,8 +791,8 @@ export interface MissionDraft {
   target: string; // 작업 폴더 절대 경로 (orgInspect ok 인 것)
   readonlyRefs: string[];
   blocked: string[]; // 추가로 막을 파일·폴더 절대 경로 (secretCandidates 에서 고른 것 등)
-  writeMode: 'readOnly' | 'approval'; // approval = 승인함을 거쳐 쓰기
-  writeConfirmed: boolean; // approval 이면 사용자가 확인 창에서 확인했는지 (false 면 본체가 거절)
+  writeMode: WriteMode; // approval = 승인함을 거쳐 쓰기, trusted = 리포 안 고치기는 묻지 않기
+  writeConfirmed: boolean; // approval·trusted 이면 사용자가 확인 창에서 확인했는지 (false 면 본체가 거절)
   roles: string[];
   reviewerRoles: string[]; // roles 의 일부. 작업 담당(검수 아닌 역할) 1개 이상 + 검수 1개 이상이어야 함
 }
@@ -801,7 +805,7 @@ export interface MissionSummary {
   target: string; // 첫 작업 폴더 절대 경로
   readonlyRefs: string[];
   blocked: string[]; // 이 미션 작업 폴더 안에 걸린 차단 항목
-  writeMode: 'readOnly' | 'approval';
+  writeMode: WriteMode;
   roles: string[];
   reviewerRoles: string[];
   archived: boolean;

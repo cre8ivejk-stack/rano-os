@@ -3,6 +3,9 @@
 import { el, zoneInfo } from './dom.js';
 import { SOURCE_LABEL, abilityText, button, checkbox, field, openModal, tildify, type Notice } from './orgCommon.js';
 
+type WriteModeR = 'readOnly' | 'approval' | 'trusted';
+const WRITE_TITLE: Record<WriteModeR, string> = { readOnly: '읽기 전용', approval: '승인함을 거쳐 쓰기', trusted: '믿는 미션 (폴더 안은 묻지 않기)' };
+
 type Step = 1 | 2 | 3 | 4 | 5;
 const STEP_LABELS: Record<Step, string> = { 1: '이름·목표', 2: '작업 폴더', 3: '권한', 4: '팀', 5: '확인' };
 const STEPS: Step[] = [1, 2, 3, 4, 5];
@@ -31,7 +34,7 @@ export class MissionWizard {
   private blocked = new Set<string>();
   private refs: RefFolder[] = [];
   private refProblem = '';
-  private writeMode: 'readOnly' | 'approval' = 'readOnly';
+  private writeMode: WriteModeR = 'readOnly';
   private writeConfirmed = false;
   private roles = new Set<string>();
   private reviewers = new Set<string>();
@@ -61,8 +64,8 @@ export class MissionWizard {
     this.refs = (m?.readonlyRefs ?? []).map((p) => ({ path: p, display: tildify(p), warnings: [] }));
     this.refProblem = '';
     this.writeMode = m?.writeMode ?? 'readOnly';
-    // 이미 "승인함을 거쳐 쓰기"로 확인을 받은 미션은 그대로 두면 다시 묻지 않는다.
-    this.writeConfirmed = m?.writeMode === 'approval';
+    // 이미 "승인함을 거쳐 쓰기"·"믿는 미션"으로 확인을 받은 미션은 그대로 두면 다시 묻지 않는다.
+    this.writeConfirmed = m?.writeMode === 'approval' || m?.writeMode === 'trusted';
     this.roles = new Set(m?.roles ?? []);
     this.reviewers = new Set(m?.reviewerRoles ?? []);
     this.submitting = false;
@@ -130,7 +133,7 @@ export class MissionWizard {
       if (!this.target.ok) return '이 폴더는 고를 수 없어요. 다른 폴더를 골라 주세요.';
       return '';
     }
-    if (step === 3) return this.writeMode === 'approval' && !this.writeConfirmed ? '"승인함을 거쳐 쓰기"는 확인 창에서 허용해야 해요.' : '';
+    if (step === 3) return this.writeMode !== 'readOnly' && !this.writeConfirmed ? `"${WRITE_TITLE[this.writeMode]}"는 확인 창에서 허용해야 해요.` : '';
     if (step === 4) {
       const picked = [...this.roles];
       const usable = new Set([...this.zoneRoles().map((r) => r.name), ...this.pendingRoles.keys()]);
@@ -157,7 +160,7 @@ export class MissionWizard {
       readonlyRefs: this.refs.map((r) => r.path),
       blocked: [...this.blocked],
       writeMode: this.writeMode,
-      writeConfirmed: this.writeMode === 'approval' && this.writeConfirmed,
+      writeConfirmed: this.writeMode !== 'readOnly' && this.writeConfirmed,
       roles,
       reviewerRoles: roles.filter((r) => this.reviewers.has(r)),
     };
@@ -418,7 +421,7 @@ export class MissionWizard {
         this.target = f;
         this.blockOptions = [...f.secretCandidates];
         this.blocked = new Set(f.secretCandidates);
-        if (changed && this.writeMode === 'approval') this.writeConfirmed = false;
+        if (changed && this.writeMode !== 'readOnly') this.writeConfirmed = false;
       } else {
         // 고치기: 이미 막아 둔 것 + 새로 보이는 후보를 함께 보여 준다(이미 막은 것만 체크).
         this.target = f;
@@ -465,7 +468,7 @@ export class MissionWizard {
     body.appendChild(el('p', 'pane-sub', '팀원이 작업 폴더에서 무엇을 할 수 있는지 정해요.'));
     const group = el('fieldset', 'org-radio-group');
     group.appendChild(el('legend', 'org-label', '쓰기 방식'));
-    const mk = (value: 'readOnly' | 'approval', title: string, desc: string) => {
+    const mk = (value: WriteModeR, title: string, desc: string) => {
       const label = el('label', `org-radio${this.writeMode === value ? ' on' : ''}`);
       const input = el('input');
       input.type = 'radio';
@@ -484,42 +487,55 @@ export class MissionWizard {
           this.writeConfirmed = false;
           this.render();
         } else {
-          void this.confirmWrite();
+          void this.confirmWrite(value);
         }
       });
       group.appendChild(label);
     };
     mk('readOnly', '읽기 전용 (권장)', '팀원은 파일을 읽고 보고만 해요. 아무것도 바꾸지 않아요.');
     mk('approval', '승인함을 거쳐 쓰기', '파일 하나를 바꿀 때마다 승인함에서 내 승인을 받은 뒤에만 바꿔요.');
+    mk('trusted', WRITE_TITLE.trusted, '작업 폴더 안에서 고치고 시험하는 일은 묻지 않고 바로 해요. 커밋·push·삭제·DB·배포·폴더 밖 쓰기는 승인함에서 물어요. 빨라요.');
     body.appendChild(group);
 
-    if (this.writeMode === 'approval') {
+    if (this.writeMode !== 'readOnly') {
+      const mode = this.writeMode;
       if (this.writeConfirmed) {
-        body.appendChild(el('p', 'org-ok', '쓰기를 허용했어요. 모든 쓰기·커밋·push·삭제는 승인함을 거쳐요.'));
+        body.appendChild(
+          el('p', 'org-ok', mode === 'trusted' ? '믿는 미션으로 허용했어요. 커밋·push·삭제·DB·배포·폴더 밖 쓰기는 승인함을 거쳐요.' : '쓰기를 허용했어요. 모든 쓰기·커밋·push·삭제는 승인함을 거쳐요.'),
+        );
       } else {
         const again = button('확인 창 열기', 'btn');
-        again.addEventListener('click', () => void this.confirmWrite());
+        again.addEventListener('click', () => void this.confirmWrite(mode));
         body.appendChild(el('p', 'org-warning', '쓰기는 확인 창에서 허용해야 쓸 수 있어요.'));
         body.appendChild(again);
       }
     }
   }
 
-  private async confirmWrite(): Promise<void> {
+  private async confirmWrite(mode: 'approval' | 'trusted'): Promise<void> {
     const t = this.target;
+    const lines =
+      mode === 'trusted'
+        ? [
+            '팀원이 작업 폴더 안 파일을 묻지 않고 바로 고치고, 시험·스크립트도 바로 돌려요.',
+            '커밋, push, 삭제, DB 바꾸기, 배포, 작업 폴더 밖 쓰기, 인터넷으로 보내기는 승인함을 거쳐요.',
+            '고친 내용은 커밋 전에 git 으로 되돌릴 수 있어요.',
+            '막아 둔 비밀 파일은 열 수 없어요.',
+          ]
+        : [
+            '팀원이 파일을 바꾸려면 파일 하나마다 승인함에서 승인을 받아야 해요.',
+            '커밋, push, 삭제도 모두 승인함을 거쳐요.',
+            '승인하지 않은 쓰기는 실행되지 않아요.',
+            '막아 둔 비밀 파일은 승인해도 열 수 없어요.',
+          ];
     const ok = await openModal({
-      title: '승인함을 거쳐 쓰기를 허용할까요?',
+      title: `${WRITE_TITLE[mode]}를 허용할까요?`,
       okText: '허용',
       okInitiallyEnabled: false,
       build: (body, setOk) => {
         body.appendChild(el('p', undefined, `작업 폴더: ${t ? t.display || tildify(t.path) : tildify(this.targetPath)}`));
         const ul = el('ul', 'org-plain-list org-bullets');
-        for (const line of [
-          '팀원이 파일을 바꾸려면 파일 하나마다 승인함에서 승인을 받아야 해요.',
-          '커밋, push, 삭제도 모두 승인함을 거쳐요.',
-          '승인하지 않은 쓰기는 실행되지 않아요.',
-          '막아 둔 비밀 파일은 승인해도 열 수 없어요.',
-        ])
+        for (const line of lines)
           ul.appendChild(el('li', undefined, line));
         body.appendChild(ul);
         if (t?.deploysOnPush) {
@@ -532,7 +548,7 @@ export class MissionWizard {
       },
     });
     if (ok) {
-      this.writeMode = 'approval';
+      this.writeMode = mode;
       this.writeConfirmed = true;
     } else {
       this.writeMode = 'readOnly';
@@ -623,12 +639,12 @@ export class MissionWizard {
     add('작업 폴더', this.target?.display || tildify(d.target));
     add('참고 폴더', d.readonlyRefs.length ? d.readonlyRefs.map(tildify).join('\n') : '없음');
     add('막아 둘 파일', d.blocked.length ? d.blocked.map(tildify).join('\n') : '없음');
-    add('쓰기 방식', d.writeMode === 'approval' ? '승인함을 거쳐 쓰기' : '읽기 전용');
+    add('쓰기 방식', WRITE_TITLE[d.writeMode]);
     const workers = d.roles.filter((r) => !d.reviewerRoles.includes(r));
     add('작업 담당', workers.join(', ') || '없음');
     add('검수', d.reviewerRoles.join(', ') || '없음');
     body.appendChild(rows);
-    if (this.target?.deploysOnPush && d.writeMode === 'approval') {
+    if (this.target?.deploysOnPush && d.writeMode !== 'readOnly') {
       body.appendChild(el('p', 'org-deploy', '이 리포는 push 하면 배포될 수 있어요. push 승인은 신중하게 해 주세요.'));
     }
 
