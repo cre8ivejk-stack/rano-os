@@ -260,8 +260,8 @@ test('카드 제목: 쉬운 말 종류 + 대상 이름', () => {
     ['npm ci', '명령 실행: npm'],
     ['FOO=1 ls', '명령 실행: ls'],
     ['pkill -f x && curl https://example.com', '프로그램 끄기: pkill x (그 밖에 1가지)'],
-    ['git push origin main', '시험 미션 리포에 변경 내용 기록(커밋)'],
-    ['echo x > docs/new.md', '시험 미션 리포 파일을 명령으로 바꾸기: new.md'],
+    ['git push origin main', '시험 미션 변경 내용 기록(커밋)'],
+    ['echo x > docs/new.md', '시험 미션 파일을 명령으로 바꾸기: new.md'],
     ['cp docs/a.md ~/Desktop/a.md', '작업 폴더 밖 파일을 명령으로 바꾸기: a.md'],
     ['vercel --prod', '배포·운영 설정 바꾸기: vercel'],
   ];

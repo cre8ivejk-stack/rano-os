@@ -92,6 +92,9 @@ export class OrgView {
     this.render();
   }
 
+  private section: 'missions' | 'roles' | 'skills' | 'connectors' = 'missions'; // 지금 보는 구역
+  private roleFilter = ''; // 인재풀: 이 미션이 쓰는 역할만(빈 값 = 전체)
+
   private setMode(mode: Mode): void {
     this.mode = mode;
     this.listRoot.hidden = mode !== 'list';
@@ -107,10 +110,33 @@ export class OrgView {
 
     const head = el('div', 'pane-head');
     head.appendChild(el('h2', 'pane-title', '조직'));
-    head.appendChild(el('p', 'pane-sub', '미션(리포 리더가 맡는 일)과 팀원 역할을 관리해요. 바꾼 내용은 앱을 다시 시작하면 반영돼요.'));
+    head.appendChild(el('p', 'pane-sub', '미션, 팀원 역할(인재풀), 스킬, 외부 연결을 관리해요. 바꾼 내용은 앱을 다시 시작하면 반영돼요.'));
     frag.appendChild(head);
 
     if (this.missions.some((m) => !m.active && !m.archived)) frag.appendChild(restartBox(this.notice));
+
+    // 구역 단추: 한 번에 한 구역만 보인다
+    const nav = el('div', 'org-nav');
+    nav.setAttribute('role', 'tablist');
+    const sections: [typeof this.section, string][] = [
+      ['missions', `미션 ${this.missions.filter((m) => !m.archived).length}`],
+      ['roles', `인재풀 ${this.roles.length}`],
+      ['skills', '스킬'],
+      ['connectors', '외부 연결'],
+    ];
+    for (const [id, label] of sections) {
+      const b = button(label, `org-nav-btn${this.section === id ? ' on' : ''}`);
+      b.setAttribute('role', 'tab');
+      b.setAttribute('aria-selected', String(this.section === id));
+      b.addEventListener('click', () => {
+        this.section = id;
+        this.render();
+        const pane = this.rootEl.closest('.pane');
+        if (pane) pane.scrollTop = 0;
+      });
+      nav.appendChild(b);
+    }
+    frag.appendChild(nav);
 
     // ---- 미션 ----
     const mSec = el('section', 'org-section');
@@ -135,11 +161,13 @@ export class OrgView {
       for (const m of sorted) mList.appendChild(this.renderMission(m));
     }
     mSec.appendChild(mList);
-    frag.appendChild(mSec);
+    if (this.section === 'missions') frag.appendChild(mSec);
+
+    // ---- 외부 연결 · 스킬 ----
+    if (this.section === 'connectors') frag.appendChild(connectorsSection(this.notice, () => this.missions, () => void this.load()));
+    if (this.section === 'skills') frag.appendChild(skillsSection(this.notice, () => this.roles.map((r) => r.name), () => void this.load()));
 
     // ---- 인재풀 ----
-    frag.appendChild(connectorsSection(this.notice, () => this.missions, () => void this.load()));
-    frag.appendChild(skillsSection(this.notice, () => this.roles.map((r) => r.name), () => void this.load()));
 
     const rSec = el('section', 'org-section');
     rSec.setAttribute('aria-labelledby', 'org-roles-title');
@@ -155,6 +183,23 @@ export class OrgView {
     });
     rHead.append(rTitle, addRole);
     rSec.appendChild(rHead);
+    // 미션으로 거르기: 그 미션이 쓰는 역할만
+    const users = this.missions.filter((m) => !m.archived && this.roles.some((r) => r.usedBy.includes(m.id)));
+    if (this.roleFilter && !users.some((m) => m.id === this.roleFilter)) this.roleFilter = '';
+    if (users.length > 1) {
+      const bar = el('div', 'done-filter');
+      const pick = (id: string, label: string) => {
+        const b = button(label, `done-filter-btn${this.roleFilter === id ? ' on' : ''}`);
+        b.addEventListener('click', () => {
+          this.roleFilter = id;
+          this.render();
+        });
+        bar.appendChild(b);
+      };
+      pick('', '전체');
+      for (const m of users) pick(m.id, m.name);
+      rSec.appendChild(bar);
+    }
     const rList = el('div', 'org-roles');
     if (!this.loaded) rList.appendChild(el('p', 'board-note', '역할을 불러오는 중이에요…'));
     else if (this.rolesFailed) rList.appendChild(el('p', 'org-problem', '역할 목록을 불러오지 못했어요. 앱을 다시 열어 주세요.'));
@@ -163,12 +208,22 @@ export class OrgView {
       const order: Record<RoleInfo['source'], number> = { pool: 0, mission: 1, work: 2 };
       const zoneOrder = (r: RoleInfo) => (r.zone === 'personal' ? 1 : 0);
       const sorted = [...this.roles].sort((a, b) => zoneOrder(a) - zoneOrder(b) || order[a.source] - order[b.source] || a.name.localeCompare(b.name));
-      for (const r of sorted) rList.appendChild(this.renderRole(r));
+      for (const r of sorted.filter((x) => !this.roleFilter || x.usedBy.includes(this.roleFilter))) rList.appendChild(this.renderRole(r));
     }
     rSec.appendChild(rList);
-    frag.appendChild(rSec);
+    if (this.section === 'roles') frag.appendChild(rSec);
 
     this.listRoot.replaceChildren(frag);
+  }
+
+  /** 역할의 한글 이름: 설명의 첫 마디("… 담당")를 쓴다. 없으면 역할 이름 그대로 */
+  private roleKo(name: string): string {
+    const r = this.roles.find((x) => x.name === name);
+    const first = (r?.description ?? '').split(/[.。\n]/)[0].trim();
+    if (!first) return name;
+    const m = /^(.{2,34}?(담당|리더|검수자|검증자|작성자|분석가|도우미))/.exec(first);
+    const label = m ? m[1] : first.length <= 26 ? first : '';
+    return label || name;
   }
 
   private missionName(id: string): string {
@@ -195,8 +250,20 @@ export class OrgView {
     add('작업 폴더', tildify(m.target));
     if (m.readonlyRefs.length) add('참고 폴더', m.readonlyRefs.map(tildify).join('\n'));
     const workers = m.roles.filter((r) => !m.reviewerRoles.includes(r));
-    add('팀', `역할 ${m.roles.length}개 · 작업 ${workers.join(', ') || '없음'}`);
-    add('검수', m.reviewerRoles.join(', ') || '없음');
+    const chips = (names: string[]) => {
+      const dd = el('dd', 'org-role-chips');
+      if (!names.length) dd.textContent = '없음';
+      for (const n of names) {
+        const c = el('span', 'org-role-chip', this.roleKo(n));
+        c.title = n;
+        dd.appendChild(c);
+      }
+      return dd;
+    };
+    rows.appendChild(el('dt', undefined, `팀 ${workers.length}명`));
+    rows.appendChild(chips(workers));
+    rows.appendChild(el('dt', undefined, '검수'));
+    rows.appendChild(chips(m.reviewerRoles));
     if (m.blocked.length) add('막아 둔 것', `${m.blocked.length}개`);
     card.appendChild(rows);
 
@@ -257,7 +324,9 @@ export class OrgView {
   private renderRole(r: RoleInfo): HTMLElement {
     const card = el('article', 'org-role');
     const top = el('div', 'org-card-top');
-    top.appendChild(el('h4', 'org-role-name', r.name));
+    const ko = this.roleKo(r.name);
+    top.appendChild(el('h4', 'org-role-ko', ko));
+    if (ko !== r.name) top.appendChild(el('code', 'org-role-id', r.name));
     top.appendChild(el('span', `kind org-src-${r.source}`, SOURCE_LABEL[r.source] ?? r.source));
     if (r.zone === 'personal') top.appendChild(el('span', 'kind org-zone-personal', zoneInfo('personal').label));
     card.appendChild(top);

@@ -443,7 +443,7 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
             who: guard.leaderLabel,
             kind: 'bundle',
             title: args.title,
-            what: `${mission.name} 리포 파일 ${files.length}개를 한 번에 ${files.some((f) => f.change?.isNew) ? '만들거나 ' : ''}고쳐요: ${files.map((f) => f.rel).join(', ')}`,
+            what: `${mission.name} 파일 ${files.length}개를 한 번에 ${files.some((f) => f.change?.isNew) ? '만들거나 ' : ''}고쳐요: ${files.map((f) => f.rel).join(', ')}`,
             why: args.why,
             recommendation: args.recommendation,
             detail: files.map((f) => `- ${f.rel}${f.change?.isNew ? ' (새 파일)' : ''}`).join('\n') + (problems.length ? `\n\n올리지 못한 파일:\n- ${problems.join('\n- ')}` : ''),

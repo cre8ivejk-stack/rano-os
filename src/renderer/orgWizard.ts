@@ -249,7 +249,7 @@ export class MissionWizard {
 
   // ---------- 1. 이름·목표 ----------
   private renderStep1(body: HTMLElement): void {
-    body.appendChild(el('p', 'pane-sub', '미션은 리포 리더 한 명이 팀원들과 맡는 일이에요. 이름과 목표를 적어 주세요.'));
+    body.appendChild(el('p', 'pane-sub', '미션은 리더 한 명이 팀원들과 맡는 일이에요. 이름과 목표를 적어 주세요.'));
     const nameInput = el('input', 'org-input');
     nameInput.value = this.name;
     nameInput.maxLength = 60;
@@ -268,7 +268,7 @@ export class MissionWizard {
     goalInput.addEventListener('input', () => {
       this.goal = goalInput.value;
     });
-    body.appendChild(field('목표 (한두 줄)', goalInput, '리포 리더가 일할 때 늘 보는 헌장에 들어가요.'));
+    body.appendChild(field('목표 (한두 줄)', goalInput, '리더가 일할 때 늘 보는 헌장에 들어가요.'));
 
     const group = el('fieldset', 'org-radio-group');
     group.appendChild(el('legend', 'org-label', '구역'));
@@ -318,7 +318,7 @@ export class MissionWizard {
 
   // ---------- 2. 작업 폴더 ----------
   private renderStep2(body: HTMLElement): void {
-    body.appendChild(el('p', 'pane-sub', `리포 리더와 팀원이 일할 폴더를 ${zoneInfo(this.zone).root} 안에서 골라 주세요. 라노는 폴더 이름과 목록만 살펴봐요.`));
+    body.appendChild(el('p', 'pane-sub', `리더와 팀원이 일할 폴더를 ${zoneInfo(this.zone).root} 안에서 골라 주세요. 라노는 폴더 이름과 목록만 살펴봐요.`));
 
     const row = el('div', 'org-row');
     const pick = button(this.targetPath ? '다른 폴더 고르기' : '폴더 고르기', 'btn btn-confirm');

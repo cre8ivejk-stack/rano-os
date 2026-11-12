@@ -12,6 +12,11 @@ interface ChatMessage {
   via?: 'mobile'; // 휴대폰(텔레그램)에서 보낸 말
   replyTo?: string[]; // 라노 답: 이 답이 답한 내 말 id (묶어 답하면 여럿)
   todoIds?: string[]; // 라노 답: 이 답이 다룬 할 일 id
+  form?: 'ack' | 'report';
+  mission?: string;
+  report?: { title: string; ok: boolean; taskId?: string };
+  choices?: string[];
+  toMission?: string;
 }
 
 type MemberState = 'idle' | 'working' | 'reviewing' | 'done';
@@ -371,7 +376,7 @@ interface RanoApi {
   onEvent(cb: (e: RanoUiEvent) => void): () => void;
   missionList(): Promise<MissionStatus[]>;
   missionHistory(missionId: string): Promise<ChatMessage[]>;
-  missionSend(missionId: string, text: string, attachments?: NewAttachment[]): Promise<{ ok: boolean; message?: string }>;
+  missionSend(missionId: string, text: string, attachments?: NewAttachment[], fromChat?: boolean): Promise<{ ok: boolean; message?: string }>;
   missionStop(missionId: string, taskId?: string): Promise<{ ok: boolean; message?: string }>;
   approvalsList(): Promise<ApprovalRequest[]>;
   approvalDecide(id: string, decision: ApprovalDecision): Promise<void>;

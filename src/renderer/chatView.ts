@@ -22,9 +22,25 @@ export class ChatView {
   private ready = false;
   private todosByMsg = new Map<string, string[]>(); // 말 id → 그 말이 다룬 할 일 id (라노 답과, 그 답이 답한 내 말)
   private filterId: string | null = null;
+  /** 긴 왼쪽 말(리더 보고 등)을 접어서 보일지(리더 대화 창에서 켠다) */
+  clampLong = false;
+  /** 말의 짧은 판을 만든다(예: 배정 말에서 앱 안내문을 뺀 글). 돌려준 글이 원문과 다르면 [전문 보기]가 붙는다 */
+  shortOf: (m: ChatMessage) => string | null = () => null;
 
   /** 말풍선에 마우스를 올리거나 뗐을 때: 그 말이 다룬 할 일 id (없으면 null) */
   onHoverTodos: (ids: string[] | null) => void = () => {};
+  /** 선택 단추를 눌렀을 때: 그 말을 보낸다. null 이면 [직접 적기](입력창으로) */
+  onChoice: (text: string | null) => void = () => {};
+  /** 보고 카드의 [결과물 보기] */
+  onOpenOutputs: () => void = () => {};
+  /** 보고 카드의 [확인 완료]: 그 할 일을 완료로. 성공하면 true */
+  onConfirmTodo: (todoId: string) => Promise<boolean> = async () => false;
+  /** 보고 카드 머리글에 덧붙일 글(걸린 시간·승인 카드 수). 없으면 빈 글 */
+  reportMeta: (taskId: string) => string = () => '';
+  /** 미션 id → 이름 */
+  missionName: (id: string) => string = (id) => id;
+  /** 그 할 일이 지금 확인 요청 상태인지([확인 완료] 단추를 보일지) */
+  todoNeedsConfirm: (todoId: string) => boolean = () => false;
 
   constructor(
     private scrollEl: HTMLElement,
@@ -85,6 +101,8 @@ export class ChatView {
     if (!m || typeof m.id !== 'string' || this.shownIds.has(m.id)) return;
     this.shownIds.add(m.id);
 
+    // 새 말이 오면 앞 답의 선택 단추는 치운다(가장 최근 라노 답에만 둔다)
+    for (const old of Array.from(this.logEl.querySelectorAll('.choices'))) old.remove();
     const style = this.speaker(m.role);
     const row = el('div', `item msg ${style.side === 'right' ? 'msg-right' : 'msg-left'} ${style.className}`);
     row.dataset.id = m.id;
@@ -100,14 +118,106 @@ export class ChatView {
       meta.appendChild(icon);
       m = { ...m, text: (m.text ?? '').replace(oldMobile, '') || '(사진)' };
     }
+    if (m.role === 'user' && typeof m.toMission === 'string' && m.toMission) meta.appendChild(el('span', 'msg-to', `→ ${this.missionName(m.toMission)} 리더에게`));
     meta.appendChild(el('span', 'msg-time', formatTime(m.at)));
 
-    const bubble = el('div', 'bubble');
     const text = typeof m.text === 'string' ? m.text : '';
-    if (style.rich) renderRich(bubble, text);
-    else bubble.textContent = text;
+    const form = m.role === 'rano' ? m.form : undefined;
+    let bubble: HTMLElement;
+    if (form === 'ack') {
+      // 접수 말: 한 줄로 접고, 누르면 맡긴 내용을 펼친다
+      row.classList.add('msg-ack');
+      bubble = el('div', 'ack');
+      const line = el('div', 'ack-line');
+      line.appendChild(el('span', 'ack-text', `↳ ${m.mission ?? '미션'} 리더에게 맡김 · ${formatTime(m.at)}`));
+      const more = el('button', 'ack-more', '맡긴 내용 보기');
+      more.type = 'button';
+      const body = el('div', 'bubble ack-body');
+      body.hidden = true;
+      renderRich(body, text);
+      more.addEventListener('click', () => {
+        body.hidden = !body.hidden;
+        more.textContent = body.hidden ? '맡긴 내용 보기' : '접기';
+      });
+      line.appendChild(more);
+      bubble.append(line, body);
+    } else if (form === 'report' && m.report) {
+      // 리더 보고: 카드. 요약 앞부분만 먼저 보이고 펼칠 수 있다
+      row.classList.add('msg-report');
+      bubble = el('div', `bubble report-card${m.report.ok ? '' : ' report-stopped'}`);
+      const head = el('div', 'report-head');
+      head.appendChild(el('span', `report-pill${m.report.ok ? '' : ' stopped'}`, m.report.ok ? '보고' : '중단'));
+      head.appendChild(el('span', 'report-title', `${m.mission ?? '미션'} 리더 · ${m.report.title}`));
+      const extra = m.report.taskId ? this.reportMeta(m.report.taskId) : '';
+      if (extra) head.appendChild(el('span', 'report-meta', extra));
+      const body = el('div', 'report-body');
+      renderRich(body, text);
+      const long = text.length > 320 || text.split('\n').length > 8;
+      if (long) body.classList.add('clamped');
+      const acts = el('div', 'report-acts');
+      if (long) {
+        const more = el('button', 'btn btn-small btn-plain', '전체 보고 펼치기');
+        more.type = 'button';
+        more.addEventListener('click', () => {
+          const open = body.classList.toggle('clamped') === false;
+          more.textContent = open ? '접기' : '전체 보고 펼치기';
+        });
+        acts.appendChild(more);
+      }
+      const out = el('button', 'btn btn-small btn-plain', '결과물 보기');
+      out.type = 'button';
+      out.addEventListener('click', () => this.onOpenOutputs());
+      acts.appendChild(out);
+      const todoId = Array.isArray(m.todoIds) ? m.todoIds[0] : undefined;
+      if (m.report.ok && todoId && this.todoNeedsConfirm(todoId)) {
+        const ok = el('button', 'btn btn-small report-confirm', '확인 완료');
+        ok.type = 'button';
+        ok.title = '결과를 확인했으면 눌러 주세요. 연결된 할 일이 완료로 바뀌어요';
+        ok.addEventListener('click', () => {
+          ok.disabled = true;
+          void this.onConfirmTodo(todoId).then((done) => {
+            ok.textContent = done ? '완료로 표시했어요' : '확인 완료';
+            ok.disabled = done;
+          });
+        });
+        acts.appendChild(ok);
+      }
+      bubble.append(head, body, acts);
+    } else {
+      bubble = el('div', 'bubble');
+      const short = this.shortOf(m);
+      const body = el('div', 'bubble-body');
+      const put = (t: string) => {
+        body.replaceChildren();
+        if (style.rich) renderRich(body, t);
+        else body.textContent = t;
+      };
+      put(short !== null && short !== text ? short : text);
+      bubble.appendChild(body);
+      if (short !== null && short !== text) {
+        // 짧은 판과 전문을 오간다
+        const more = el('button', 'bubble-more', '지시 전문 보기');
+        more.type = 'button';
+        let full = false;
+        more.addEventListener('click', () => {
+          full = !full;
+          put(full ? text : short);
+          more.textContent = full ? '짧게 보기' : '지시 전문 보기';
+        });
+        bubble.appendChild(more);
+      } else if (this.clampLong && style.side === 'left' && (text.length > 600 || text.split('\n').length > 12)) {
+        body.classList.add('clamped');
+        const more = el('button', 'bubble-more', '전체 펼치기');
+        more.type = 'button';
+        more.addEventListener('click', () => {
+          const open = body.classList.toggle('clamped') === false;
+          more.textContent = open ? '접기' : '전체 펼치기';
+        });
+        bubble.appendChild(more);
+      }
+    }
 
-    row.appendChild(meta);
+    if (form !== 'ack') row.appendChild(meta);
     // 답이 질문 바로 아래가 아니면(그 사이 보고·다른 말이 끼었으면) 답 위에 인용 한 줄
     const replyTo = Array.isArray(m.replyTo) ? m.replyTo.filter((id) => typeof id === 'string') : [];
     if (replyTo.length) {
@@ -134,6 +244,25 @@ export class ChatView {
     });
     row.addEventListener('mouseleave', () => this.onHoverTodos(null));
     row.appendChild(bubble);
+    // 고를 것이 있는 답: 답 아래에 단추(가장 최근 답에만 남는다)
+    const choices = m.role === 'rano' && Array.isArray(m.choices) ? m.choices.filter((c) => typeof c === 'string' && c.trim()).slice(0, 3) : [];
+    if (choices.length) {
+      const box = el('div', 'choices');
+      choices.forEach((c, i) => {
+        const b = el('button', `choice${i === 0 ? ' choice-main' : ''}`, c);
+        b.type = 'button';
+        b.addEventListener('click', () => {
+          box.remove();
+          this.onChoice(c);
+        });
+        box.appendChild(b);
+      });
+      const own = el('button', 'choice choice-own', '직접 적기');
+      own.type = 'button';
+      own.addEventListener('click', () => this.onChoice(null));
+      box.appendChild(own);
+      row.appendChild(box);
+    }
     if (Array.isArray(m.attachments) && m.attachments.length) row.appendChild(messageImages(m.attachments));
     this.textById.set(m.id, text);
     this.append(row, m.at, forceScroll || style.side === 'right');

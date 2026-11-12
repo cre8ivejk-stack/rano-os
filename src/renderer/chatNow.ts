@@ -2,7 +2,7 @@
 import { el, mustGet } from './dom.js';
 
 /** 그 자리에서 바로 승인·반려할 수 있는 카드 종류(고를 것·볼 것이 없는 단순 확인). 나머지는 [자세히]로 승인함에서 본다 */
-const SIMPLE = new Set<string>(['command', 'write', 'outsideWrite', 'commit', 'delete', 'external', 'db', 'deploy']);
+export const SIMPLE_APPROVALS = new Set<string>(['command', 'write', 'outsideWrite', 'commit', 'delete', 'external', 'db', 'deploy']);
 
 function minutesSince(iso: string): string {
   const m = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
@@ -15,6 +15,7 @@ export class ChatNow {
   private pending: ApprovalRequest[] = [];
   private confirmStop: string | null = null; // 멈추기 확인 중인 과제 id
   private busy = new Set<string>();
+  private expanded = false; // 진행 중 과제 여러 건을 펼쳐 보는 중
   private readonly box = mustGet<HTMLDivElement>('chat-now');
 
   onOpenApprovals: (id: string) => void = () => {};
@@ -79,7 +80,7 @@ export class ChatNow {
     this.box.hidden = !running.length && !this.pending.length;
     if (this.box.hidden) return;
 
-    for (const a of this.pending.slice(0, 4)) {
+    for (const a of this.pending.slice(0, 2)) {
       const row = el('div', 'now-row now-approval');
       row.dataset.approval = a.id;
       const text = el('div', 'now-text');
@@ -89,7 +90,7 @@ export class ChatNow {
       if (what) text.appendChild(el('span', 'now-sub', what));
       row.appendChild(text);
       const btns = el('div', 'now-btns');
-      const simple = SIMPLE.has(a.kind) && !a.decisionItems?.length && !a.bundle?.length;
+      const simple = SIMPLE_APPROVALS.has(a.kind) && !a.decisionItems?.length && !a.bundle?.length;
       if (simple) {
         const ok = el('button', 'now-btn now-btn-main', '승인');
         ok.type = 'button';
@@ -108,7 +109,33 @@ export class ChatNow {
       row.appendChild(btns);
       this.box.appendChild(row);
     }
-    if (this.pending.length > 4) this.box.appendChild(el('div', 'now-more', `승인 대기 ${this.pending.length - 4}건 더 있어요 (승인함에서 볼 수 있어요)`));
+    if (this.pending.length > 2) {
+      const more = el('button', 'now-more now-more-btn', `승인 대기 ${this.pending.length - 2}건 더 있어요 · 승인함에서 보기`);
+      more.type = 'button';
+      more.addEventListener('click', () => this.onOpenApprovals(this.pending[2].id));
+      this.box.appendChild(more);
+    }
+    // 진행 중 과제가 여러 건이면 한 줄로 접는다(대화 영역을 밀어 올리지 않게)
+    if (running.length > 1) {
+      const row = el('div', 'now-row');
+      const text = el('div', 'now-text');
+      text.appendChild(el('span', 'now-tag', `진행 중 ${running.length}건`));
+      const by = new Map<string, number>();
+      for (const r of running) by.set(r.mission.name, (by.get(r.mission.name) ?? 0) + 1);
+      text.appendChild(el('span', 'now-sub', [...by].map(([n, c]) => `${n} ${c}건`).join(' · ')));
+      row.appendChild(text);
+      const btns = el('div', 'now-btns');
+      const toggle = el('button', 'now-btn', this.expanded ? '접기' : '펼치기');
+      toggle.type = 'button';
+      toggle.addEventListener('click', () => {
+        this.expanded = !this.expanded;
+        this.render();
+      });
+      btns.appendChild(toggle);
+      row.appendChild(btns);
+      this.box.appendChild(row);
+      if (!this.expanded && !running.some((r) => r.task.id === this.confirmStop)) return;
+    }
 
     for (const { mission, task } of running) {
       const row = el('div', 'now-row');

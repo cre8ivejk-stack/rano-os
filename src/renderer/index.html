@@ -49,7 +49,8 @@
 
         <div class="chat-now" id="chat-now" aria-label="진행 중인 과제와 승인 대기" hidden></div>
         <form class="composer" id="composer" autocomplete="off">
-          <textarea id="input" class="input" rows="1" placeholder="라노에게 할 말을 적어 주세요" aria-label="라노에게 할 말"></textarea>
+          <select id="send-to" class="send-to" aria-label="누구에게 보낼지"><option value="">라노에게</option></select>
+          <textarea id="input" class="input" rows="1" placeholder="라노에게 할 말을 적어 주세요" aria-label="할 말"></textarea>
           <button type="submit" id="send" class="send">보내기</button>
         </form>
         <p class="hint">Enter 보내기 · Shift+Enter 줄바꿈</p>
@@ -79,29 +80,30 @@
             <button type="button" class="toggle-btn" id="view-list-btn">목록</button>
             <button type="button" class="toggle-btn" id="view-usage-btn">사용량</button>
           </div>
-          <div class="office" id="office" aria-label="라노 오피스: 미션별 사무실 그림"></div>
+          <div class="office" id="office" aria-label="사무실: 미션마다 방 하나"></div>
           <div class="board-cards" id="board-cards" aria-label="미션 카드"></div>
         </div>
 
         <div class="leader-side">
           <div class="leader-placeholder" id="leader-placeholder">
-            <p class="empty-title">미션 카드를 누르면 리포 리더와 대화할 수 있어요.</p>
-            <p class="empty-example">리포 리더는 미션 하나를 맡아 팀원들과 일하는 리더예요.</p>
+            <p class="empty-title">방을 누르면 리더와 대화할 수 있어요.</p>
+            <p class="empty-example">리더는 미션 하나를 맡아 팀원들과 일해요.</p>
           </div>
 
           <section class="leader-panel" id="leader-panel" aria-labelledby="leader-title" hidden>
             <div class="leader-head">
-              <h2 class="leader-title" id="leader-title">리포 리더와 대화</h2>
+              <h2 class="leader-title" id="leader-title">리더와 대화</h2>
               <span class="pill pill-idle" id="leader-state">쉬는 중</span>
               <button type="button" class="leader-close" id="leader-close">닫기</button>
             </div>
-            <p class="leader-note">여기서 지시하면 라노를 거치지 않고 리포 리더에게 바로 전달돼요. 라노에게도 알려 드려요.</p>
+            <div class="leader-detail" id="leader-detail"></div>
+            <p class="leader-note">여기서 지시하면 라노를 거치지 않고 리더에게 바로 전달돼요. 라노에게도 알려 드려요.</p>
 
             <div class="scroll" id="leader-scroll">
-              <div class="log" id="leader-log" role="log" aria-live="polite" aria-label="리포 리더와 나눈 대화">
+              <div class="log" id="leader-log" role="log" aria-live="polite" aria-label="리더와 나눈 대화">
                 <div class="empty" id="leader-empty" hidden>
                   <p class="empty-title">아직 나눈 대화가 없어요.</p>
-                  <p class="empty-example">리포 리더에게 맡길 일을 적어 보세요.</p>
+                  <p class="empty-example">리더에게 맡길 일을 적어 보세요.</p>
                 </div>
               </div>
               <div class="thinking" id="leader-working" hidden>
@@ -110,7 +112,7 @@
             </div>
 
             <form class="composer" id="leader-form" autocomplete="off">
-              <textarea id="leader-input" class="input" rows="1" placeholder="리포 리더에게 할 일을 적어 주세요" aria-label="리포 리더에게 할 말"></textarea>
+              <textarea id="leader-input" class="input" rows="1" placeholder="리더에게 할 일을 적어 주세요" aria-label="리더에게 할 말"></textarea>
               <button type="submit" id="leader-send" class="send" disabled>보내기</button>
             </form>
             <p class="hint">Enter 보내기 · Shift+Enter 줄바꿈</p>
@@ -123,7 +125,7 @@
         <div class="pane-inner">
           <div class="pane-head">
             <h2 class="pane-title">기다리는 요청 <span class="pane-count" id="approvals-pending-count"></span></h2>
-            <p class="pane-sub">오래 기다린 요청부터 보여 드려요. 승인하기 전까지 그 일은 멈춰 있어요.</p>
+            <p class="pane-sub">과제별로 묶어 보여 드려요. 승인하기 전까지 그 일은 멈춰 있어요.</p>
           </div>
           <div class="appr-list" id="approvals-pending"></div>
 
@@ -139,7 +141,7 @@
         <div class="pane-inner">
           <div class="pane-head">
             <h2 class="pane-title">결과물</h2>
-            <p class="pane-sub">과제마다 결과와 정하실 것을 위에 모아 두었어요. 확인을 마치면 [확인 완료]를 눌러 주세요. 최근 과제가 위에 있어요.</p>
+            <p class="pane-sub">확인이 필요한 과제와 최근 다섯 건은 크게, 나머지는 한 줄로 보여 드려요. 줄을 누르면 펼쳐져요.</p>
           </div>
           <div class="out-list" id="outputs-list"></div>
         </div>

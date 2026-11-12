@@ -282,6 +282,11 @@ export interface ChatMessage {
   attachments?: ChatAttachment[]; // 사용자가 붙인 그림
   via?: 'mobile'; // 휴대폰(텔레그램)에서 보낸 말
   todoIds?: string[]; // 라노 답: 이 답이 다룬 할 일 id (화면이 할 일 목록에서 강조한다). 없으면 연결 없음
+  form?: 'ack' | 'report'; // 라노 답의 모양: ack = 리더에게 맡겼다는 접수 말(한 줄로 보임), report = 리더 보고를 전하는 답(카드로 보임). 없으면 보통 말풍선
+  mission?: string; // form 이 있을 때: 관련 미션 이름
+  report?: { title: string; ok: boolean; taskId?: string }; // form 'report': 어느 과제의 보고인지
+  choices?: string[]; // 라노 답: 사용자가 고를 수 있는 짧은 답 단추(첫 번째가 권장)
+  toMission?: string; // 내 말: 대화 화면에서 라노가 아니라 이 미션 리더에게 직접 보낸 말(미션 id)
   replyTo?: string[]; // 라노 답: 이 답이 답한 사용자 말 id (묶어 답하면 여럿). 예전 기록에는 없음
 }
 /** 대화 첨부 그림 */
@@ -409,7 +414,7 @@ export interface RanoApi {
   // ---- 2단계 ----
   missionList(): Promise<MissionStatus[]>;
   missionHistory(missionId: string): Promise<ChatMessage[]>;
-  missionSend(missionId: string, text: string, attachments?: NewAttachment[]): Promise<{ ok: boolean; message?: string }>;
+  missionSend(missionId: string, text: string, attachments?: NewAttachment[], fromChat?: boolean): Promise<{ ok: boolean; message?: string }>; // fromChat: 라노 대화 화면에서 보냄(그 대화에도 내 말로 남긴다)
   missionStop(missionId: string, taskId?: string): Promise<{ ok: boolean; message?: string }>;
   // ---- 3단계 ----
   approvalsList(): Promise<ApprovalRequest[]>;

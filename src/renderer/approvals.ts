@@ -27,6 +27,47 @@ const STATUS_LABEL: Record<ApprovalRequest['status'], string> = {
   expired: '만료',
 };
 const DONE_LIMIT = 30;
+/** 작게 보이는 카드 종류: 고를 것·볼 것이 없는 단순 확인(누르면 펼쳐진다) */
+const COMPACT_KINDS = new Set<string>(['command', 'outsideWrite', 'commit', 'delete', 'external', 'db', 'deploy']);
+/** 한 번에 승인할 수 있는 종류: 명령과 폴더 밖 쓰기만(커밋·지우기·배포·DB 는 하나씩) */
+const BATCH_KINDS = new Set<string>(['command', 'outsideWrite']);
+/** 묶음 안에서 먼저 보일 종류(생각이 필요한 것) */
+const THINK_KINDS = new Set<string>(['decision', 'teamPlan', 'bundle', 'numbers', 'reverseDecision', 'estimate', 'other']);
+
+const clip = (t: string, n: number) => (t.length > n ? `${t.slice(0, n)}…` : t);
+
+function waitedText(iso: string): string {
+  const m = Math.max(0, Math.floor((Date.now() - toDate(iso).getTime()) / 60000));
+  return m < 1 ? '방금 올라옴' : m < 60 ? `${m}분째 기다리는 중` : `${Math.floor(m / 60)}시간 ${m % 60}분째 기다리는 중`;
+}
+
+/**
+ * 카드 앞면에 보일 핵심 사실: 실행할 명령, 커밋이면 무엇을 하는지와 커밋 메시지, 바뀌는 파일.
+ * 승인 요청의 자세히 글("명령: …", "바뀔 수 있는 파일: …")에서 읽는다.
+ */
+export function approvalFacts(a: { kind: string; detail?: string; why?: string }): [string, string][] {
+  const out: [string, string][] = [];
+  const d = a.detail ?? '';
+  const cmd = /^명령: ([\s\S]*?)(?:\n실행 위치:|\n바뀔 수 있는 파일:|\n판단 근거:|$)/.exec(d)?.[1]?.trim();
+  if (cmd) {
+    if (a.kind === 'commit') {
+      const acts: string[] = [];
+      if (/\bgit\s+(-\S+\s+\S+\s+)*commit\b/.test(cmd)) acts.push('변경 내용 기록(커밋)');
+      if (/\bgit\s+(-\S+\s+\S+\s+)*push\b/.test(cmd)) acts.push('원격에 올리기(push)');
+      if (/\bgit\s+(-\S+\s+\S+\s+)*(pull|fetch|merge)\b/.test(cmd)) acts.push('원격 최신 받아오기');
+      if (/\bgit\s+(-\S+\s+\S+\s+)*(reset|revert|restore|checkout|switch|rebase|stash)\b/.test(cmd)) acts.push('되돌리기·가지 바꾸기');
+      if (acts.length) out.push(['하는 일', acts.join(' + ')]);
+      const msg = /-m\s+(["'])([\s\S]*?)\1/.exec(cmd)?.[2];
+      if (msg) out.push(['커밋 메시지', clip(msg.replace(/\s+/g, ' '), 120)]);
+    }
+    out.push(['명령', clip(cmd.replace(/\s+/g, ' '), 180)]);
+  }
+  const files = /^바뀔 수 있는 파일: (.*)$/m.exec(d)?.[1];
+  if (files) out.push(['바뀌는 파일', clip(files, 160)]);
+  const why = (a.why ?? '').trim();
+  if (why && !/^맡은 일:/.test(why)) out.push(['왜', clip(why.replace(/\s+/g, ' '), 160)]);
+  return out;
+}
 
 function kindLabel(kind: string): string {
   return (KIND_LABEL as Record<string, string>)[kind] ?? '기타';
@@ -49,6 +90,9 @@ export class ApprovalsView {
   private failed = false;
   private pendingCards = new Map<string, PendingCard>();
   private submitting = new Set<string>(); // 결정을 보낸 요청(두 번 누르기 방지)
+  private openCompact = new Set<string>(); // 펼쳐 둔 작은 카드
+  private doneFilter = ''; // 처리한 요청: 미션으로 거르기(빈 값 = 전체)
+  private batchConfirm: string | null = null; // "모두 승인" 확인 중인 묶음
 
   private pendingListEl = mustGet<HTMLDivElement>('approvals-pending');
   private pendingCountEl = mustGet<HTMLSpanElement>('approvals-pending-count');
@@ -60,9 +104,26 @@ export class ApprovalsView {
   onPendingCount: (n: number) => void = () => {};
   /** 미션 이름 찾기(현황판이 알려 줌) */
   missionName: (missionId: string) => string | undefined = () => undefined;
+  /** 과제 제목 찾기(현황판이 알려 줌). 모르면 undefined */
+  taskTitle: (missionId: string, taskId: string) => string | undefined = () => undefined;
 
   constructor() {
     this.render();
+    // 기다린 시간 표시를 30초마다 새로
+    window.setInterval(() => {
+      for (const n of Array.from(this.pendingListEl.querySelectorAll<HTMLElement>('[data-waited]'))) n.textContent = waitedText(n.dataset.waited ?? '');
+    }, 30_000);
+  }
+
+  /** 다른 화면의 [자세히]로 왔을 때: 그 카드로 가서 펼치고 잠깐 강조한다 */
+  focus(id: string): void {
+    const card = this.pendingCards.get(id)?.root;
+    if (!card) return;
+    this.openCompact.add(id);
+    card.classList.add('open');
+    card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    card.classList.add('appr-flash');
+    window.setTimeout(() => card.classList.remove('appr-flash'), 1800);
   }
 
   async load(): Promise<void> {
@@ -114,7 +175,22 @@ export class ApprovalsView {
       }
     }
     this.pendingListEl.querySelector('.board-note')?.remove();
+    for (const h of Array.from(this.pendingListEl.querySelectorAll('.appr-group'))) h.remove();
+    // 과제별로 묶는다: 묶음은 가장 오래 기다린 카드 순, 묶음 안은 생각할 카드(결정·팀 구성안)가 먼저
+    const groups = new Map<string, ApprovalRequest[]>();
     for (const a of pending) {
+      const key = `${a.missionId}|${a.taskId ?? ''}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(a);
+    }
+    const ordered: ApprovalRequest[] = [];
+    const headBefore = new Map<string, HTMLElement>(); // 그 카드 앞에 놓을 묶음 머리줄
+    for (const [key, list] of groups) {
+      list.sort((x, y) => Number(THINK_KINDS.has(y.kind)) - Number(THINK_KINDS.has(x.kind)) || toDate(x.createdAt).getTime() - toDate(y.createdAt).getTime());
+      if (groups.size > 1 || list.length > 1) headBefore.set(list[0].id, this.renderGroupHead(key, list));
+      ordered.push(...list);
+    }
+    for (const a of ordered) {
       const sig = JSON.stringify([a.title, a.what, a.why, a.recommendation, a.detail, a.filePath, a.who, a.kind, this.missionName(a.missionId)]);
       let card = this.pendingCards.get(a.id);
       if (!card || card.sig !== sig) {
@@ -123,6 +199,8 @@ export class ApprovalsView {
         card = { root, sig };
         this.pendingCards.set(a.id, card);
       }
+      const head = headBefore.get(a.id);
+      if (head) this.pendingListEl.appendChild(head);
       this.pendingListEl.appendChild(card.root); // 순서 맞추기(이미 있으면 옮기기만 한다)
     }
     if (pending.length === 0) {
@@ -137,7 +215,89 @@ export class ApprovalsView {
     // ---- 처리한 요청 ----
     this.doneWrapEl.hidden = done.length === 0;
     this.doneSummaryEl.textContent = `처리한 요청 ${done.length}건${done.length >= DONE_LIMIT ? ' (최근 30건)' : ''}`;
-    this.doneListEl.replaceChildren(...done.map((a) => this.renderDone(a)));
+    // 처리한 요청: 한 줄 목록(누르면 펼침) + 미션으로 거르기
+    const missions = [...new Set(done.map((a) => a.missionId))];
+    const nodes: HTMLElement[] = [];
+    if (missions.length > 1) {
+      const bar = el('div', 'done-filter');
+      const pick = (id: string, label: string) => {
+        const b = el('button', `done-filter-btn${this.doneFilter === id ? ' on' : ''}`, label);
+        b.type = 'button';
+        b.addEventListener('click', () => {
+          this.doneFilter = id;
+          this.render();
+        });
+        bar.appendChild(b);
+      };
+      pick('', '전체');
+      for (const id of missions) pick(id, this.missionName(id) ?? id);
+      nodes.push(bar);
+    }
+    if (this.doneFilter && !missions.includes(this.doneFilter)) this.doneFilter = '';
+    for (const a of done.filter((x) => !this.doneFilter || x.missionId === this.doneFilter)) nodes.push(this.renderDoneRow(a));
+    this.doneListEl.replaceChildren(...nodes);
+  }
+
+  /** 묶음 머리줄: 미션 · 과제 제목 · 건수, 명령·폴더 밖 쓰기가 여러 장이면 [모두 승인] */
+  private renderGroupHead(key: string, list: ApprovalRequest[]): HTMLElement {
+    const first = list[0];
+    const head = el('div', 'appr-group');
+    const title = first.taskId ? this.taskTitle(first.missionId, first.taskId) : undefined;
+    head.appendChild(el('span', 'appr-group-mission', this.missionName(first.missionId) ?? first.missionId));
+    if (title) head.appendChild(el('span', 'appr-group-task', title));
+    head.appendChild(el('span', 'appr-group-count', `${list.length}건`));
+    const batch = list.filter((a) => BATCH_KINDS.has(a.kind) && !a.decisionItems?.length && !a.bundle?.length && !this.submitting.has(a.id));
+    if (batch.length >= 2) {
+      head.appendChild(el('span', 'fl-sp'));
+      if (this.batchConfirm === key) {
+        head.appendChild(el('span', 'appr-group-warn', '명령 내용을 하나씩 보지 않고 승인해요'));
+        const yes = el('button', 'btn btn-small btn-approve', `정말 ${batch.length}건 승인`);
+        yes.type = 'button';
+        yes.addEventListener('click', () => {
+          this.batchConfirm = null;
+          for (const a of batch) {
+            this.submitting.add(a.id);
+            this.pendingCards.get(a.id)?.root.classList.add('appr-busy');
+            void this.rano.approvalDecide(a.id, { decision: 'approve' }).catch(() => {
+              this.submitting.delete(a.id);
+              this.pendingCards.get(a.id)?.root.classList.remove('appr-busy');
+            });
+          }
+          this.render();
+        });
+        const no = el('button', 'btn btn-small btn-plain', '취소');
+        no.type = 'button';
+        no.addEventListener('click', () => {
+          this.batchConfirm = null;
+          this.render();
+        });
+        head.append(yes, no);
+      } else {
+        const all = el('button', 'btn btn-small', `이 과제의 명령 ${batch.length}건 모두 승인`);
+        all.type = 'button';
+        all.title = '명령 실행·작업 폴더 밖 쓰기만 한 번에 승인해요. 커밋·지우기·배포·DB 는 하나씩 승인해요';
+        all.addEventListener('click', () => {
+          this.batchConfirm = key;
+          this.render();
+        });
+        head.appendChild(all);
+      }
+    }
+    return head;
+  }
+
+  /** 처리한 요청 한 줄. 누르면 예전 카드 내용이 펼쳐진다 */
+  private renderDoneRow(a: ApprovalRequest): HTMLElement {
+    const row = el('details', `done-row done-${a.status}`);
+    const sum = el('summary', 'done-row-sum');
+    sum.appendChild(el('span', `badge result-${a.status}`, STATUS_LABEL[a.status] ?? a.status));
+    sum.appendChild(el('span', 'done-row-title', a.title));
+    sum.appendChild(el('span', 'done-row-meta', [this.missionName(a.missionId), formatWhen(a.decidedAt ?? a.createdAt)].filter(Boolean).join(' · ')));
+    row.appendChild(sum);
+    row.addEventListener('toggle', () => {
+      if (row.open && row.childElementCount === 1) row.appendChild(this.renderDone(a));
+    });
+    return row;
   }
 
   // 머리: 종류 배지 · 미션 · 누가 · 시각, 그리고 제목
@@ -147,6 +307,11 @@ export class ApprovalsView {
     const mission = this.missionName(a.missionId);
     const meta = [mission, whoText(a.who), formatWhen(a.createdAt)].filter(Boolean).join(' · ');
     top.appendChild(el('span', 'appr-meta', meta));
+    if (a.status === 'pending') {
+      const waited = el('span', 'appr-waited', waitedText(a.createdAt));
+      waited.dataset.waited = a.createdAt;
+      top.appendChild(waited);
+    }
     card.appendChild(top);
     card.appendChild(el('h3', 'appr-title', a.title));
   }
@@ -167,14 +332,26 @@ export class ApprovalsView {
   }
 
   private renderPending(a: ApprovalRequest): HTMLElement {
-    const card = el('article', 'appr appr-pending');
+    const compact = COMPACT_KINDS.has(a.kind) && !a.decisionItems?.length && !a.bundle?.length && !a.change;
+    const card = el('article', `appr appr-pending${compact ? ' appr-compact' : ''}${compact && this.openCompact.has(a.id) ? ' open' : ''}`);
     card.dataset.id = a.id;
     this.renderHead(a, card);
+    // 카드 앞면의 핵심 사실(명령·커밋 메시지·바뀌는 파일). 작은 카드에서는 이것만 보인다
+    const facts = approvalFacts(a).filter(([k]) => compact || k !== '왜');
+    if (facts.length) {
+      const dl = el('dl', 'appr-facts');
+      for (const [k, v] of facts) {
+        dl.appendChild(el('dt', undefined, k));
+        const dd = el('dd', k === '명령' ? 'mono' : undefined, v);
+        dl.appendChild(dd);
+      }
+      card.appendChild(dl);
+    }
 
     const modelPick = a.kind === 'teamPlan'; // 팀 구성안: 항목은 팀원마다 쓸 모델(리더 추천이 골라져 있음)
     const recLabel = modelPick ? ['추천대로 승인', '고른 대로 승인'] : ['권장안대로 결정', '고른 안으로 결정'];
     const approveBtn = el('button', 'btn btn-approve', a.decisionItems?.length ? recLabel[0] : '승인');
-    const rows = el('dl', 'appr-rows');
+    const rows = el('dl', 'appr-rows appr-fold');
     const addRow = (label: string, text: string) => {
       if (!text) return;
       rows.appendChild(el('dt', undefined, label));
@@ -317,14 +494,13 @@ export class ApprovalsView {
 
     if (a.recommendation && a.recommendation.trim()) {
       const rec = el('div', 'appr-rec');
-      rec.appendChild(el('span', 'appr-rec-label', '리포 리더 권장안'));
+      rec.appendChild(el('span', 'appr-rec-label', '리더 권장안'));
       rec.appendChild(el('span', 'appr-rec-text', a.recommendation));
       card.appendChild(rec);
     }
 
     this.renderDetail(a, card);
 
-    card.appendChild(el('p', 'appr-wait', `이 요청이 처리될 때까지 ${a.who}는 기다리고 있어요`));
 
     // ---- 결정 ----
     const actions = el('div', 'appr-actions');
@@ -347,6 +523,18 @@ export class ApprovalsView {
       actions.append(approveBtn, label, reviseBtn, rejectBtn);
     } else {
       actions.append(approveBtn, reviseBtn, rejectBtn);
+    }
+    if (compact) {
+      const more = el('button', 'btn btn-plain appr-more', this.openCompact.has(a.id) ? '접기' : '자세히');
+      more.type = 'button';
+      more.addEventListener('click', () => {
+        const open = card.classList.toggle('open');
+        if (open) this.openCompact.add(a.id);
+        else this.openCompact.delete(a.id);
+        more.textContent = open ? '접기' : '자세히';
+        if (open) card.querySelector('details.fold')?.setAttribute('open', ''); // 펼치면 명령 전문까지 바로 보인다
+      });
+      actions.appendChild(more);
     }
     card.appendChild(actions);
 

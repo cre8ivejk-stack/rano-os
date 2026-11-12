@@ -144,7 +144,7 @@ export function findUnanswered(messages: ChatMessage[]): string[] {
   const out: string[] = [];
   for (let i = start + 1; i < messages.length; i++) {
     const m = messages[i];
-    if (m.role === 'user' && !answered.has(m.id)) out.push(m.id);
+    if (m.role === 'user' && !m.toMission && !answered.has(m.id)) out.push(m.id); // 리더에게 직접 보낸 말은 라노 답을 기다리지 않는다
   }
   return out;
 }

@@ -57,7 +57,7 @@ export interface RanoCoreDeps extends RanoSessionDeps {
   engineDrainMs?: number; // 다음 엔진을 켜기 전 앞 엔진 끝나기를 기다리는 시간 (기본 2500ms). 넘으면 close() 로 끈다
 }
 
-import { hideTodoMarker, matchTodosByTitle, splitTodoMarker, todoIdsFromTool } from './todoLink.js';
+import { fallbackChoices, hideMarkers, matchTodosByTitle, parseDirectNotice, parseReportNotice, splitMarkers, todoIdsFromTool } from './todoLink.js';
 const MAX_TURNS = 20;
 export const DEFAULT_RANO_EFFORT: RanoEffort = 'low';
 const TOOL_BLOCKS = new Set(['tool_use', 'mcp_tool_use', 'server_tool_use']);
@@ -87,6 +87,7 @@ interface AttemptResult {
   plan?: PromptPlan; // 이번 시도에 넘긴 지침·안내와, 정상으로 끝나면 비교 기준이 될 판
   compacted?: boolean; // 이번 시도 중 엔진이 대화를 요약함(compact_boundary)
   todoIds?: string[]; // 이번 시도에서 도구로 다룬 할 일 id
+  assigned?: string; // 이번 시도에서 리더에게 과제를 맡긴 미션 id
 }
 
 /** 한 줄 JSON 기록을 덧붙인다. 실패해도 조용히 넘어간다. 비밀 값은 넘기지 않는다. */
@@ -221,7 +222,7 @@ export class LiveView {
   }
 
   private out(): void {
-    const text = hideTodoMarker(this.text);
+    const text = hideMarkers(this.text);
     if ((text || this.steps.length) && this.firstShownAt === undefined) this.firstShownAt = this.now();
     this.shown = !!(text || this.steps.length);
     this.send({ kind: 'live', turn: this.turn, text, steps: this.steps.map((s) => ({ ...s })), ...(this.label ? { label: this.label } : {}) });
@@ -477,7 +478,7 @@ export class RanoCore implements RanoSessionApi {
       // 답한 말로 치지 않는다(replyTo: []) → 다시 켜면 [다시 보내기] 대상. 휴대폰에도 같은 글이 간다
       const cut = result.errorText !== null;
       // 답 끝의 할 일 표시(〔할일 id〕)는 떼어 내 연결 정보로만 쓴다
-      const marked = splitTodoMarker(result.text || (cut ? live.partial() : ''));
+      const marked = splitMarkers(result.text || (cut ? live.partial() : ''));
       const raw = marked.text;
       let todoIds = [...new Set([...(result.todoIds ?? []), ...marked.ids])];
       try {
@@ -486,7 +487,8 @@ export class RanoCore implements RanoSessionApi {
           todoIds = todoIds.filter((id) => items.some((x) => x.id === id)); // 없는 id 는 버린다
           // 리더 보고 알림에는 앱이 연결된 할 일 id 를 적어 둔다
           const linked = plan.kind === 'notice' ? /연결된 할 일 id: ([0-9a-f]{8})/.exec(plan.notice.text.slice(0, 300))?.[1] : undefined;
-          if (!todoIds.length && linked && items.some((x) => x.id === linked)) todoIds = [linked];
+          // 보고 답은 앱이 아는 연결을 맨 앞에 둔다(라노가 같은 차례에 다른 할 일을 고쳤어도 카드는 이 과제의 할 일을 가리킨다)
+          if (linked && items.some((x) => x.id === linked)) todoIds = [linked, ...todoIds.filter((id) => id !== linked)];
           // 표시가 없으면 주고받은 글에 제목이 그대로 나온 할 일로 잇는다
           if (!todoIds.length) todoIds = matchTodosByTitle(items, [...users.map((u) => u.text), plan.kind === 'notice' ? plan.notice.text.slice(0, 400) : '', raw]);
         }
@@ -497,7 +499,7 @@ export class RanoCore implements RanoSessionApi {
       const text = raw && cut ? `${raw}\n\n${CUT_NOTE}` : raw;
       if (text) {
         // replyTo 는 늘 둔다: 알림 차례 답은 [] (findUnanswered 가 기준에서 건너뜀), 칸이 없는 것은 예전 기록뿐
-        const ranoMsg: ChatMessage = { id: randomUUID(), role: 'rano', text, at: new Date().toISOString(), replyTo: cut ? [] : ids, ...(todoIds.length ? { todoIds } : {}) };
+        const ranoMsg: ChatMessage = { id: randomUUID(), role: 'rano', text, at: new Date().toISOString(), replyTo: cut ? [] : ids, ...(todoIds.length ? { todoIds } : {}), ...this.shapeOf(plan, result, raw, cut, marked.choices) };
         try {
           await this.store.append(ranoMsg);
         } catch {
@@ -540,6 +542,27 @@ export class RanoCore implements RanoSessionApi {
         console.error('[rano] 지침 판 정리 실패:', e);
       }
     }
+  }
+
+  /**
+   * 라노 답의 모양과 선택 단추를 정한다.
+   * - 리더 보고를 전하는 답 → 보고 카드(report)
+   * - 리더에게 맡겼다는 짧은 접수 말(맡기기 도구를 썼거나, 사용자가 리더에게 직접 지시한 알림에 대한 답) → 한 줄(ack). 길거나 고를 것이 있으면 보통 말풍선
+   */
+  private shapeOf(plan: TurnPlan, result: AttemptResult, text: string, cut: boolean, markerChoices: string[]): Partial<ChatMessage> {
+    if (cut || !text) return {};
+    const choices = (markerChoices.length ? markerChoices : fallbackChoices(text)).slice(0, 3);
+    const withChoices = choices.length ? { choices } : {};
+    if (plan.kind === 'notice' && plan.notice.kind === 'report') {
+      const r = parseReportNotice(plan.notice.text);
+      if (r) return { form: 'report', mission: r.mission, report: { title: r.title, ok: r.ok, ...(r.taskId ? { taskId: r.taskId } : {}) }, ...withChoices };
+      return withChoices;
+    }
+    const direct = plan.kind === 'notice' && plan.notice.kind === 'direct' ? parseDirectNotice(plan.notice.text) : null;
+    const assignedName = result.assigned ? (this.config.missions.find((m) => m.id === result.assigned)?.name ?? result.assigned) : null;
+    const mission = direct ?? assignedName;
+    if (mission && !choices.length && text.length <= 420) return { form: 'ack', mission };
+    return withChoices;
   }
 
   private async attempt(prompt: string, resume: string | undefined, attachments: ChatAttachment[], live: LiveView): Promise<AttemptResult> {
@@ -678,6 +701,7 @@ export class RanoCore implements RanoSessionApi {
                 if (TOOL_BLOCKS.has(b.type)) {
                   const tb = b as unknown as { name?: string; input?: unknown };
                   for (const tid of todoIdsFromTool(tb.name ?? '', tb.input)) out.todoIds = [...new Set([...(out.todoIds ?? []), tid])];
+                  if (/assign_to_mission$/.test(tb.name ?? '')) out.assigned = String((tb.input as { missionId?: unknown } | undefined)?.missionId ?? '');
                   hadToolUse = true;
                   tools.push(b as unknown as { id?: string; name?: string });
                 }

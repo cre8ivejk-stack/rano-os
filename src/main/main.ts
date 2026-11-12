@@ -6,7 +6,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defaultRootDir, loadConfig } from './config.js';
 import { defaultsDir, ensureDataHome } from './dataHome.js';
-import { IPC, type NewAttachment, type MissionConfig, type MissionLeaderApi, type MissionTrackerApi, type RanoUiEvent } from '../shared/types.js';
+import { randomUUID } from 'node:crypto';
+import { IPC, type ChatMessage, type NewAttachment, type MissionConfig, type MissionLeaderApi, type MissionTrackerApi, type RanoUiEvent } from '../shared/types.js';
 import { MemoryService } from './memory/memoryService.js';
 import { createMemoryMcpServer } from './memory/memoryTools.js';
 import { ConversationStore } from './engine/conversationStore.js';
@@ -468,12 +469,23 @@ async function boot() {
     typeof missionId === 'string' ? dispatcher.stop(missionId, typeof taskId === 'string' ? taskId : undefined) : { ok: false, message: '미션을 찾지 못했어요' },
   );
 
-  ipcMain.handle(IPC.missionSend, async (_e, missionId: unknown, text: unknown, attachments: unknown) => {
+  ipcMain.handle(IPC.missionSend, async (_e, missionId: unknown, text: unknown, attachments: unknown, fromChat: unknown) => {
     const t = typeof text === 'string' ? text.trim() : '';
     const list = Array.isArray(attachments) ? (attachments as NewAttachment[]) : [];
     if (typeof missionId !== 'string' || (!t && !list.length)) return { ok: false, message: '보낼 내용이 없어요' };
     const saved = saveAttachments(config.runsDir, list);
     if (!saved.ok) return { ok: false, message: saved.message };
+    if (!config.missions.some((m) => m.id === missionId)) return { ok: false, message: '그 미션을 찾지 못했어요' };
+    // 라노 대화 화면에서 리더에게 바로 보낸 말은 그 대화에도 내 말로 남긴다(라노가 답할 말은 아님)
+    if (fromChat === true) {
+      const mine: ChatMessage = { id: randomUUID(), role: 'user', text: t || '(그림만 보냈어요)', at: new Date().toISOString(), toMission: missionId, ...(saved.saved.length ? { attachments: saved.saved } : {}) };
+      try {
+        await store.append(mine);
+        emit({ kind: 'message', message: mine });
+      } catch {
+        // 대화에 남기지 못해도 지시는 전한다
+      }
+    }
     await dispatcher.userSend(missionId, t || '(그림만 보냈어요)', saved.saved);
     return { ok: true };
   });

@@ -216,7 +216,7 @@ export class MissionDispatcher implements MissionDispatcherApi {
         if (entry) queue?.remove(entry.id);
         this.pushQueue(mission.id);
         this.todoAfterRun(todoId, result.ok, 'taskId' in result ? result.taskId : undefined);
-        return this.afterRun(mission, text, result, todoId);
+        return this.afterRun(mission, text, result, todoId, 'taskId' in result ? result.taskId : undefined);
       })
       .catch((e) => console.error('[dispatcher] 마무리 처리 실패:', e));
   }
@@ -233,7 +233,7 @@ export class MissionDispatcher implements MissionDispatcherApi {
     );
   }
 
-  private async afterRun(mission: MissionConfig, text: string, result: { ok: boolean; report: string }, todoId?: string) {
+  private async afterRun(mission: MissionConfig, text: string, result: { ok: boolean; report: string }, todoId?: string, taskId?: string) {
     const title = taskTitle(text);
     const outcome = result.ok ? '완료' : '중단';
     const tracker = this.deps.trackers.get(mission.id);
@@ -271,7 +271,7 @@ export class MissionDispatcher implements MissionDispatcherApi {
     } catch {
       stepNote = '';
     }
-    await this.deps.notifyRano(`[앱 알림] ${mission.name} 리더 보고 (과제: ${title}, 결과: ${outcome}${todoId ? `, 연결된 할 일 id: ${todoId}` : ''})${stepNote}\n\n${result.report}`, 'report');
+    await this.deps.notifyRano(`[앱 알림] ${mission.name} 리더 보고 (과제: ${title}, 결과: ${outcome}${todoId ? `, 연결된 할 일 id: ${todoId}` : ''}${taskId ? `, 과제 id: ${taskId}` : ''})${stepNote}\n\n${result.report}`, 'report');
   }
 
   // 제목·설명 아래, 기존 항목들 위에 새 줄을 넣는다(최신순)

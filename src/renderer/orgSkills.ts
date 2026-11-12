@@ -209,11 +209,14 @@ export function skillsSection(notice: Notice, roleNames: () => string[], reload:
   void window.rano.skillRegistry().then((reg) => {
     const rest = reg.filter((r) => !r.installed);
     if (!rest.length) return;
-    recSec.appendChild(el('h4', 'settings-title', `추천 스킬 ${rest.length}개`));
-    recSec.appendChild(el('p', 'org-hint', '라이선스를 확인해 둔 공개 스킬이에요. 라노도 새 일을 들으면 이 중에서 맞는 것을 대화에서 추천해요.'));
+    // 평소에는 접어 둔다(내가 넣은 스킬이 묻히지 않게)
+    const fold = el('details', 'skill-rec-fold');
+    fold.appendChild(el('summary', 'settings-title skill-rec-sum', `추천 스킬 ${rest.length}개 보기`));
+    fold.appendChild(el('p', 'org-hint', '라이선스를 확인해 둔 공개 스킬이에요. 라노도 새 일을 들으면 이 중에서 맞는 것을 대화에서 추천해요.'));
     const ul = el('div', 'skill-rec-list');
     for (const r of rest) ul.appendChild(suggestionRow(r, reload));
-    recSec.appendChild(ul);
+    fold.appendChild(ul);
+    recSec.appendChild(fold);
   });
   void (async () => {
     const skills = await window.rano.skillsList().catch(() => [] as SkillInfo[]);

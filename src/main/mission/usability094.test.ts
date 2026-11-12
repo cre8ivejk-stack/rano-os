@@ -7,7 +7,8 @@ import path from 'node:path';
 import { test } from 'node:test';
 import type { MissionStatus, MissionTask } from '../../shared/types.js';
 import { buildStatusNote } from '../engine/ranoStatus.js';
-import { hideTodoMarker, matchTodosByTitle, splitTodoMarker, todoIdsFromTool } from '../engine/todoLink.js';
+import { fallbackChoices, hideMarkers, hideTodoMarker, matchTodosByTitle, parseDirectNotice, parseReportNotice, splitMarkers, splitTodoMarker, todoIdsFromTool } from '../engine/todoLink.js';
+import { findUnanswered } from '../engine/ranoLanes.js';
 import { MissionLeaderPool, type PoolLeader } from './leaderPool.js';
 import { interruptedReport, taskTitle } from './taskText.js';
 import { describeTerminalSessions, listTerminalSessions, projectDirName } from './terminalSessions.js';
@@ -166,4 +167,54 @@ test('할 일 잇기 안전망: 주고받은 글에 제목이 그대로 나오�
   assert.deepEqual(matchTodosByTitle(items, ['보고 좀 해 줘', '월간 자료 만들기는 끝났어요']), []);
   assert.deepEqual(matchTodosByTitle(items, ['', '주간 업무 정리와 메뉴 파일 줄 수 정리표 만들기를 같이 볼게요']), ['aaaaaaaa', 'dddddddd']);
   assert.deepEqual(matchTodosByTitle(items, ['', '']), []);
+});
+
+test('답 끝 표시: 할 일과 선택을 순서와 상관없이 떼어 낸다', () => {
+  assert.deepEqual(splitMarkers('두 가지를 정해 주세요.\n〔선택 권장대로 진행 | 1번만 권장대로〕\n〔할일 ab12cd34〕'), { text: '두 가지를 정해 주세요.', ids: ['ab12cd34'], choices: ['권장대로 진행', '1번만 권장대로'] });
+  assert.deepEqual(splitMarkers('정해 주세요.\n〔할일 ab12cd34〕\n〔선택: 예 | 아니오 | 나중에 | 넷째는 버림〕'), { text: '정해 주세요.', ids: ['ab12cd34'], choices: ['예', '아니오', '나중에'] });
+  assert.deepEqual(splitMarkers('표시 없는 답'), { text: '표시 없는 답', ids: [], choices: [] });
+  // 너무 긴 선택지는 버린다
+  assert.deepEqual(splitMarkers('답\n〔선택 짧게 | 이 선택지는 서른 글자를 훌쩍 넘어서 단추로 쓰기에는 너무 길어요 정말로요〕').choices, ['짧게']);
+});
+
+test('답 끝 표시: 쓰는 중인 글에서는 가린다', () => {
+  assert.equal(hideMarkers('정해 주세요.\n〔선택 권장대로 진행 | 1번만〕\n〔할일 ab12cd34〕'), '정해 주세요.');
+  assert.equal(hideMarkers('정해 주세요.\n〔선택 권장대로 진행 | 1번'), '정해 주세요.');
+  assert.equal(hideMarkers('정해 주세요.\n〔선'), '정해 주세요.');
+  assert.equal(hideMarkers('정해 주세요.\n〔선택 예 | 아니오〕\n〔할'), '정해 주세요.');
+  assert.equal(hideMarkers('본문 〔참고 자료'), '본문 〔참고 자료');
+});
+
+test('알림 머리글 읽기: 보고(미션·제목·결과·과제 id)와 직접 지시(미션)', () => {
+  assert.deepEqual(parseReportNotice('[앱 알림] 홈페이지 리더 보고 (과제: [자료 수집] 메뉴 목록 만들기, 결과: 완료, 연결된 할 일 id: ab12cd34, 과제 id: 15990f9d-993c-4369-9bb9-7145e050898b)\n\n보고 본문'), {
+    mission: '홈페이지',
+    title: '[자료 수집] 메뉴 목록 만들기',
+    ok: true,
+    taskId: '15990f9d-993c-4369-9bb9-7145e050898b',
+  });
+  assert.deepEqual(parseReportNotice('[앱 알림] 홈페이지 리더 보고 (과제: 문구 고치기, 결과: 중단)\n\n멈춤'), { mission: '홈페이지', title: '문구 고치기', ok: false });
+  assert.equal(parseReportNotice('[앱 알림] 다른 알림'), null);
+  assert.equal(parseDirectNotice('[앱 알림] 사용자가 홈페이지 리더에게 직접 지시했습니다: 문구 고쳐 줘'), '홈페이지');
+  assert.equal(parseDirectNotice('[앱 알림] 홈페이지 리더 보고 (과제: x, 결과: 완료)'), null);
+  assert.deepEqual(fallbackChoices('"권장대로"라고 말씀해 주시면 전할게요.'), ['권장대로 진행']);
+  assert.deepEqual(fallbackChoices('끝났어요.'), []);
+  // 번호 목록의 안 가운데 고르기: 권장이 먼저
+  const alt = ['어떻게 정리할지 정해 주세요.', '', '1. **알파벳 순으로 유지하기**: 새 항목을 자리에 끼워 넣어요.', '2. **지금 순서 그대로 두기 (권장)**: 맨 아래에 덧붙여요.', '', '어느 쪽으로 할까요?'].join('\n');
+  assert.deepEqual(fallbackChoices(alt), ['2번 · 지금 순서 그대로 두기', '1번 · 알파벳 순으로 유지하기']);
+  // 항목마다 권장이 있는 여러 결정
+  const multi = ['정해 주실 것이 두 가지예요.', '1. 묶음 이름. 권장은 A안이에요.', '2. 옛 주소 처리. 권장은 보내 주는 거예요.', '말씀해 주세요.'].join('\n');
+  assert.deepEqual(fallbackChoices(multi), ['권장대로 진행']);
+  // 묻지 않는 번호 목록(순서 설명)은 단추를 만들지 않는다
+  assert.deepEqual(fallbackChoices(['이렇게 하면 돼요.', '1. 먼저 커밋을 마무리해요.', '2. 그다음 리더에게 맡겨요.'].join('\n')), []);
+});
+
+test('리더에게 직접 보낸 말은 답을 기다리는 말로 치지 않는다', () => {
+  const at = '2026-11-12T00:00:00.000Z';
+  const msgs = [
+    { id: 'u1', role: 'user' as const, text: '안녕', at },
+    { id: 'r1', role: 'rano' as const, text: '네', at, replyTo: ['u1'] },
+    { id: 'u2', role: 'user' as const, text: '문구 고쳐 줘', at, toMission: 'm1' },
+    { id: 'u3', role: 'user' as const, text: '라노야', at },
+  ];
+  assert.deepEqual(findUnanswered(msgs), ['u3']);
 });

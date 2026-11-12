@@ -151,9 +151,9 @@ const api: RanoApi = {
   missionHistory(missionId: string): Promise<ChatMessage[]> {
     return ipcRenderer.invoke(CH_MISSION_HISTORY, String(missionId));
   },
-  missionSend(missionId: string, text: string, attachments?: NewAttachment[]): Promise<{ ok: boolean; message?: string }> {
+  missionSend(missionId: string, text: string, attachments?: NewAttachment[], fromChat?: boolean): Promise<{ ok: boolean; message?: string }> {
     const list = Array.isArray(attachments) ? attachments.slice(0, 6).map((x) => ({ name: String(x?.name ?? ''), mime: String(x?.mime ?? ''), data: String(x?.data ?? ''), ...(x?.marked === true ? { marked: true } : {}) })) : [];
-    return ipcRenderer.invoke(CH_MISSION_SEND, String(missionId), String(text), list);
+    return ipcRenderer.invoke(CH_MISSION_SEND, String(missionId), String(text), list, fromChat === true);
   },
   missionStop(missionId: string, taskId?: string): Promise<{ ok: boolean; message?: string }> {
     return ipcRenderer.invoke('mission:stop', String(missionId), typeof taskId === 'string' ? taskId : undefined);

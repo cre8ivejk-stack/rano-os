@@ -1,6 +1,7 @@
-// 현황판: 미션 카드와 리포 리더 대화 패널.
+// 현황판: 움직이는 사무실(미션 방)과, 고른 미션의 자세한 내용·리더 대화 패널.
 import { ChatView, type SpeakerStyle } from './chatView.js';
-import { demoStatuses, OfficeView } from './office.js';
+import { demoStatuses } from './office.js';
+import { FloorView } from './floor.js';
 import { ImageTray } from './attach.js';
 import { UsageView } from './usage.js';
 import { bindComposer, el, formatTime, formatWhen, mustGet, roleLabel, toDate } from './dom.js';
@@ -16,6 +17,19 @@ const TASK_STATUS_LABEL: Record<MissionTask['status'], string> = {
   done: '완료',
   failed: '중단',
 };
+
+/**
+ * 라노가 리더에게 넘긴 지시에서 사용자가 읽을 부분만 남긴다.
+ * 앱이 붙인 안내("[사용자가 직접 쓴 말] 이 과제의 범위는 …", "[앱 안내]", "[첨부 그림]")는 빼고, 사용자가 직접 쓴 말은 "내가 한 말"로 보인다.
+ */
+export function shortAssignment(text: string): string {
+  const cut = text.search(/\n\s*(\[사용자가 직접 쓴 말\]|---\s*\n\[앱 안내\]|\[앱 안내\]|\[첨부 그림\])/);
+  if (cut < 0) return text;
+  const head = text.slice(0, cut).trim();
+  const said = /\[사용자가 직접 쓴 말\][^\n]*\n(?:[^\n>]*\n)*?((?:>[^\n]*\n?)+)/.exec(text)?.[1];
+  const mine = said ? said.split('\n').map((l) => l.replace(/^>\s?/, '').trim()).filter(Boolean).join(' ') : '';
+  return mine ? `${head}\n\n**내가 한 말:** ${mine}` : head;
+}
 
 type PendingLine = { type: 'message'; message: ChatMessage } | { type: 'activity' | 'error'; text: string; at: string };
 
@@ -38,12 +52,15 @@ export class Board {
   private officeEl = mustGet<HTMLDivElement>('office');
   private officeBtn = mustGet<HTMLButtonElement>('view-office-btn');
   private listBtn = mustGet<HTMLButtonElement>('view-list-btn');
-  readonly office: OfficeView;
+  readonly office: FloorView;
+  private detailEl = mustGet<HTMLDivElement>('leader-detail');
+  private confirmStop: string | null = null;
+  private stopping = new Set<string>();
   private emptyEl = el('div', 'board-empty');
   /** 첫 미션 안내 버튼 */
   onFirstMission: () => void = () => {};
   onAskRano: () => void = () => {};
-  private mode: 'office' | 'list' | 'usage' = 'office';
+  private mode: 'office' | 'usage' = 'office';
   private usageBtn = mustGet<HTMLButtonElement>('view-usage-btn');
   private usage = new UsageView();
   private readonly demo = location.hash === '#office-demo';
@@ -66,7 +83,7 @@ export class Board {
   /** 리더가 일하는지 바뀔 때 머리말 표시를 고치도록 알린다. */
   onWorkingChange: (anyWorking: boolean, names: string[]) => void = () => {};
   /** 카드의 "승인 대기 N건"을 눌렀을 때 */
-  onApprovalsClick: () => void = () => {};
+  onApprovalsClick: (id?: string) => void = () => {};
   /** 미션 이름이 새로 알려졌을 때(승인함·결과물함 다시 그리기용) */
   onNamesChange: () => void = () => {};
 
@@ -101,19 +118,22 @@ export class Board {
     firstBtns.append(ask, make);
     this.emptyEl.appendChild(firstBtns);
     this.officeEl.before(this.emptyEl);
-    this.office = new OfficeView(this.officeEl);
+    this.office = new FloorView(this.officeEl);
+    this.office.onUsageClick = () => this.setMode('usage');
+    // 리더 대화 창: 긴 보고는 접고, 배정 말은 앱 안내문을 뺀 짧은 판으로
+    this.view.clampLong = true;
+    this.view.shortOf = (m) => (m.role === 'rano' ? shortAssignment(m.text ?? '') : null);
     this.office.showVacant = !this.demo;
     this.office.onNewMission = () => this.onFirstMission();
     this.office.onLeaderClick = (id) => void this.open(id);
-    this.office.onApprovalsClick = () => this.onApprovalsClick();
+    this.office.onApprovalsClick = (id) => this.onApprovalsClick(id);
     try {
       const saved = localStorage.getItem('rano.boardMode');
-      if (saved === 'list' || saved === 'office' || saved === 'usage') this.mode = saved;
+      if (saved === 'office' || saved === 'usage') this.mode = saved;
     } catch {
       // 저장소를 못 쓰면 기본값
     }
     this.officeBtn.addEventListener('click', () => this.setMode('office'));
-    this.listBtn.addEventListener('click', () => this.setMode('list'));
     this.usageBtn.addEventListener('click', () => this.setMode('usage'));
     this.cardsEl.after(this.usage.root);
     this.boardEl.classList.add('leader-closed');
@@ -127,8 +147,9 @@ export class Board {
   }
 
   // ---------- 사무실 / 목록 전환 ----------
-  private setMode(mode: 'office' | 'list' | 'usage') {
+  private setMode(mode: 'office' | 'usage') {
     this.mode = mode;
+    if (mode === 'usage') this.close(); // 사용량 표는 넓게 본다
     try {
       localStorage.setItem('rano.boardMode', mode);
     } catch {
@@ -139,14 +160,14 @@ export class Board {
 
   private applyMode() {
     const office = this.mode === 'office';
-    const list = this.mode === 'list';
     const usage = this.mode === 'usage';
-    this.boardEl.classList.toggle('office-mode', office || usage);
+    this.boardEl.classList.add('office-mode');
     this.officeEl.hidden = !office;
-    this.cardsEl.hidden = !list;
+    this.cardsEl.hidden = true;
+    this.listBtn.hidden = true;
     this.usage.root.hidden = !usage;
     if (usage) void this.usage.load();
-    for (const [b, on] of [[this.officeBtn, office], [this.listBtn, list], [this.usageBtn, usage]] as const) {
+    for (const [b, on] of [[this.officeBtn, office], [this.usageBtn, usage]] as const) {
       b.classList.toggle('on', on);
       b.setAttribute('aria-pressed', String(on));
     }
@@ -166,13 +187,19 @@ export class Board {
     this.office.setVisible(this.mode === 'office' && v);
   }
 
+  /** 과제 제목(진행 중이거나 가장 최근 과제에서 찾는다. 모르면 undefined) */
+  taskTitle(missionId: string, taskId: string): string | undefined {
+    const s = this.statuses.get(missionId);
+    return [...(s?.running ?? []), ...(s?.currentTask ? [s.currentTask] : [])].find((t) => t.id === taskId)?.title;
+  }
+
   /** 미션 id → 이름 (모르면 undefined) */
   nameOf(id: string): string | undefined {
     return this.statuses.get(id)?.name;
   }
 
   private missionName(id: string | null): string {
-    return (id && this.statuses.get(id)?.name) || '리포';
+    return (id && this.statuses.get(id)?.name) || '미션';
   }
 
   private speaker(role: ChatRole): SpeakerStyle {
@@ -276,7 +303,7 @@ export class Board {
     const card = el('article', `card${s.missionId === this.openId ? ' card-open' : ''}`);
     card.dataset.mission = s.missionId;
     card.tabIndex = 0;
-    card.setAttribute('aria-label', `${s.name} 미션 카드. 누르면 리포 리더와 대화합니다.`);
+    card.setAttribute('aria-label', `${s.name} 미션 카드. 누르면 리더와 대화합니다.`);
     card.addEventListener('click', () => void this.open(s.missionId));
     card.addEventListener('keydown', (e) => {
       if (e.target === card && (e.key === 'Enter' || e.key === ' ')) {
@@ -388,7 +415,7 @@ export class Board {
     }
 
     // 버튼
-    const btn = el('button', 'card-open-btn', s.missionId === this.openId ? '대화 열려 있음' : '리포 리더와 대화');
+    const btn = el('button', 'card-open-btn', s.missionId === this.openId ? '대화 열려 있음' : '리더와 대화');
     btn.type = 'button';
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -408,12 +435,15 @@ export class Board {
   // ---------- 리포 리더 대화 ----------
   /** 그 미션의 리포 리더 대화창을 연다 */
   async open(missionId: string): Promise<void> {
+    if (this.mode !== 'office') this.setMode('office');
     if (this.openId === missionId) {
       this.inputEl.focus();
       return;
     }
     const token = ++this.openToken;
     this.openId = missionId;
+    this.confirmStop = null;
+    this.office.setSelected(missionId);
     this.boardEl.classList.remove('leader-closed');
     this.historyLoaded = false;
     this.pending = [];
@@ -445,6 +475,7 @@ export class Board {
   private close(): void {
     this.openToken++;
     this.openId = null;
+    this.office.setSelected(null);
     this.boardEl.classList.add('leader-closed');
     this.historyLoaded = false;
     this.pending = [];
@@ -468,7 +499,81 @@ export class Board {
     this.workingEl.hidden = !working;
     if (working && stick) this.view.scrollToBottom();
     this.inputEl.placeholder = `${name} 리더에게 할 일을 적어 주세요`;
+    this.renderDetail(s);
     this.refreshComposer();
+  }
+
+  /** 대화 창 위쪽: 고른 미션의 진행 중 과제([멈추기])·기다리는 과제·최근 활동 */
+  private renderDetail(s: MissionStatus | undefined): void {
+    const box = this.detailEl;
+    box.replaceChildren();
+    if (!s) return;
+    const running = s.running?.length ? s.running : s.leaderState === 'working' && s.currentTask?.status === 'running' ? [s.currentTask] : [];
+    if (running.length) {
+      box.appendChild(el('div', 'detail-label', `진행 중 과제${running.length > 1 ? ` ${running.length}건` : ''}`));
+      for (const t of running) {
+        const row = el('div', 'detail-task');
+        row.appendChild(el('span', 'detail-task-title', t.title));
+        const meta = el('div', 'detail-task-meta');
+        const min = Math.max(0, Math.floor((Date.now() - toDate(t.startedAt).getTime()) / 60000));
+        const mine = (s.members ?? []).filter((m) => (!m.taskId || m.taskId === t.id) && (m.state === 'working' || m.state === 'reviewing'));
+        const what = mine.some((m) => m.state === 'reviewing') ? ' · 검수 중' : mine.length ? ` · 팀원 ${mine.length}명 작업 중` : '';
+        meta.appendChild(el('span', undefined, `${t.from === 'rano' ? '라노 배정' : '직접 지시'} · ${min < 1 ? '방금 시작' : `${min}분째`}${what}`));
+        meta.appendChild(el('span', 'fl-sp'));
+        if (this.confirmStop === t.id) {
+          const yes = el('button', 'now-btn now-btn-danger', '정말 멈추기');
+          yes.type = 'button';
+          yes.addEventListener('click', () => void this.stopTask(s.missionId, t.id));
+          const no = el('button', 'now-btn', '계속하기');
+          no.type = 'button';
+          no.addEventListener('click', () => {
+            this.confirmStop = null;
+            this.renderDetail(this.statuses.get(s.missionId));
+          });
+          meta.append(yes, no);
+        } else {
+          const stop = el('button', 'now-btn', this.stopping.has(t.id) ? '멈추는 중…' : '멈추기');
+          stop.type = 'button';
+          stop.disabled = this.stopping.has(t.id);
+          stop.title = '이 과제를 멈춰요. 이미 고친 파일은 그대로 남아요';
+          stop.addEventListener('click', () => {
+            this.confirmStop = t.id;
+            this.renderDetail(this.statuses.get(s.missionId));
+          });
+          meta.appendChild(stop);
+        }
+        row.appendChild(meta);
+        box.appendChild(row);
+      }
+    }
+    const queued = Array.isArray(s.queued) ? s.queued : [];
+    if (queued.length) {
+      box.appendChild(el('div', 'detail-label', `다음 과제 ${queued.length}건`));
+      for (const q of queued.slice(0, 3)) box.appendChild(el('div', 'detail-line', q.title));
+    }
+    const recent = [...(s.recent ?? [])].sort((a, b) => toDate(b.at).getTime() - toDate(a.at).getTime()).slice(0, 4);
+    if (recent.length) {
+      box.appendChild(el('div', 'detail-label', '최근 활동'));
+      const list = el('div', 'detail-acts');
+      for (const a of recent) {
+        list.appendChild(el('span', 'detail-time', formatTime(a.at)));
+        list.appendChild(el('span', undefined, `${a.who}: ${a.text}`));
+      }
+      box.appendChild(list);
+    }
+  }
+
+  private async stopTask(missionId: string, taskId: string): Promise<void> {
+    this.confirmStop = null;
+    this.stopping.add(taskId);
+    this.renderDetail(this.statuses.get(missionId));
+    try {
+      await this.rano.missionStop(missionId, taskId);
+    } catch {
+      // 현황이 바뀌지 않으면 줄이 그대로 남는다
+    }
+    this.stopping.delete(taskId);
+    if (this.openId === missionId) this.renderDetail(this.statuses.get(missionId));
   }
 
   private refreshComposer(): void {
@@ -497,9 +602,9 @@ export class Board {
     };
     try {
       const r = await this.rano.missionSend(missionId, text, images);
-      if (r && r.ok === false) giveBack(r.message ?? '리포 리더에게 지시를 전하지 못했어요.');
+      if (r && r.ok === false) giveBack(r.message ?? '리더에게 지시를 전하지 못했어요.');
     } catch {
-      giveBack('리포 리더에게 지시를 전하지 못했어요. 잠시 뒤 다시 보내 주세요.');
+      giveBack('리더에게 지시를 전하지 못했어요. 잠시 뒤 다시 보내 주세요.');
     } finally {
       this.sending = false;
       this.refreshComposer();

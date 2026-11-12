@@ -96,7 +96,7 @@ const MSG_PLAN = '이 과제는 기획 먼저예요. 안 2~3개와 권장안을 
 const MSG_REFS = '참고 폴더는 읽기만 할 수 있어요. 바꿀 내용은 보고에 적어 주세요.';
 const MSG_UNKNOWN = '이 도구는 이 미션에서 쓸 수 없어요.';
 const MSG_READ_TASK =
-  '이 과제는 "읽고 정리만" 하기로 하고 시작했어요. 작업 폴더를 바꾸거나 지우거나 커밋하는 일은 할 수 없어요. 꼭 필요하면 리포 리더가 팀 구성안을 readOnly 없이 다시 올려 승인받아야 해요.';
+  '이 과제는 "읽고 정리만" 하기로 하고 시작했어요. 작업 폴더를 바꾸거나 지우거나 커밋하는 일은 할 수 없어요. 꼭 필요하면 리더가 팀 구성안을 readOnly 없이 다시 올려 승인받아야 해요.';
 
 export interface LeaderDecision {
   allow: boolean;
@@ -385,7 +385,7 @@ export function decideLeaderTool(
   }
 
   if (toolName === SUBAGENT_TOOL) {
-    if (isSubagent) return { allow: false, reason: '팀원이 다른 팀원을 부르려 함', message: '팀원 호출은 리포 리더만 할 수 있어요.' };
+    if (isSubagent) return { allow: false, reason: '팀원이 다른 팀원을 부르려 함', message: '팀원 호출은 리더만 할 수 있어요.' };
     const role = str(input.subagent_type);
     if (!role || !mission.roles.includes(role)) {
       return { allow: false, reason: `팀에 없는 역할: ${role ?? '(지정 안 함)'}`, message: MSG_ROLE };
@@ -549,11 +549,11 @@ function relToTarget(mission: MissionConfig, abs: string): string {
 }
 
 const BASH_TITLES: Record<string, (m: MissionConfig) => string> = {
-  commit: (m) => `${m.name} 리포에 변경 내용 기록(커밋)`,
+  commit: (m) => `${m.name} 변경 내용 기록(커밋)`,
   delete: () => '파일·폴더 지우기',
   db: () => '데이터베이스 바꾸기',
   deploy: () => '배포·운영 설정 바꾸기',
-  write: (m) => `${m.name} 리포 파일을 명령으로 바꾸기`,
+  write: (m) => `${m.name} 파일을 명령으로 바꾸기`,
   outsideWrite: () => '작업 폴더 밖 파일을 명령으로 바꾸기',
   command: () => '명령 실행',
 };
@@ -620,7 +620,7 @@ export function bashTitle(mission: MissionConfig, kind: BashKind, b: Pick<BashDe
   }
   const tmp = of('tmp');
   if (tmp.length) cats.push([`공용 임시 폴더에 쓰기: ${fileNames(tmp.flatMap((r) => r.targets))}`, false]);
-  if (kind === 'commit') cats.push([b.syncOnly ? `${mission.name} 리포에 원격 최신 받아오기(보관·되살리기 포함, 커밋 아님)` : BASH_TITLES.commit(mission), true]);
+  if (kind === 'commit') cats.push([b.syncOnly ? `${mission.name} 원격 최신 받아오기(보관·되살리기 포함, 커밋 아님)` : BASH_TITLES.commit(mission), true]);
   if (kind === 'deploy') cats.push([`${BASH_TITLES.deploy(mission)}${prog ? `: ${prog}` : ''}`, true]);
   if (kind === 'db') cats.push([`${BASH_TITLES.db(mission)}${prog ? `: ${prog}` : ''}`, true]);
   const files = fileNames(b.writePaths ?? []);
@@ -648,11 +648,11 @@ export function bashLogTarget(b: Pick<BashDecision, 'risks'>): string | undefine
 }
 
 const BASH_WHAT: Record<string, (m: MissionConfig) => string> = {
-  commit: (m) => `${m.name} 리포에 지금까지 바뀐 내용을 기록(커밋)하거나 올리거나 되돌리려고 해요`,
+  commit: (m) => `${m.name} 작업 폴더에서 지금까지 바뀐 내용을 기록(커밋)하거나 올리거나 되돌리려고 해요`,
   delete: () => '파일이나 폴더를 지우려고 해요',
   db: () => '데이터베이스에 연결해 내용을 바꾸거나 구조를 바꾸려고 해요',
   deploy: () => '배포하거나 운영 설정을 바꾸려고 해요',
-  write: (m) => `${m.name} 리포의 파일을 명령으로 바꾸려고 해요`,
+  write: (m) => `${m.name} 작업 폴더의 파일을 명령으로 바꾸려고 해요`,
   outsideWrite: () => '작업 폴더 밖의 파일을 명령으로 바꾸려고 해요',
   command: () => '작업에 필요한 명령을 실행하려고 해요',
 };
@@ -812,7 +812,7 @@ export function decideApprovalStage(
 
   // 리더 전용 도구(request_approval)
   if (toolName.startsWith(LEADER_TOOL_PREFIX)) {
-    if (actor.isSubagent && toolName !== PROPOSE_COMMANDS_TOOL) return { type: 'deny', reason: '팀원이 리더 도구를 쓰려 함', message: '승인 요청은 리포 리더가 올려요. 필요한 내용을 결과 보고에 적어 주세요.' };
+    if (actor.isSubagent && toolName !== PROPOSE_COMMANDS_TOOL) return { type: 'deny', reason: '팀원이 리더 도구를 쓰려 함', message: '승인 요청은 리더가 올려요. 필요한 내용을 결과 보고에 적어 주세요.' };
     if (mcpServer && !(mcpServer.source === 'sdk' && mcpServer.name === LEADER_MCP_NAME)) {
       return { type: 'deny', reason: '앱이 등록하지 않은 도구 서버', message: MSG_UNKNOWN };
     }
@@ -856,8 +856,8 @@ export function decideApprovalStage(
         reason: `작업 대상 폴더 쓰기(${toolName}): ${abs}`,
         ask: {
           kind: 'write',
-          title: `${mission.name} 리포 파일 ${toolName === 'Write' && !exists ? '만들기' : '고치기'}: ${path.basename(abs)}`,
-          what: `${mission.name} 리포의 ${rel} 문서를 ${verb} 해요`,
+          title: `${mission.name} 파일 ${toolName === 'Write' && !exists ? '만들기' : '고치기'}: ${path.basename(abs)}`,
+          what: `${mission.name} 작업 폴더의 ${rel} 문서를 ${verb} 해요`,
           detail: `파일: ${displayPath(abs)}${realNote}\n도구: ${toolName}${input.replace_all ? ' (모두 바꾸기)' : ''}\n\n${preview}`,
           filePath: abs,
           change: fileChangeFor(toolName, input, abs),

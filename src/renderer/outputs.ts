@@ -12,6 +12,9 @@ const CHANGE_LABEL: Record<TaskOutput['changedFiles'][number]['change'], string>
   deleted: '지움',
 };
 
+/** 크게 펼쳐 보일 최근 과제 수(그보다 오래된 것은 한 줄로 접는다) */
+const BIG_RECENT = 5;
+
 export class OutputsView {
   private rano = window.rano;
   private items: TaskOutput[] = [];
@@ -21,12 +24,21 @@ export class OutputsView {
   private fileNotes = new Map<string, { text: string; error: boolean }>(); // 파일 줄 안내(다시 그려도 유지)
   private todos: TodoItem[] = []; // 결과물과 이어진 할 일(확인 완료 버튼)
   private doneErrors = new Map<string, string>(); // 할 일 id → 확인 완료 실패 안내
+  // 거르기: 미션 · 상태 · 기간
+  private fMission = '';
+  private fStatus: '' | 'review' | 'done' | 'failed' = '';
+  private fPeriod: 'all' | 'today' | 'week' = 'all';
+  private openMini = new Set<string>(); // 펼쳐 둔 작은 과제 줄
+  private filterEl = el('div', 'out-filter');
+  /** [이어서 시키기]: 그 과제에 이어서 리더에게 시킬 말을 적으러 간다 */
+  onFollowUp: (o: TaskOutput, title: string) => void = () => {};
 
   private listEl = mustGet<HTMLDivElement>('outputs-list');
 
   missionName: (missionId: string) => string | undefined = () => undefined;
 
   constructor() {
+    this.listEl.before(this.filterEl);
     this.render();
   }
 
@@ -134,8 +146,109 @@ export class OutputsView {
       this.onUnseen(0);
       return;
     }
-    this.listEl.replaceChildren(...items.map((o) => this.renderCard(o)));
+    this.renderFilter(items);
+    // 거르기
+    const now = new Date();
+    const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const weekStart = dayStart - ((now.getDay() + 6) % 7) * 86_400_000; // 이번 주 월요일
+    const shown = items.filter((o) => {
+      if (this.fMission && o.missionId !== this.fMission) return false;
+      if (this.fStatus === 'failed' && o.status !== 'failed') return false;
+      if (this.fStatus === 'done' && o.status !== 'done') return false;
+      if (this.fStatus === 'review' && this.todoFor(o)?.status !== 'review') return false;
+      const at = toDate(o.endedAt ?? o.startedAt).getTime();
+      if (this.fPeriod === 'today' && at < dayStart) return false;
+      if (this.fPeriod === 'week' && at < weekStart) return false;
+      return true;
+    });
+    if (!shown.length) {
+      this.listEl.replaceChildren(el('p', 'board-note', '이 조건에 맞는 결과물이 없어요'));
+      this.onUnseen(this.unseen());
+      return;
+    }
+    // 크게 보일 카드: 진행 중, 확인이 필요한 것, 그리고 가장 최근에 끝난 다섯 건(자잘한 과제는 빼고). 나머지는 한 줄
+    const big = new Set<string>();
+    let recent = 0;
+    for (const o of shown) {
+      if (o.status === 'running' || this.todoFor(o)?.status === 'review') big.add(o.taskId);
+      else if (recent < BIG_RECENT && !this.isMini(o)) {
+        big.add(o.taskId);
+        recent++;
+      }
+    }
+    // 날짜별로 묶는다: 오늘 · 어제 · M월 D일 (요일)
+    const nodes: HTMLElement[] = [];
+    let lastDay = '';
+    for (const o of shown) {
+      const d = toDate(o.endedAt ?? o.startedAt);
+      const key = d.toDateString();
+      if (key !== lastDay) {
+        lastDay = key;
+        const diff = Math.round((dayStart - new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()) / 86_400_000);
+        const label = diff === 0 ? '오늘' : diff === 1 ? '어제' : `${d.getMonth() + 1}월 ${d.getDate()}일 (${'일월화수목금토'[d.getDay()]})`;
+        const n = shown.filter((x) => toDate(x.endedAt ?? x.startedAt).toDateString() === key).length;
+        nodes.push(el('div', 'out-day', `${label} · ${n}건`));
+      }
+      nodes.push(big.has(o.taskId) ? this.renderCard(o) : this.renderMini(o));
+    }
+    this.listEl.replaceChildren(...nodes);
     this.onUnseen(this.unseen());
+  }
+
+  private renderFilter(items: TaskOutput[]): void {
+    const bar = this.filterEl;
+    bar.replaceChildren();
+    const group = (label: string, opts: [string, string][], cur: string, set: (v: string) => void) => {
+      const g = el('div', 'out-filter-group');
+      g.appendChild(el('span', 'out-filter-label', label));
+      for (const [v, text] of opts) {
+        const b = el('button', `done-filter-btn${cur === v ? ' on' : ''}`, text);
+        b.type = 'button';
+        b.addEventListener('click', () => {
+          set(v);
+          this.render();
+        });
+        g.appendChild(b);
+      }
+      bar.appendChild(g);
+    };
+    const missions = [...new Set(items.map((o) => o.missionId))];
+    if (this.fMission && !missions.includes(this.fMission)) this.fMission = '';
+    if (missions.length > 1) group('미션', [['', '전체'], ...missions.map((id) => [id, this.missionName(id) ?? id] as [string, string])], this.fMission, (v) => (this.fMission = v));
+    const review = items.filter((o) => this.todoFor(o)?.status === 'review').length;
+    group('상태', [['', '전체'], ['review', `확인 필요${review ? ` ${review}` : ''}`], ['done', '완료'], ['failed', '중단']], this.fStatus, (v) => (this.fStatus = v as typeof this.fStatus));
+    group('기간', [['today', '오늘'], ['week', '이번 주'], ['all', '전체']], this.fPeriod, (v) => (this.fPeriod = v as typeof this.fPeriod));
+  }
+
+  /** 한 줄로 접어 보일 과제: 중단된 과제, 또는 1분 안에 끝났고 바뀐 파일·이어진 할 일·정하실 것이 없는 과제 */
+  private isMini(o: TaskOutput): boolean {
+    if (o.status === 'running') return false;
+    if (this.todoFor(o)?.status === 'review') return false;
+    if (o.status === 'failed') return true;
+    const ms = o.endedAt ? toDate(o.endedAt).getTime() - toDate(o.startedAt).getTime() : Infinity;
+    return ms < 60_000 && !(o.changedFiles?.length) && !this.todoFor(o) && !nextSteps(o.leaderReport ?? '').length;
+  }
+
+  private renderMini(o: TaskOutput): HTMLElement {
+    const key = `${o.missionId}:${o.taskId}`;
+    const row = el('details', `out-mini out-mini-${o.status}`);
+    row.open = this.openMini.has(key);
+    const sum = el('summary', 'out-mini-sum');
+    sum.appendChild(el('span', `badge task-${o.status}`, o.stoppedByUser ? '내가 멈춤' : STATUS_LABEL[o.status] ?? o.status));
+    sum.appendChild(el('span', 'out-mini-title', outputTitle(o).title));
+    sum.appendChild(el('span', 'out-mini-meta', [this.missionName(o.missionId) ?? o.missionId, formatWhen(o.endedAt ?? o.startedAt)].join(' · ')));
+    row.appendChild(sum);
+    const fill = () => {
+      if (row.childElementCount === 1) row.appendChild(this.renderCard(o));
+    };
+    if (row.open) fill();
+    row.addEventListener('toggle', () => {
+      if (row.open) {
+        this.openMini.add(key);
+        fill();
+      } else this.openMini.delete(key);
+    });
+    return row;
   }
 
   private renderCard(o: TaskOutput): HTMLElement {
@@ -168,7 +281,7 @@ export class OutputsView {
 
     // ---- 결과 요약: 리더 보고 첫 부분을 바로 보여 준다 ----
     const report = o.leaderReport ?? '';
-    const summary = reportSummary(report);
+    const summary = resultSummary(report);
     if (summary) {
       const box = el('div', 'out-summary');
       box.appendChild(el('span', 'out-summary-label', '결과'));
@@ -208,6 +321,16 @@ export class OutputsView {
       const err = this.doneErrors.get(todo.id);
       if (err) row.appendChild(el('span', 'file-note file-note-error', err));
       if (row.childElementCount) card.appendChild(row);
+    }
+    // ---- 이어서 시키기: 이 과제에 이어서 같은 미션 리더에게 다음 일을 시킨다 ----
+    if (o.status !== 'running') {
+      const row = el('div', 'out-follow');
+      const go = el('button', 'btn btn-small', '이어서 시키기');
+      go.type = 'button';
+      go.title = '대화 화면으로 가서 이 미션 리더에게 이어서 시킬 일을 적어요';
+      go.addEventListener('click', () => this.onFollowUp(o, t.title));
+      row.appendChild(go);
+      card.appendChild(row);
     }
 
     // ---- 보고서 전체 ----
@@ -320,6 +443,28 @@ export function outputTitle(o: TaskOutput): { title: string; task?: string } {
   if (h) return { title: clip(h[1].replace(/^보고\s*[:：]\s*/, '').replace(/\*\*/g, '').trim(), 70), task };
   if (bracket) return { title: bracket[1], task };
   return { title: clip(o.title ?? '과제', 70) };
+}
+
+const SECTION_START = /^\s*(?:#{1,6}\s+|\*\*\s*\d+[.)]|\d+[.)]\s+\*\*|\*\*[^*\n]{2,24}\*\*\s*:?\s*$)/;
+
+/**
+ * 카드에 보일 요약: 보고의 "결과" 부분("4. 결과", "**결과**", "## 결과")을 먼저 쓴다(결과물 대조표는 아님).
+ * 없으면 보고 첫 문단(reportSummary). 600자까지
+ */
+export function resultSummary(report: string): string {
+  const lines = report.replace(/\r\n?/g, '\n').split('\n');
+  const at = lines.findIndex((l) => /^\s*(?:#{1,6}\s+)?(?:\*\*)?\s*(?:\d+[.)]\s*)?(?:\*\*)?\s*결과(?!물)\s*(?:\*\*)?\s*[:：]?\s*(?:\*\*)?/.test(l));
+  if (at < 0) return reportSummary(report);
+  const first = lines[at].replace(/^\s*(?:#{1,6}\s+)?(?:\*\*)?\s*(?:\d+[.)]\s*)?(?:\*\*)?\s*결과\s*(?:\*\*)?\s*[:：]?\s*(?:\*\*)?\s*/, '').trim();
+  const out: string[] = first ? [first] : [];
+  for (let i = at + 1; i < lines.length; i++) {
+    const l = lines[i];
+    if (SECTION_START.test(l) || /^\s*\(앱 확인:/.test(l)) break;
+    out.push(l);
+  }
+  const s = out.join('\n').trim();
+  if (!s) return reportSummary(report);
+  return s.length > 600 ? `${s.slice(0, 600)}…` : s;
 }
 
 /** 보고 요약: 첫 제목 뒤 첫 문단(과 바로 이어지는 목록)을 600자까지 */

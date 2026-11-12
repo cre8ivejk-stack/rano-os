@@ -22,6 +22,7 @@ export class TodoView {
   private nowIds = new Set<string>(); // 가장 최근 라노 답이 다룬 할 일("지금 이야기 중")
   private talkId: string | null = null; // 그 일에 관한 대화만 보는 중인 할 일
   private stepsEditing: string | null = null; // 단계를 고치는 중인 할 일
+  private menuOpen: string | null = null; // ⋯ 를 눌러 도구 줄을 편 할 일
 
   private readonly groupsEl = mustGet<HTMLDivElement>('todo-groups');
   private readonly countEl = mustGet<HTMLSpanElement>('todo-count');
@@ -35,6 +36,11 @@ export class TodoView {
   onTalk: (id: string | null) => number = () => 0;
   /** [시작]: 라노에게 그 할 일을 시작하라고 말한다 */
   onStart: (item: TodoItem) => void = () => {};
+
+  /** 그 할 일의 지금 상태(없으면 undefined) */
+  statusOf(id: string): TodoStatus | undefined {
+    return this.items.find((x) => x.id === id)?.status;
+  }
 
   /** 가장 최근 라노 답이 다룬 할 일을 강조한다 */
   setNow(ids: string[]): void {
@@ -257,7 +263,7 @@ export class TodoView {
 
   private row(x: TodoItem, siblings: TodoItem[]): HTMLLIElement {
     // 지우기 확인 중이면 도구 줄을 계속 보여 준다(다시 그리면 마우스 올림 상태가 풀리므로)
-    const li = el('li', `todo-item st-${x.status}${this.confirmDelete === x.id ? ' tools-open' : ''}${this.nowIds.has(x.id) ? ' todo-now' : ''}${this.talkId === x.id ? ' todo-talk' : ''}`);
+    const li = el('li', `todo-item st-${x.status}${this.confirmDelete === x.id || this.menuOpen === x.id ? ' tools-open' : ''}${this.nowIds.has(x.id) ? ' todo-now' : ''}${this.talkId === x.id ? ' todo-talk' : ''}`);
     li.dataset.id = x.id;
     if (this.nowIds.has(x.id)) {
       const badge = el('div', 'todo-now-badge', '지금 이야기 중');
@@ -381,6 +387,18 @@ export class TodoView {
       });
       top.appendChild(go);
     }
+    // 그 밖의 일(순서·고치기·대화 보기·단계·지우기)은 ⋯ 안에
+    const menu = el('button', 'todo-menu', '⋯');
+    menu.type = 'button';
+    menu.title = '더 보기: 순서 바꾸기, 고치기, 대화 보기, 단계, 지우기';
+    menu.setAttribute('aria-label', `${x.title} 더 보기`);
+    menu.setAttribute('aria-expanded', String(this.menuOpen === x.id));
+    menu.addEventListener('click', () => {
+      this.menuOpen = this.menuOpen === x.id ? null : x.id;
+      this.confirmDelete = null;
+      this.render();
+    });
+    top.appendChild(menu);
     li.appendChild(top);
     const stepsEl = this.stepsRow(x);
     if (stepsEl) li.appendChild(stepsEl);
