@@ -212,6 +212,7 @@ export interface MissionConfig {
   connectors?: string[]; // 이 미션이 쓰는 외부 연결 이름
   directWriteDirs: string[]; // 3단계: 승인 없이 바로 쓸 수 있는 폴더(절대 경로). 비어 있으면 모든 쓰기가 승인함 (2026-11-04 사용자 결정: 비움)
   trustRepo?: boolean; // 믿는 미션: 작업 리포 안 고치기·시험·코드 실행은 승인 없이. 커밋·push·삭제·DB·배포·리포 밖·인터넷 전송은 그대로 승인함 (stagePolicy approval 일 때만)
+  dbRead?: { tool: string; apps: string[]; appField?: string; commandField?: string }; // 믿는 미션에서 운영 DB 읽기 조회를 바로 하는 외부 연결 도구·앱 (2026-11-12 사용자 결정). 정해진 꼴의 psql 읽기만
   // rano.json 에 archived: true 인 미션은 loadConfig 가 config.missions 에서 뺀다(현황판·리더 없음). 조직 화면은 원본에서 읽는다.
 }
 
@@ -219,6 +220,7 @@ export type MemberState = 'idle' | 'working' | 'reviewing' | 'done'; // 대기·
 
 export interface MemberStatus {
   role: string; // 'work-writer'
+  taskId?: string; // 어느 과제에 불렸는지 (같은 미션 동시 작업)
   state: MemberState;
   task?: string; // 지금 맡은 일 한 줄
   updatedAt: string;
@@ -246,6 +248,7 @@ export interface MissionStatus {
   name: string;
   leaderState: 'idle' | 'working';
   currentTask: MissionTask | null; // 진행 중이거나 가장 최근 과제
+  running?: MissionTask[]; // 지금 동시에 진행 중인 과제들 (시작 순서). 하나면 currentTask 와 같다
   members: MemberStatus[]; // 이번 과제에 불린 팀원만 (과제가 바뀌면 초기화)
   pendingApprovals: number; // 3단계 전까지 0
   recent: ActivityItem[]; // 최신순 최대 5건
@@ -559,11 +562,12 @@ export const MISSION_MCP_NAME = 'rano-mission';
 //   상태는 runs/missions/<id>/state.json 에 저장, 바뀔 때마다 emit({kind:'mission'}) 와 runs/events.jsonl 기록
 export interface MissionTrackerApi {
   status(): MissionStatus;
-  taskStart(task: { title: string; from: 'rano' | 'user' }): MissionTask; // 팀원 목록 초기화, 리더 working
-  taskEnd(result: { ok: boolean; report: string }): void; // 리더 idle, 아직 working 인 팀원은 done 처리
-  memberStart(role: string, task: string): void; // reviewerRoles 면 reviewing, 아니면 working
-  memberEnd(role: string, ok: boolean): void; // done
-  activity(who: string, text: string): void; // 최근 활동에 추가
+  // taskId: 같은 미션에서 과제 여러 개가 동시에 돌 때 어느 과제의 일인지 (없으면 가장 최근 과제)
+  taskStart(task: { title: string; from: 'rano' | 'user' }): MissionTask; // 이 과제 팀원 목록 새로, 리더 working
+  taskEnd(result: { ok: boolean; report: string }, taskId?: string): void; // 다른 과제가 없으면 리더 idle, 이 과제의 working 팀원은 done 처리
+  memberStart(role: string, task: string, taskId?: string): void; // reviewerRoles 면 reviewing, 아니면 working
+  memberEnd(role: string, ok: boolean, taskId?: string): void; // done
+  activity(who: string, text: string, taskId?: string): void; // 최근 활동에 추가
   setPendingApprovals(n: number): void; // 3단계: 승인 대기 건수 (승인함이 바뀔 때 main 이 부름)
   setQueue(items: QueuedTaskView[]): void; // 기다리는 과제 목록 (디스패처가 바뀔 때마다 부름)
 }
@@ -576,6 +580,7 @@ export interface MissionTrackerApi {
 export interface MissionLeaderApi {
   run(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; planFirst?: boolean; preSync?: boolean; attachments?: ChatAttachment[] }): Promise<{ ok: boolean; report: string; taskId?: string }>; // preSync: 사용자가 직접 받아오기를 시킴(받아오기는 승인 없이) // planFirst: 기획(안 선택) 먼저, 고른 뒤 구현 // onStart: 앞 과제가 끝나고 이 과제를 실제로 시작할 때
   busy(): boolean;
+  working?(): number; // 같은 미션 동시 작업: 지금 일하는 리더 수
   close?(): void; // 3단계: 앱을 끌 때 진행 중인 일과 승인 대기를 정리
 }
 

@@ -355,7 +355,7 @@ export class OfficeView {
         prop: 'none',
         crown: true,
         bubble: leaderWaiting ? `${s.name} 승인 대기` : working && task ? clip(task.title, 10) : undefined,
-        info: `${leaderName} · ${working ? '일하는 중' : '쉬는 중'}${task ? `\n${task.status === 'running' ? '진행 중' : '최근'} 과제: ${clip(task.title, 60)}` : ''}${s.queued?.length ? `\n다음 과제 ${s.queued.length}건` : ''}\n누르면 리더와 대화할 수 있어요`,
+        info: `${leaderName} · ${working ? '일하는 중' : '쉬는 중'}${(s.running?.length ?? 0) > 1 ? `\n동시에 진행 중 ${s.running!.length}건:${s.running!.map((x) => `\n- ${clip(x.title, 50)}`).join('')}` : task ? `\n${task.status === 'running' ? '진행 중' : '최근'} 과제: ${clip(task.title, 60)}` : ''}${s.queued?.length ? `\n다음 과제 ${s.queued.length}건` : ''}\n누르면 리더와 대화할 수 있어요`,
       });
       let breakIdx = 0;
       s.members.slice(0, DESK_SLOTS.length).forEach((m, i) => {
@@ -556,7 +556,9 @@ export class OfficeView {
       const s = room.status;
       const title = el('div', `office-room-title${s.leaderState === 'working' ? ' working' : ''}`);
       title.appendChild(el('span', 'office-room-name', s.name));
-      title.appendChild(el('span', 'office-room-state', s.leaderState === 'working' ? '일하는 중' : '쉬는 중'));
+      const nRun = s.running?.length ?? 0;
+      title.appendChild(el('span', 'office-room-state', s.leaderState === 'working' ? (nRun > 1 ? `리더 ${nRun}명 일하는 중` : '일하는 중') : '쉬는 중'));
+      if (nRun > 1) title.title = `동시에 진행 중인 과제\n${s.running!.map((x, i) => `${i + 1}. ${x.title}`).join('\n')}`;
       this.place(title, room.x + 3, room.y + 2);
       if (s.queued?.length) {
         const q = el('div', 'office-tag', `다음 ${s.queued.length}`);

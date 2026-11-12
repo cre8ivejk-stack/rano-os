@@ -151,13 +151,16 @@ export class MissionDispatcher implements MissionDispatcherApi {
     }
     if (todo?.status === 'done') todo = undefined; // 사용자가 완료한 일은 건드리지 않는다
     const wasBusy = leader.busy();
+    const alongside = leader.working?.() ?? 0; // 같은 미션에서 동시에 하고 있는 과제 수
     if (todo && todos) {
       this.safeTodo(() => todos.update(todo!.id, { status: 'active', queued: wasBusy, note: wasBusy ? '앞 과제가 끝나면 시작' : '' }, 'app'));
     }
     this.runInBackground(mission, leader, text, 'rano', todo?.id, false, !!planFirst, [], !!preSync);
     return wasBusy
       ? `${mission.name} 리더가 앞 과제를 하는 중이에요. 앞 과제가 끝나면 이어서 진행해요. 진행 상황은 현황판에서 볼 수 있어요.`
-      : `${mission.name} 리더에게 배정했어요. 진행 상황은 현황판에서 볼 수 있어요. 끝나면 보고가 도착해요.`;
+      : alongside > 0
+        ? `${mission.name}에서 하고 있는 과제 ${alongside}건과 동시에 시작했어요(같은 작업 폴더, 리더를 한 명 더 붙임). 진행 상황은 현황판에서 볼 수 있어요. 끝나면 보고가 도착해요.`
+        : `${mission.name} 리더에게 배정했어요. 진행 상황은 현황판에서 볼 수 있어요. 끝나면 보고가 도착해요.`;
   }
 
   async userSend(missionId: string, text: string, attachments: ChatAttachment[] = []): Promise<void> {

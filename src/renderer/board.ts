@@ -272,6 +272,7 @@ export class Board {
 
   private renderCard(s: MissionStatus): HTMLElement {
     const working = s.leaderState === 'working';
+    const running = Array.isArray(s.running) ? s.running : [];
     const card = el('article', `card${s.missionId === this.openId ? ' card-open' : ''}`);
     card.dataset.mission = s.missionId;
     card.tabIndex = 0;
@@ -289,25 +290,30 @@ export class Board {
     head.appendChild(el('h2', 'card-title', s.name));
     const pill = el('span', `pill ${working ? 'pill-working' : 'pill-idle'}`);
     if (working) pill.appendChild(el('span', 'pulse'));
-    pill.appendChild(document.createTextNode(working ? '리더 일하는 중' : '리더 쉬는 중'));
+    pill.appendChild(document.createTextNode(working ? (running.length > 1 ? `리더 ${running.length}명 일하는 중` : '리더 일하는 중') : '리더 쉬는 중'));
     head.appendChild(pill);
     card.appendChild(head);
 
-    // 과제
+    // 과제 (같은 미션에서 여러 과제가 동시에 돌면 모두 보여 준다)
     const task = s.currentTask;
-    const taskSec = this.section(card, task && task.status !== 'running' ? '최근 과제' : '진행 중 과제');
-    if (!task) {
+    const shown = running.length > 1 ? running : task ? [task] : [];
+    const taskSec = this.section(
+      card,
+      running.length > 1 ? `진행 중 과제 ${running.length}건 (동시에)` : task && task.status !== 'running' ? '최근 과제' : '진행 중 과제',
+    );
+    if (!shown.length) {
       taskSec.appendChild(el('p', 'muted', '진행 중인 과제가 없어요'));
-    } else {
+    }
+    for (const t of shown) {
       const row = el('div', 'task');
       const titleRow = el('div', 'task-title-row');
-      titleRow.appendChild(el('span', 'task-title', task.title));
-      titleRow.appendChild(task.stoppedByRejection
+      titleRow.appendChild(el('span', 'task-title', t.title));
+      titleRow.appendChild(t.stoppedByRejection
           ? el('span', 'badge task-failed', '반려로 멈춤')
-          : el('span', `badge task-${task.status}`, TASK_STATUS_LABEL[task.status] ?? task.status));
+          : el('span', `badge task-${t.status}`, TASK_STATUS_LABEL[t.status] ?? t.status));
       row.appendChild(titleRow);
-      const meta = [task.from === 'rano' ? '라노 배정' : '직접 지시', `시작 ${formatWhen(task.startedAt)}`];
-      if (task.endedAt) meta.push(`끝남 ${formatWhen(task.endedAt)}`);
+      const meta = [t.from === 'rano' ? '라노 배정' : '직접 지시', `시작 ${formatWhen(t.startedAt)}`];
+      if (t.endedAt) meta.push(`끝남 ${formatWhen(t.endedAt)}`);
       row.appendChild(el('div', 'task-meta', meta.join(' · ')));
       taskSec.appendChild(row);
     }
@@ -342,7 +348,8 @@ export class Board {
         top.appendChild(name);
         top.appendChild(el('span', `badge state-${m.state}`, MEMBER_STATE_LABEL[m.state] ?? m.state));
         li.appendChild(top);
-        if (m.task) li.appendChild(el('div', 'member-task', m.task));
+        const forTask = running.length > 1 && m.taskId ? running.find((t) => t.id === m.taskId) : undefined;
+        if (m.task || forTask) li.appendChild(el('div', 'member-task', `${forTask ? `[${forTask.title.slice(0, 20)}] ` : ''}${m.task ?? ''}`));
         list.appendChild(li);
       }
       memSec.appendChild(list);

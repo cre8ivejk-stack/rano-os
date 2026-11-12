@@ -132,6 +132,15 @@ export function loadConfig(rootDir: string = defaultRootDir()): RanoConfig {
         stagePolicy: m.stagePolicy === 'approval' ? 'approval' : 'readOnly',
         directWriteDirs: (m.directWriteDirs ?? []).map(resolve),
         trustRepo: m.stagePolicy === 'approval' && m.trustRepo === true,
+        dbRead:
+          m.stagePolicy === 'approval' && m.trustRepo === true && m.dbRead && typeof m.dbRead.tool === 'string' && Array.isArray(m.dbRead.apps)
+            ? {
+                tool: m.dbRead.tool,
+                apps: m.dbRead.apps.filter((x: unknown) => typeof x === 'string'),
+                ...(typeof m.dbRead.appField === 'string' ? { appField: m.dbRead.appField } : {}),
+                ...(typeof m.dbRead.commandField === 'string' ? { commandField: m.dbRead.commandField } : {}),
+              }
+            : undefined,
         connectors: Array.isArray(m.connectors) ? m.connectors.filter((x: unknown) => typeof x === 'string') : [],
       }),
     ),

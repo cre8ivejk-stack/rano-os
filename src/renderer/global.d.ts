@@ -19,6 +19,7 @@ interface MemberStatus {
   role: string;
   state: MemberState;
   task?: string;
+  taskId?: string;
   updatedAt: string;
 }
 
@@ -44,6 +45,7 @@ interface MissionStatus {
   name: string;
   leaderState: 'idle' | 'working';
   currentTask: MissionTask | null;
+  running?: MissionTask[]; // 같은 미션에서 동시에 진행 중인 과제들
   members: MemberStatus[];
   pendingApprovals: number;
   recent: ActivityItem[];

@@ -43,6 +43,9 @@ export interface MissionLeaderDeps {
   // 3단계
   approvals?: ApprovalQueueApi;
   outputs?: OutputsApi;
+  // 같은 미션 동시 작업 (2026-11-12): 몇 번째 리더인지(0부터)와, 지금 다른 리더가 하고 있는 과제
+  slot?: number;
+  others?: () => MissionTask[];
 }
 
 const MAX_TURNS = 60;
@@ -122,23 +125,38 @@ export class MissionLeader implements MissionLeaderApi {
   private closed = false;
   private queue: Promise<unknown> = Promise.resolve();
   private pending = 0; // 진행 중 + 대기 중인 과제 수
+  private readonly others: () => MissionTask[];
 
   constructor(deps: MissionLeaderDeps) {
     this.config = deps.config;
     this.mission = deps.mission;
-    this.tracker = deps.tracker;
+    // 현황판 기록은 이 리더가 맡은 과제에 붙인다(같은 미션에서 과제 여러 개가 동시에 돌 수 있음)
+    const base = deps.tracker;
+    const mine = (id?: string) => id ?? this.currentTask?.id;
+    this.tracker = {
+      status: () => base.status(),
+      taskStart: (t) => base.taskStart(t),
+      taskEnd: (r, id) => base.taskEnd(r, mine(id)),
+      memberStart: (role, task, id) => base.memberStart(role, task, mine(id)),
+      memberEnd: (role, ok, id) => base.memberEnd(role, ok, mine(id)),
+      activity: (who, text, id) => base.activity(who, text, mine(id)),
+      setPendingApprovals: (n) => base.setPendingApprovals(n),
+      setQueue: (q) => base.setQueue(q),
+    };
+    this.others = deps.others ?? (() => []);
     this.store = deps.store;
     this.uiEmit = deps.emit;
     this.eventsLog = path.join(deps.config.runsDir, 'events.jsonl');
     this.permissionsLog = path.join(deps.config.runsDir, 'permissions.jsonl');
-    this.leaderLabel = `${deps.mission.name} 리더`;
+    this.leaderLabel = deps.slot ? `${deps.mission.name} 리더 ${deps.slot + 1}` : `${deps.mission.name} 리더`;
     this.approvals = deps.approvals;
     this.outputs = deps.outputs;
     this.guard = new LeaderGuard({
       config: deps.config,
       mission: deps.mission,
       log: (line: PermissionLogEntry) => appendJsonl(this.permissionsLog, line),
-      tracker: deps.tracker,
+      tracker: this.tracker,
+      label: this.leaderLabel,
       approvals: deps.approvals,
       emitActivity: (text) => this.emitActivity(text),
     });
@@ -156,6 +174,11 @@ export class MissionLeader implements MissionLeaderApi {
 
   busy(): boolean {
     return this.pending > 0;
+  }
+
+  /** 지금 맡은 과제 (같은 미션의 다른 리더에게 알려 주기용) */
+  current(): MissionTask | null {
+    return this.currentTask ? { ...this.currentTask } : null;
   }
 
   run(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; planFirst?: boolean; preSync?: boolean; attachments?: ChatAttachment[] }): Promise<{ ok: boolean; report: string; taskId?: string }> {
@@ -221,6 +244,7 @@ export class MissionLeader implements MissionLeaderApi {
     const drafts = this.guard.draftsDir(mt.id);
     if (drafts) await mkdir(drafts, { recursive: true }).catch(() => undefined);
     const tmpDir = missionTmpDir(this.config, this.mission.id);
+    const othersAtStart = this.others().filter((t) => t.id !== mt.id);
     const appNote = [
       '',
       '---',
@@ -228,6 +252,11 @@ export class MissionLeader implements MissionLeaderApi {
       `- 이 과제의 시안 폴더: ${drafts} (작업 리포 밖, 승인 없이 쓸 수 있음). 안마다 비교용 시안(HTML 와이어프레임 등)이 필요하면 여기에 만들고, 결정 카드의 options[].preview 에 파일 이름을 넣으세요. [시안 열기]로 열 수 있는 형식: ${[...PREVIEW_EXTS].join(' ')} (실행 권한이 붙은 파일·폴더·바로가기로 밖을 가리키는 파일은 열리지 않음).`,
       ...(task.preSync
         ? ['- 사용자가 직접 원격 최신 받아오기를 시켰어요. 이번 과제의 받아오기 명령(git fetch, git pull --ff-only, git merge --ff-only, git stash, git stash pop)은 승인 없이 돼요. 다른 명령을 섞지 말고 따로 실행하세요. 커밋·푸시는 그대로 승인함을 거쳐요.']
+        : []),
+      ...(othersAtStart.length
+        ? [
+            `- 지금 같은 작업 폴더에서 다른 리더가 과제를 동시에 하고 있어요: ${othersAtStart.map((t) => `「${t.title}」`).join(', ')}. 그 과제가 고칠 만한 파일은 건드리지 말고, 겹치면 멈추고 보고하세요. 임시 폴더에 담는 파일 이름 앞에는 이 과제 번호 ${mt.id.slice(0, 8)} 를 붙이세요(예: ${mt.id.slice(0, 8)}-test.txt).`,
+          ]
         : []),
       `- 이 미션의 임시 폴더: ${tmpDir} (명령 결과 담기·읽기용, Bash 로만 승인 없이). 경로를 글자 그대로 적으세요(예: npm test > ${path.join(tmpDir, 'test.txt')} 2>&1). /tmp, $TMPDIR, mktemp 를 쓰면 승인함으로 가요.`,
       task.planFirst
@@ -284,7 +313,9 @@ export class MissionLeader implements MissionLeaderApi {
     }
     // 중단 사유는 아래 리더 답(보고)으로 한 번만 보여 준다. 따로 오류 줄을 띄우면 같은 문구가 두 번 보인다.
 
-    await this.saveMessage('leader', report);
+    // 같은 미션에서 동시에 돈 과제면 어느 과제의 보고인지 앞에 적는다
+    const parallel = othersAtStart.length > 0 || this.others().some((t) => t.id !== mt.id);
+    await this.saveMessage('leader', parallel ? `**[과제: ${mt.title}]**\n\n${report}` : report);
     this.safe(() => this.tracker.taskEnd({ ok, report }));
     if (this.outputs) {
       const ended: MissionTask = { ...mt, status: ok ? 'done' : 'failed', endedAt: new Date().toISOString(), report };

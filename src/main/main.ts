@@ -12,6 +12,7 @@ import { createMemoryMcpServer } from './memory/memoryTools.js';
 import { ConversationStore } from './engine/conversationStore.js';
 import { idleEngineSession, RanoSession } from './engine/ranoSession.js';
 import { MissionTracker } from './mission/tracker.js';
+import { MissionLeaderPool } from './mission/leaderPool.js';
 import { MissionLeader } from './mission/leaderSession.js';
 import { MissionDispatcher } from './mission/dispatcher.js';
 import { createMissionMcpServer } from './mission/missionTools.js';
@@ -112,7 +113,8 @@ async function boot() {
     const leaderStore = new ConversationStore(config, path.join(config.runsDir, 'missions', mission.id, 'conversation.json'));
     trackers.set(mission.id, tracker);
     leaderStores.set(mission.id, leaderStore);
-    const leader = new MissionLeader({ config, mission, tracker, store: leaderStore, emit, approvals, outputs });
+    // 같은 미션 동시 작업: 과제가 겹치면 리더를 한 명 더 붙인다(같은 작업 폴더, 개수 제한 없음)
+    const leader = new MissionLeaderPool((slot, others) => new MissionLeader({ config, mission, tracker, store: leaderStore, emit, approvals, outputs, slot, others }));
     leaders.set(mission.id, leader);
     leadersForQuit.push(leader);
   }

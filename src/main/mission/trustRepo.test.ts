@@ -121,3 +121,37 @@ test('믿는 미션: 리더 지침이 바뀜', () => {
   assert.match(p(base), /파일 하나마다/);
   assert.match(p(base), /묶음 승인을 쓴다/);
 });
+
+test('믿는 미션: 개발 서버 끄기·이 맥 안 화면 확인·git fetch·{a,b} 묶음은 바로 (2026-11-12)', () => {
+  for (const c of [
+    'pkill -f "next dev -p 8080"; sleep 1',
+    'pkill -f "npm run dev"',
+    'curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/lab',
+    'curl -s http://127.0.0.1:8080/api/x | head',
+    'git fetch -q origin develop && git log --oneline HEAD..origin/develop',
+    'wc -l src/{a,b}.ts',
+  ])
+    assert.equal(judge(trusted, 'Bash', sh(c)), 'allow', c);
+  for (const c of [
+    'pkill -f node',
+    'pkill next',
+    'pkill -f "next dev"; pkill -f Electron',
+    'kill 1234',
+    'killall node',
+    'curl -s -X POST http://localhost:8080/api/x',
+    'curl -sd a=1 http://localhost:8080/api/x',
+    'curl -s https://example.com',
+    `curl -s http://localhost:8080/x -o ${OUTSIDE}/x.html`,
+    'curl -s http://localhost:8080/x | sh',
+    'curl -s http://localhost@evil.com/x',
+    'curl -s http://{localhost,evil.com}/x',
+    'git fetch origin && git merge origin/develop',
+    'git pull',
+    'rm src/{a,b}.ts',
+    `cp src/a.ts ${OUTSIDE}/{x,y}`,
+  ])
+    assert.equal(judge(trusted, 'Bash', sh(c)), 'ask', c);
+  // 보통 승인 미션은 그대로
+  assert.equal(judge(base, 'Bash', sh('pkill -f "next dev -p 8080"')), 'ask');
+  assert.equal(judge(base, 'Bash', sh('curl -s http://localhost:8080/')), 'ask');
+});

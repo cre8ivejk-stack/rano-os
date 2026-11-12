@@ -33,6 +33,7 @@ import { classifyBash, type BashDecision, type BashKind, type BashRisk } from '.
 import { CODE_MAP_FILE } from './leaderPrompt.js';
 import { fileKey } from '../approvals/approvalQueue.js';
 import { isConnectorReadTool } from '../connectors/readTools.js';
+import { trustedDbRead } from './dbRead.js';
 import { missionTmpDir } from './missionTmp.js';
 
 export const SUBAGENT_TOOL = 'Agent'; // sdk.d.ts BUILTIN_TOOL_NAMES 기준 서브에이전트 호출 도구 이름
@@ -709,17 +710,62 @@ export function trustedRepoPath(mission: MissionConfig, abs: string): boolean {
 }
 
 /** 믿는 미션에서 이 명령을 바로 허용하는지 (classifyBash 결과로 판단). scratch: 리포 말고 바로 쓸 수 있는 라노 공간(이 미션 임시 폴더·이 과제 시안 폴더) */
+/** 믿는 미션에서 끌 수 있는 프로그램: 작업 폴더의 개발 서버(next dev·vite·npm run dev 등)만 */
+const TRUST_DEV_SERVER = /^(npx\s+)?(next|vite|nuxt|astro|remix)\s+dev\b|^(npm|pnpm|yarn)\s+(run\s+)?dev\b/;
+/** 믿는 미션에서 열어 볼 수 있는 주소: 이 맥 안(개발 서버 화면·API 확인) */
+const TRUST_LOCAL_HOST = /^(localhost|127\.0\.0\.1|\[?::1\]?)$/;
+/** 이 맥 안 주소라도 데이터를 보내거나 바꾸는 요청은 승인함으로(개발 서버가 운영 DB 에 붙어 있을 수 있음) */
+const CURL_SENDS = /\bcurl\b[^;&|\n]*\s(-[a-zA-Z]*[dFT]\b|--data\S*|--form\S*|--upload-file|--json|-X\s*(?!GET\b|HEAD\b)\S+|--request\s*(?!GET\b|HEAD\b)\S+|-[a-zA-Z]*K\b|--config)/;
+
+/** curl 이 받은 것을 파일로 남기는 옵션(-o /dev/null 은 빼고 본다) */
+const CURL_WRITES = /\bcurl\b[^;&|\n]*\s(-[a-zA-Z]*[oODc]\b|--output\b|--remote-name\S*|--dump-header|--cookie-jar|--trace\S*|--stderr|--libcurl|--create-dirs)/;
+/** 받은 것을 실행 프로그램으로 넘기기 */
+const PIPE_TO_CODE = /\|\s*(sudo\s+)?(env\s+)?(sh|bash|zsh|dash|ksh|fish|python\d*(\.\d+)?|node|deno|bun|perl|ruby|php|osascript|eval|source|xargs|tee)\b/;
+
+/** 믿는 미션에서 그 위험 표시를 넘어갈 수 있는지: 개발 서버 끄기(pkill -f 패턴), 이 맥 안 주소 읽기(curl GET) */
+function trustedRisk(r: { kind: string; program: string; targets: string[] }, command: string): boolean {
+  if (r.kind === 'kill') return r.program === 'pkill' && r.targets.length > 0 && r.targets.every((t) => TRUST_DEV_SERVER.test(t)) && /\bpkill\s+-f\s/.test(command);
+  if (r.kind === 'network')
+    return (
+      r.program === 'curl' &&
+      r.targets.length > 0 &&
+      r.targets.every((t) => TRUST_LOCAL_HOST.test(t)) &&
+      !CURL_SENDS.test(command) &&
+      !CURL_WRITES.test(command.replace(/\s(-o|--output)\s+\/dev\/null\b/g, ' ')) &&
+      !PIPE_TO_CODE.test(command)
+    );
+  return false;
+}
+
+/** 믿는 미션에서 넘어갈 수 있는 판단 근거: 원격 최신 이력 받기(git fetch. 작업 파일은 안 바뀜), 개발 서버 끄기·이 맥 안 주소 확인 */
+const TRUST_OK_REASON = /^(git fetch \(받아오기\)|pkill \(판단이 필요한 명령\)|curl \(판단이 필요한 명령\))$/;
+
 export function trustedBash(
   mission: MissionConfig,
   kind: BashKind,
   b: Pick<BashDecision, 'reasons' | 'writePaths' | 'risks' | 'linkSources' | 'modeChange'>,
   scratch: string[] = [],
+  command = '',
 ): boolean {
   if (kind !== 'write' && kind !== 'command') return false; // 커밋·삭제·DB·배포·리포 밖 쓰기는 그대로
   if (b.modeChange || (b.linkSources ?? []).length) return false;
-  if ((b.risks ?? []).some((r) => TRUST_ASK_RISKS.has(r.kind))) return false;
-  if (b.reasons.some((r) => TRUST_ASK_REASON.test(r))) return false;
+  if ((b.risks ?? []).some((r) => TRUST_ASK_RISKS.has(r.kind) && !trustedRisk(r, command))) return false;
+  if (b.reasons.some((r) => TRUST_ASK_REASON.test(r) && !TRUST_OK_REASON.test(r))) return false;
+  if (b.reasons.some((r) => /^(pkill|curl) \(판단이 필요한 명령\)$/.test(r)) && !(b.risks ?? []).length) return false;
   return b.writePaths.every((p) => trustedRepoPath(mission, p) || scratch.some((s) => insideBoth(p, s)));
+}
+
+/** 판단용으로만 {a,b} 꼴을 펼친다(따옴표·$ 가 없는 단순 낱말 묶음). 실제 실행하는 명령은 그대로 */
+export function expandSimpleBraces(command: string): string {
+  let out = command;
+  for (let n = 0; n < 20; n++) {
+    const next = out.replace(/(^|[\s=])([^\s'"{}$`\\;&|<>()]*)\{([\w.@+-]+(?:,[\w.@+-]+)+)\}([^\s'"{}$`\\;&|<>()]*)/, (_m, lead: string, pre: string, list: string, post: string) =>
+      lead + list.split(',').map((x) => `${pre}${x}${post}`).join(' '),
+    );
+    if (next === out) break;
+    out = next;
+  }
+  return out;
 }
 
 /** 3단계 판단. 승인함을 기다리는 일은 하지 않는다(type 'ask' 로 돌려줌). */
@@ -858,7 +904,8 @@ export function decideApprovalStage(
     if (trust) {
       // 믿는 미션: 이 미션 임시 폴더·이 과제 시안 폴더도 작업 폴더처럼 보고 다시 판단한다(결과 담기·시안 코드 실행)
       const scratch = [tmpDir, ...(actor.draftsDir ? [actor.draftsDir] : [])];
-      const bt = classifyBash(command, {
+      const judged = expandSimpleBraces(command);
+      const bt = classifyBash(judged, {
         cwd,
         targets: [...mission.targets.map((t) => path.resolve(t)), ...scratch],
         readRoots: roots,
@@ -870,7 +917,7 @@ export function decideApprovalStage(
         hasLinksUnder,
       });
       if (bt.decision === 'allow') return { type: 'allow', reason: `믿는 미션, 읽기·확인 명령: ${bt.reasons.join('; ')}` };
-      if (bt.decision === 'ask' && trustedBash(mission, bt.kind ?? 'command', bt, scratch))
+      if (bt.decision === 'ask' && trustedBash(mission, bt.kind ?? 'command', bt, scratch, judged))
         return { type: 'allow', reason: `믿는 미션, 작업 폴더 안 명령(${bt.kind ?? 'command'}): ${bt.reasons.join('; ')}` };
     }
     const files = b.writePaths.length ? `\n바뀔 수 있는 파일: ${b.writePaths.map(displayPath).join(', ')}${realPathNote(mission, b.writePaths)}` : '';
@@ -973,6 +1020,8 @@ export interface LeaderGuardDeps {
   log: (line: PermissionLogEntry) => void;
   tracker?: MissionTrackerApi;
   approvals?: ApprovalQueueApi;
+  /** 현황판·승인함에 보일 리더 이름 (같은 미션 동시 작업이면 "… 리더 2") */
+  label?: string;
   /** 리더 대화 패널에 한 줄 보여 주기 (missionId 를 붙여 emit) */
   emitActivity?: (text: string) => void;
 }
@@ -1003,7 +1052,7 @@ export class LeaderGuard {
   }
 
   get leaderLabel(): string {
-    return `${this.deps.mission.name} 리더`;
+    return this.deps.label ?? `${this.deps.mission.name} 리더`;
   }
 
   private get logAgent(): string {
@@ -1239,6 +1288,8 @@ export class LeaderGuard {
     const { config, mission } = this.deps;
     const ext = decideConnectorTool(config, mission, toolName, input, mcpServer);
     if (ext) {
+      // 믿는 미션: 정해진 꼴의 운영 DB 읽기 조회는 바로 (기획 결정 전에도 읽기는 됨)
+      if (ext.type === 'ask' && trustedDbRead(mission, toolName, input)) return { type: 'allow', reason: '믿는 미션, 운영 DB 읽기 조회' };
       if (ext.type === 'ask' && (mission.stagePolicy === 'readOnly' || this.planBlocked()))
         return { type: 'deny', reason: `${mission.stagePolicy === 'readOnly' ? '읽기 전용 미션' : '기획 결정 전'} 외부 쓰기: ${toolName}`, message: mission.stagePolicy === 'readOnly' ? '이 미션은 읽기만 해요. 외부 서비스에 쓰는 일은 보고에 적어 주세요.' : MSG_PLAN };
       if (ext.type === 'ask' && this.isReadOnlyTask()) return { type: 'deny', reason: `읽기만 하는 과제에서 외부 쓰기: ${toolName}`, message: MSG_READ_TASK };
