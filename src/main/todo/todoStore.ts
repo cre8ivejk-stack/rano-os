@@ -21,6 +21,9 @@ function cleanTitle(t: unknown): string {
   return s.length > MAX_TITLE ? `${s.slice(0, MAX_TITLE - 1)}…` : s;
 }
 
+/** 할 일 하나의 단계(마일스톤) 수 한도 */
+export const MAX_STEPS = 6;
+
 export class TodoStore implements TodoStoreApi {
   private items: TodoItem[];
   private readonly file: string;
@@ -47,7 +50,7 @@ export class TodoStore implements TodoStoreApi {
       const arr: unknown[] = Array.isArray(raw?.items) ? raw.items : [];
       return arr
         .filter((x): x is TodoItem => !!x && typeof (x as TodoItem).id === 'string' && typeof (x as TodoItem).title === 'string')
-        .map((x) => ({ ...x, status: STATUSES.includes(x.status) ? x.status : 'waiting', queued: false }));
+        .map((x) => ({ ...x, status: STATUSES.includes(x.status) ? x.status : 'waiting', queued: false, ...(Array.isArray(x.steps) ? { steps: x.steps.filter((s) => s && typeof s.title === 'string').map((s) => ({ title: s.title, done: !!s.done })).slice(0, MAX_STEPS) } : {}) }));
       // 앱이 꺼지면 줄 서 있던 과제는 사라지므로 queued 는 풀어 둔다
     } catch {
       return [];
@@ -83,7 +86,7 @@ export class TodoStore implements TodoStoreApi {
     return { ...item };
   }
 
-  update(id: string, patch: { title?: string; status?: TodoStatus; queued?: boolean; note?: string; taskId?: string }, by: 'user' | 'rano' | 'app'): TodoItem {
+  update(id: string, patch: { title?: string; status?: TodoStatus; queued?: boolean; note?: string; taskId?: string; steps?: string[]; doneSteps?: number[]; undoneSteps?: number[] }, by: 'user' | 'rano' | 'app'): TodoItem {
     const item = this.items.find((i) => i.id === id);
     if (!item) throw new Error(`할 일 "${id}" 을(를) 찾지 못했어요`);
     const parts: string[] = [];
@@ -104,6 +107,27 @@ export class TodoStore implements TodoStoreApi {
       if (t !== item.title) parts.push(`제목 "${t}"`);
       item.title = t;
     }
+    // 단계(마일스톤): 목록을 새로 정하면 같은 이름의 단계는 끝남 표시를 이어 간다. 번호는 1부터
+    if (patch.steps !== undefined) {
+      const titles = [...new Set(patch.steps.map((t) => cleanTitle(String(t)).slice(0, 40)).filter(Boolean))].slice(0, MAX_STEPS);
+      const old = item.steps ?? [];
+      item.steps = titles.length ? titles.map((t) => ({ title: t, done: old.find((o) => o.title === t)?.done ?? false })) : undefined;
+      parts.push(titles.length ? `단계 ${titles.length}개` : '단계 지움');
+    }
+    const mark = (nums: number[] | undefined, done: boolean) => {
+      for (const n of nums ?? []) {
+        const st = item.steps?.[n - 1];
+        if (!st) throw new Error(`단계 ${n}번이 없어요 (이 할 일의 단계는 ${item.steps?.length ?? 0}개)`);
+        // 마지막 단계는 사용자가 결과를 확인하는 단계라 사용자만 끝낼 수 있다
+        if (done && by !== 'user' && n === item.steps!.length) throw new Error('마지막 단계는 사용자가 확인한 뒤 직접 표시해요. 사용자에게 확인을 부탁하세요');
+        if (st.done !== done) {
+          st.done = done;
+          parts.push(`단계 "${st.title}" ${done ? '끝남' : '되돌림'}`);
+        }
+      }
+    };
+    mark(patch.doneSteps, true);
+    mark(patch.undoneSteps, false);
     if (patch.queued !== undefined) item.queued = patch.queued && item.status === 'active';
     if (patch.note !== undefined) item.note = cleanTitle(patch.note) || undefined;
     if (patch.taskId !== undefined && by === 'app') item.taskId = patch.taskId || undefined; // 결과물 카드와 잇기(앱만)
@@ -147,6 +171,7 @@ export class TodoStore implements TodoStoreApi {
       for (const x of list) {
         const st = TODO_STATUS_LABEL[x.status] + (x.queued ? '·앞 과제 대기' : '');
         out.push(`- [${st}] ${x.title} (id: ${x.id})${x.note ? ` — ${x.note}` : ''}`);
+        if (x.steps?.length) out.push(`    단계: ${x.steps.map((s, i) => `${i + 1}.${s.done ? '✓' : ''}${s.title}`).join(' → ')}`);
       }
     }
     return out.join('\n');

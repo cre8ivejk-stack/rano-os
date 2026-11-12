@@ -159,6 +159,7 @@ const TOOL_LABELS: Record<string, string> = {
   todo_remove: '할 일에서 빼는 중',
   assign_to_mission: '미션에 맡기는 중',
   get_mission_status: '미션 상황 보는 중',
+  get_terminal_sessions: '터미널 세션 보는 중',
   org_overview: '조직 살펴보는 중',
   propose_mission: '미션 구성안 만드는 중',
   open_mission_proposal: '구성안 여는 중',

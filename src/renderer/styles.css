@@ -1120,3 +1120,43 @@ button.approvals:hover { background: #efeeea; }
 .guide-title { font-size: 18px; margin: 4px 0 10px; }
 .guide-nav { display: flex; justify-content: space-between; gap: 8px; margin: 18px 0 6px; }
 .guide-nav .btn-confirm { margin-left: auto; }
+
+/* ---------- 대화 화면의 "지금" 줄: 진행 중 과제·승인 대기 ---------- */
+.chat-now { display: flex; flex-direction: column; gap: 6px; margin: 0 0 8px; }
+.now-row { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border: 1px solid #c9d8ec; background: #f8fbff; border-radius: 10px; }
+.now-row.now-approval { border-color: #efd3b5; background: #fffaf4; }
+.now-text { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.now-tag { flex: none; font-size: 11.5px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: #e3edf9; color: #33598c; }
+.now-tag-wait { background: #fbe8d2; color: #96591a; }
+.now-title { font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.now-sub { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.now-btns { flex: none; display: flex; gap: 6px; }
+.now-btn { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 4px 11px; font: inherit; font-size: 12.5px; cursor: pointer; }
+.now-btn:disabled { opacity: 0.5; cursor: default; }
+.now-btn-main { background: var(--accent); border-color: var(--accent); color: #fff; }
+.now-btn-danger { color: var(--error); border-color: #efc9c5; }
+.now-more { font-size: 12px; color: var(--muted); padding: 0 4px; }
+
+/* ---------- 할 일 ↔ 대화 잇기 ---------- */
+.todo-item.todo-now { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.todo-item.todo-hover { border-color: var(--accent); background: var(--accent-soft); }
+.todo-item.todo-talk { border-color: var(--accent); background: var(--accent-soft); }
+.todo-now-badge { display: inline-block; font-size: 11px; font-weight: 600; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 0 7px; margin-bottom: 4px; }
+.todo-start { flex: none; border: 1px solid var(--accent); background: var(--panel); color: var(--accent); border-radius: 7px; padding: 1px 9px; font: inherit; font-size: 12px; cursor: pointer; }
+.todo-start:hover { background: var(--accent-soft); }
+.todo-start:disabled { opacity: 0.6; cursor: default; }
+.msg.msg-dim { opacity: 0.28; }
+.msg.msg-hit .bubble { box-shadow: 0 0 0 2px var(--accent-soft); border-color: var(--accent); }
+
+/* ---------- 할 일 단계(마일스톤) ---------- */
+.todo-steps { display: flex; align-items: center; gap: 5px; margin: 6px 0 0 2px; flex-wrap: wrap; }
+.todo-step { width: 11px; height: 11px; padding: 0; border-radius: 50%; border: 1.5px solid #b9b8b2; background: transparent; cursor: pointer; }
+.todo-step.done { background: var(--accent); border-color: var(--accent); }
+.todo-step.current { border-color: var(--accent); background: linear-gradient(90deg, var(--accent) 50%, transparent 50%); }
+.todo-step:hover { box-shadow: 0 0 0 3px var(--accent-soft); }
+.todo-steps-text { font-size: 11.5px; color: var(--muted); margin-left: 4px; }
+.todo-steps-edit { margin-top: 6px; }
+.todo-steps-input { width: 100%; box-sizing: border-box; font: inherit; font-size: 12.5px; border: 1px solid var(--accent); border-radius: 6px; padding: 5px 7px; outline: none; resize: vertical; }
+.todo-steps-btns { display: flex; gap: 6px; margin-top: 4px; }
+.todo-tools { flex-wrap: wrap; row-gap: 4px; }
+.todo-tool { white-space: nowrap; }

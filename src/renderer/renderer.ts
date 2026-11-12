@@ -6,6 +6,7 @@ import { Board } from './board.js';
 import { OrgView } from './org.js';
 import { OutputsView } from './outputs.js';
 import { TodoView } from './todo.js';
+import { ChatNow } from './chatNow.js';
 import { proposalCard } from './orgProposal.js';
 import { ChatView, type SpeakerStyle } from './chatView.js';
 import { bindComposer, el, mustGet, setRoleLabels, setZoneInfo } from './dom.js';
@@ -240,6 +241,20 @@ const org = new OrgView();
 // ---------- 할 일 ----------
 const todo = new TodoView();
 todo.onOpenOutputs = () => showTab('outputs');
+// 할 일 ↔ 대화 잇기: 말풍선에 마우스를 올리면 그 말의 할 일을, 가장 최근 라노 답의 할 일은 "지금 이야기 중"으로 강조
+chat.onHoverTodos = (ids) => todo.setHover(ids);
+todo.onTalk = (id) => chat.filterTodo(id);
+todo.onStart = (item) => {
+  void rano
+    .send(`할 일 「${item.title}」(id: ${item.id})을 시작해 주세요.`, [])
+    .then((r) => {
+      if (r && r.ok === false) chat.addError(r.message ?? '라노에게 말을 전하지 못했어요.', new Date().toISOString());
+    })
+    .catch(() => chat.addError('라노에게 말을 전하지 못했어요. 잠시 뒤 다시 눌러 주세요.', new Date().toISOString()));
+};
+// 대화 화면의 "지금" 줄: 진행 중 과제 멈추기, 승인 카드 바로 처리
+const chatNow = new ChatNow();
+chatNow.onOpenApprovals = () => showTab('approvals');
 
 board.onNamesChange = () => {
   approvals.refresh();
@@ -296,6 +311,7 @@ function handleChatEvent(e: RanoUiEvent): void {
   switch (e.kind) {
     case 'message':
       chat.addMessage(e.message, false);
+      if (e.message.role === 'rano') todo.setNow(chat.latestTodos());
       if (e.message.role === 'user' && e.queued) {
         const what = e.waitFor ? `앞 일(${e.waitFor.replace(/\s*중$/, '')})을 마치면 바로 답해요` : '앞 일을 마치면 바로 답해요';
         waitNotes.set(e.message.id, chat.addTransient(what, e.message.at, 'right'));
@@ -366,6 +382,7 @@ function handleEvent(e: RanoUiEvent): void {
     board.leaderLine(e.missionId, e.kind, e.text, e.at);
   } else if (e.kind === 'approvals') {
     approvals.update(e.items);
+    chatNow.setApprovals(e.items);
   } else if (e.kind === 'outputs') {
     outputs.update(e.items);
     board.office.setOutputsCount(Array.isArray(e.items) ? e.items.filter((x) => x.status === 'done').length : 0);
@@ -380,6 +397,7 @@ function handleEvent(e: RanoUiEvent): void {
   } else if (e.kind === 'mission') {
     board.updateMission(e.status);
     todo.updateMission(e.status);
+    chatNow.setMission(e.status);
   } else if (e.kind === 'leaderMessage') {
     board.leaderMessage(e.missionId, e.message);
   } else if (historyLoaded) {
@@ -427,6 +445,8 @@ async function start(): Promise<void> {
   rano.outputsList().then((items) => board.office.setOutputsCount(Array.isArray(items) ? items.filter((x) => x.status === 'done').length : 0)).catch(() => undefined);
   void todo.load();
   void org.load();
+  void rano.approvalsList().then((items) => chatNow.setApprovals(items)).catch(() => undefined);
+  void rano.missionList().then((list) => { for (const s of Array.isArray(list) ? list : []) chatNow.setMission(s); }).catch(() => undefined);
 
   let history: ChatMessage[] = [];
   try {
@@ -448,6 +468,7 @@ async function start(): Promise<void> {
   }
 
   historyLoaded = true;
+  todo.setNow(chat.latestTodos());
   for (const e of pendingChat.splice(0)) handleChatEvent(e);
   chat.setReady(true);
   refreshBusy();

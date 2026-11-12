@@ -38,6 +38,8 @@ export interface RanoSessionDeps {
   missionMcp?: unknown; // 2단계: 라노의 미션 도구 서버 (assign_to_mission, get_mission_status)
   todoMcp?: unknown; // 할 일 도구 서버 (todo_list, todo_add, todo_update, todo_remove)
   todoText?: () => string; // 프롬프트에 넣을 할 일 목록
+  todoItems?: () => { id: string; title: string; status: string }[]; // 할 일 목록(라노 답과 할 일을 잇는 안전망·id 확인용)
+  statusNote?: () => string; // 사용자 말 차례마다 앞에 붙일 "지금 현황"(미션 진행·승인 대기·터미널 세션). 실패하면 붙이지 않는다
   orgMcp?: unknown; // 조직 도구 서버 (org_overview, propose_mission, open_mission_proposal)
 }
 
@@ -55,6 +57,7 @@ export interface RanoCoreDeps extends RanoSessionDeps {
   engineDrainMs?: number; // 다음 엔진을 켜기 전 앞 엔진 끝나기를 기다리는 시간 (기본 2500ms). 넘으면 close() 로 끈다
 }
 
+import { hideTodoMarker, matchTodosByTitle, splitTodoMarker, todoIdsFromTool } from './todoLink.js';
 const MAX_TURNS = 20;
 export const DEFAULT_RANO_EFFORT: RanoEffort = 'low';
 const TOOL_BLOCKS = new Set(['tool_use', 'mcp_tool_use', 'server_tool_use']);
@@ -83,6 +86,7 @@ interface AttemptResult {
   engineMs?: number; // 엔진이 알려 준 이번 일 시간
   plan?: PromptPlan; // 이번 시도에 넘긴 지침·안내와, 정상으로 끝나면 비교 기준이 될 판
   compacted?: boolean; // 이번 시도 중 엔진이 대화를 요약함(compact_boundary)
+  todoIds?: string[]; // 이번 시도에서 도구로 다룬 할 일 id
 }
 
 /** 한 줄 JSON 기록을 덧붙인다. 실패해도 조용히 넘어간다. 비밀 값은 넘기지 않는다. */
@@ -217,7 +221,7 @@ export class LiveView {
   }
 
   private out(): void {
-    const text = this.text;
+    const text = hideTodoMarker(this.text);
     if ((text || this.steps.length) && this.firstShownAt === undefined) this.firstShownAt = this.now();
     this.shown = !!(text || this.steps.length);
     this.send({ kind: 'live', turn: this.turn, text, steps: this.steps.map((s) => ({ ...s })), ...(this.label ? { label: this.label } : {}) });
@@ -239,6 +243,8 @@ export class RanoCore implements RanoSessionApi {
   private readonly todoMcp: McpServerConfig | undefined;
   private readonly orgMcp: McpServerConfig | undefined;
   private readonly todoText: (() => string) | undefined;
+  private readonly statusNote: (() => string) | undefined;
+  private readonly todoItems: (() => { id: string; title: string; status: string }[]) | undefined;
   private readonly eventsLog: string;
   private readonly permissionsLog: string;
   private readonly queryFn: QueryFn;
@@ -276,6 +282,8 @@ export class RanoCore implements RanoSessionApi {
     this.todoMcp = deps.todoMcp as McpServerConfig | undefined;
     this.orgMcp = deps.orgMcp as McpServerConfig | undefined;
     this.todoText = deps.todoText;
+    this.statusNote = deps.statusNote;
+    this.todoItems = deps.todoItems;
     this.eventsLog = path.join(deps.config.runsDir, 'events.jsonl');
     this.permissionsLog = path.join(deps.config.runsDir, 'permissions.jsonl');
     this.queryFn = deps.queryFn;
@@ -439,7 +447,15 @@ export class RanoCore implements RanoSessionApi {
     for (const id of ids) this.inTurn.add(id);
     const startedAt = this.now();
     const sentAt = plan.kind === 'user' ? Math.min(...users.map((u) => u.at)) : plan.notice.at;
-    const prompt = plan.kind === 'user' ? userTurnPrompt(users, plan.notices) : noticePrompt(plan.notice);
+    let statusNote = '';
+    if (plan.kind === 'user') {
+      try {
+        statusNote = this.statusNote?.() ?? '';
+      } catch {
+        statusNote = '';
+      }
+    }
+    const prompt = plan.kind === 'user' ? `${statusNote ? `${statusNote}\n\n[사용자 말]\n` : ''}${userTurnPrompt(users, plan.notices)}` : noticePrompt(plan.notice);
     const attachments = users.flatMap((u) => u.attachments);
     const extra = { turn, ...(mobile ? { mobile: true } : {}) };
     this.emit({ kind: 'status', status: 'thinking', turn, ...(label ? { label } : {}), ...(ids.length ? { users: ids } : {}), ...(mobile ? { mobile: true } : {}) });
@@ -460,11 +476,28 @@ export class RanoCore implements RanoSessionApi {
       // 저장은 최종 답 하나. 글이 조금 나온 뒤 오류로 끝나면 그 글을 지우지 않되 "끊김" 표시를 붙이고,
       // 답한 말로 치지 않는다(replyTo: []) → 다시 켜면 [다시 보내기] 대상. 휴대폰에도 같은 글이 간다
       const cut = result.errorText !== null;
-      const raw = result.text || (cut ? live.partial() : '');
+      // 답 끝의 할 일 표시(〔할일 id〕)는 떼어 내 연결 정보로만 쓴다
+      const marked = splitTodoMarker(result.text || (cut ? live.partial() : ''));
+      const raw = marked.text;
+      let todoIds = [...new Set([...(result.todoIds ?? []), ...marked.ids])];
+      try {
+        const items = this.todoItems?.();
+        if (items) {
+          todoIds = todoIds.filter((id) => items.some((x) => x.id === id)); // 없는 id 는 버린다
+          // 리더 보고 알림에는 앱이 연결된 할 일 id 를 적어 둔다
+          const linked = plan.kind === 'notice' ? /연결된 할 일 id: ([0-9a-f]{8})/.exec(plan.notice.text.slice(0, 300))?.[1] : undefined;
+          if (!todoIds.length && linked && items.some((x) => x.id === linked)) todoIds = [linked];
+          // 표시가 없으면 주고받은 글에 제목이 그대로 나온 할 일로 잇는다
+          if (!todoIds.length) todoIds = matchTodosByTitle(items, [...users.map((u) => u.text), plan.kind === 'notice' ? plan.notice.text.slice(0, 400) : '', raw]);
+        }
+      } catch {
+        // 연결 정보는 없어도 답은 그대로 보인다
+      }
+      todoIds = todoIds.slice(0, 6);
       const text = raw && cut ? `${raw}\n\n${CUT_NOTE}` : raw;
       if (text) {
         // replyTo 는 늘 둔다: 알림 차례 답은 [] (findUnanswered 가 기준에서 건너뜀), 칸이 없는 것은 예전 기록뿐
-        const ranoMsg: ChatMessage = { id: randomUUID(), role: 'rano', text, at: new Date().toISOString(), replyTo: cut ? [] : ids };
+        const ranoMsg: ChatMessage = { id: randomUUID(), role: 'rano', text, at: new Date().toISOString(), replyTo: cut ? [] : ids, ...(todoIds.length ? { todoIds } : {}) };
         try {
           await this.store.append(ranoMsg);
         } catch {
@@ -643,6 +676,8 @@ export class RanoCore implements RanoSessionApi {
               for (const b of blocks) {
                 if (b.type === 'text' && typeof b.text === 'string' && b.text.trim()) texts.push(b.text.trim());
                 if (TOOL_BLOCKS.has(b.type)) {
+                  const tb = b as unknown as { name?: string; input?: unknown };
+                  for (const tid of todoIdsFromTool(tb.name ?? '', tb.input)) out.todoIds = [...new Set([...(out.todoIds ?? []), tid])];
                   hadToolUse = true;
                   tools.push(b as unknown as { id?: string; name?: string });
                 }

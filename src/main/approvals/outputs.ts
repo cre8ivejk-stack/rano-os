@@ -167,6 +167,8 @@ export class OutputsStore implements OutputsApi {
       endedAt: task.endedAt ?? new Date().toISOString(),
       leaderReport: report,
       changedFiles,
+      ...(task.stats ? { stats: task.stats } : {}),
+      ...(task.stoppedByUser ? { stoppedByUser: true } : {}),
     });
     this.changed(mission.id);
 

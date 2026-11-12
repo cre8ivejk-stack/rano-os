@@ -11,6 +11,7 @@ interface ChatMessage {
   attachments?: ChatAttachment[];
   via?: 'mobile'; // 휴대폰(텔레그램)에서 보낸 말
   replyTo?: string[]; // 라노 답: 이 답이 답한 내 말 id (묶어 답하면 여럿)
+  todoIds?: string[]; // 라노 답: 이 답이 다룬 할 일 id
 }
 
 type MemberState = 'idle' | 'working' | 'reviewing' | 'done';
@@ -32,6 +33,13 @@ interface MissionTask {
   endedAt?: string;
   report?: string;
   stoppedByRejection?: boolean;
+  stoppedByUser?: boolean;
+  stats?: TaskStats;
+}
+interface TaskStats {
+  costUsd?: number;
+  tokens?: number;
+  cards?: number;
 }
 
 interface ActivityItem {
@@ -350,6 +358,8 @@ interface TaskOutput {
   leaderReport?: string;
   reviewReports: { role: string; text: string; at: string }[];
   changedFiles: { path: string; change: 'added' | 'modified' | 'deleted'; rel?: string; folder?: string }[];
+  stats?: TaskStats;
+  stoppedByUser?: boolean;
 }
 
 interface RanoApi {
@@ -362,6 +372,7 @@ interface RanoApi {
   missionList(): Promise<MissionStatus[]>;
   missionHistory(missionId: string): Promise<ChatMessage[]>;
   missionSend(missionId: string, text: string, attachments?: NewAttachment[]): Promise<{ ok: boolean; message?: string }>;
+  missionStop(missionId: string, taskId?: string): Promise<{ ok: boolean; message?: string }>;
   approvalsList(): Promise<ApprovalRequest[]>;
   approvalDecide(id: string, decision: ApprovalDecision): Promise<void>;
   approvalOpenPreview(id: string, itemId: string, optionKey: string): Promise<{ ok: boolean; message?: string; reveal?: boolean }>;
@@ -427,7 +438,7 @@ interface RanoApi {
   setupSave(input: SetupInput): Promise<{ ok: boolean; message: string; needsRestart: boolean }>;
   todosList(): Promise<TodoItem[]>;
   todosAdd(missionId: string | null, title: string): Promise<TodoItem[]>;
-  todosUpdate(id: string, patch: { title?: string; status?: TodoStatus }): Promise<TodoItem[]>;
+  todosUpdate(id: string, patch: { title?: string; status?: TodoStatus; steps?: string[]; doneSteps?: number[]; undoneSteps?: number[] }): Promise<TodoItem[]>;
   todosMove(id: string, dir: -1 | 1): Promise<TodoItem[]>;
   todosRemove(id: string): Promise<TodoItem[]>;
 }
@@ -442,6 +453,7 @@ interface TodoItem {
   queued?: boolean;
   note?: string;
   taskId?: string; // 이 할 일로 돌린 마지막 과제(결과물함 카드와 잇는다)
+  steps?: { title: string; done: boolean }[]; // 마일스톤(단계)
   createdAt: string;
   updatedAt: string;
   doneAt?: string;

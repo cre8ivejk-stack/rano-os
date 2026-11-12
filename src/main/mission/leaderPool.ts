@@ -48,6 +48,13 @@ export class MissionLeaderPool implements MissionLeaderApi {
     return this.slots.filter((l) => l.busy()).length;
   }
 
+  /** 진행 중 과제를 멈춘다. taskId 가 없으면 일하는 리더 모두 */
+  stop(taskId?: string): boolean {
+    let any = false;
+    for (const l of this.slots) if (l.stop?.(taskId)) any = true;
+    return any;
+  }
+
   close(): void {
     this.closed = true;
     for (const l of this.slots) l.close?.();

@@ -43,7 +43,7 @@ export function describeStatus(s: MissionStatus): string {
   return out.join('\n');
 }
 
-export function createMissionMcpServer(dispatcher: MissionDispatcherApi, config: RanoConfig, userText?: () => Promise<string>) {
+export function createMissionMcpServer(dispatcher: MissionDispatcherApi, config: RanoConfig, userText?: () => Promise<string>, terminalText?: (missionId?: string) => string) {
   const list = config.missions.map((m) => `- ${m.id}: ${m.name} (${zoneText(config)[m.zone].label} 구역)`).join('\n') || '- (등록된 미션 없음)';
 
   const assign = tool(
@@ -110,5 +110,16 @@ export function createMissionMcpServer(dispatcher: MissionDispatcherApi, config:
     { annotations: { readOnlyHint: true } },
   );
 
-  return createSdkMcpServer({ name: MISSION_MCP_NAME, version: '0.1.0', tools: [assign, status] });
+  const terminal = tool(
+    'get_terminal_sessions',
+    [
+      '사용자가 앱 밖 터미널(Claude Code)에서 미션 작업 폴더로 따로 진행한 최근 세션을 읽습니다: 세션 제목, 마지막 시각, 사용자가 친 말 가운데 마지막 몇 줄.',
+      '도구 결과나 코드는 읽지 않습니다. 맡기려는 일이 터미널에서 이미 진행 중인지 확인하거나, 사용자가 터미널에서 하던 일을 물을 때 쓰세요. missionId 를 비우면 모든 미션.',
+    ].join('\n'),
+    { missionId: z.string().optional().describe('미션 id. 비우면 전체') },
+    async ({ missionId }) => text(terminalText ? terminalText(missionId) : '(터미널 세션을 읽을 수 없어요)'),
+    { annotations: { readOnlyHint: true } },
+  );
+
+  return createSdkMcpServer({ name: MISSION_MCP_NAME, version: '0.1.0', tools: [assign, status, terminal] });
 }

@@ -150,6 +150,19 @@ export class OutputsView {
     card.appendChild(el('h3', 'out-title', t.title));
     const meta = [o.from === 'rano' ? '라노 배정' : '직접 지시', `시작 ${formatWhen(o.startedAt)}`];
     if (o.endedAt) meta.push(`끝남 ${formatWhen(o.endedAt)}`);
+    // 과제에 든 것: 걸린 시간 · 승인 카드 · 사용량
+    if (o.endedAt) {
+      const min = Math.max(0, (new Date(o.endedAt).getTime() - new Date(o.startedAt).getTime()) / 60000);
+      meta.push(min < 1 ? `걸린 시간 ${Math.max(1, Math.round(min * 60))}초` : min < 60 ? `걸린 시간 ${Math.round(min)}분` : `걸린 시간 ${Math.floor(min / 60)}시간 ${Math.round(min % 60)}분`);
+    }
+    if (o.stats) {
+      if (typeof o.stats.cards === 'number') meta.push(`승인 카드 ${o.stats.cards}장`);
+      if (o.stats.tokens) {
+        const amount = o.stats.tokens >= 10000 ? `${Math.round(o.stats.tokens / 10000).toLocaleString()}만` : o.stats.tokens.toLocaleString();
+        meta.push(`사용량 ${amount} 토큰${o.stats.costUsd ? ` (약 $${o.stats.costUsd.toFixed(2)} 상당)` : ''}`);
+      }
+    }
+    if (o.stoppedByUser) meta.push('내가 멈춤');
     card.appendChild(el('div', 'task-meta', meta.join(' · ')));
     if (t.task) card.appendChild(el('p', 'out-task', `맡긴 일: ${t.task}`));
 

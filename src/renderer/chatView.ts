@@ -20,6 +20,11 @@ export class ChatView {
   private textById = new Map<string, string>(); // 인용 한 줄용: 말 id → 글
   private lastDayKey: string | null = null;
   private ready = false;
+  private todosByMsg = new Map<string, string[]>(); // 말 id → 그 말이 다룬 할 일 id (라노 답과, 그 답이 답한 내 말)
+  private filterId: string | null = null;
+
+  /** 말풍선에 마우스를 올리거나 뗐을 때: 그 말이 다룬 할 일 id (없으면 null) */
+  onHoverTodos: (ids: string[] | null) => void = () => {};
 
   constructor(
     private scrollEl: HTMLElement,
@@ -43,6 +48,8 @@ export class ChatView {
 
   clear(): void {
     this.shownIds.clear();
+    this.todosByMsg.clear();
+    this.filterId = null;
     this.textById.clear();
     this.lastDayKey = null;
     this.ready = false;
@@ -112,10 +119,57 @@ export class ChatView {
         row.appendChild(quote);
       }
     }
+    // 할 일 연결: 라노 답에 적힌 할 일을 그 답과, 그 답이 답한 내 말에 잇는다
+    const todoIds = Array.isArray(m.todoIds) ? m.todoIds.filter((id) => typeof id === 'string') : [];
+    if (todoIds.length) {
+      this.linkTodos(row, m.id, todoIds);
+      for (const uid of replyTo) {
+        const urow = this.logEl.querySelector<HTMLElement>(`.msg[data-id="${CSS.escape(uid)}"]`);
+        if (urow) this.linkTodos(urow, uid, todoIds);
+      }
+    }
+    row.addEventListener('mouseenter', () => {
+      const ids = this.todosByMsg.get(m.id);
+      if (ids?.length) this.onHoverTodos(ids);
+    });
+    row.addEventListener('mouseleave', () => this.onHoverTodos(null));
     row.appendChild(bubble);
     if (Array.isArray(m.attachments) && m.attachments.length) row.appendChild(messageImages(m.attachments));
     this.textById.set(m.id, text);
     this.append(row, m.at, forceScroll || style.side === 'right');
+  }
+
+  private linkTodos(row: HTMLElement, msgId: string, ids: string[]): void {
+    const all = [...new Set([...(this.todosByMsg.get(msgId) ?? []), ...ids])];
+    this.todosByMsg.set(msgId, all);
+    row.dataset.todos = all.join(' ');
+    row.classList.add('has-todo');
+    if (this.filterId) row.classList.toggle('msg-dim', !all.includes(this.filterId));
+  }
+
+  /** 가장 최근 라노 답이 다룬 할 일 */
+  latestTodos(): string[] {
+    const rows = this.logEl.querySelectorAll<HTMLElement>('.msg.msg-left');
+    const last = rows[rows.length - 1];
+    return last?.dataset.todos ? last.dataset.todos.split(' ') : [];
+  }
+
+  /** 그 할 일에 관한 말만 또렷하게(나머지는 흐리게). null 이면 모두 보통으로. 돌려주는 값은 관련 말 수 */
+  filterTodo(id: string | null): number {
+    this.filterId = id;
+    let n = 0;
+    let last: HTMLElement | null = null;
+    for (const row of Array.from(this.logEl.querySelectorAll<HTMLElement>('.msg'))) {
+      const hit = !!id && (row.dataset.todos ?? '').split(' ').includes(id);
+      row.classList.toggle('msg-dim', !!id && !hit);
+      row.classList.toggle('msg-hit', hit);
+      if (hit) {
+        n++;
+        last = row;
+      }
+    }
+    if (last) last.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    return n;
   }
 
   /** 대화 흐름 사이에 카드 같은 요소를 끼워 넣는다 (예: 라노의 미션 구성안) */

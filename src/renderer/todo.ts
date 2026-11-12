@@ -19,6 +19,9 @@ export class TodoView {
   private editing: string | null = null;
   private confirmDelete: string | null = null;
   private loaded = false;
+  private nowIds = new Set<string>(); // 가장 최근 라노 답이 다룬 할 일("지금 이야기 중")
+  private talkId: string | null = null; // 그 일에 관한 대화만 보는 중인 할 일
+  private stepsEditing: string | null = null; // 단계를 고치는 중인 할 일
 
   private readonly groupsEl = mustGet<HTMLDivElement>('todo-groups');
   private readonly countEl = mustGet<HTMLSpanElement>('todo-count');
@@ -28,6 +31,32 @@ export class TodoView {
   private readonly addBtn = mustGet<HTMLButtonElement>('todo-add-btn');
 
   onOpenOutputs: () => void = () => {};
+  /** [대화 보기]: 그 할 일에 관한 말만 또렷하게. null 이면 풀기. 관련 말 수를 돌려준다 */
+  onTalk: (id: string | null) => number = () => 0;
+  /** [시작]: 라노에게 그 할 일을 시작하라고 말한다 */
+  onStart: (item: TodoItem) => void = () => {};
+
+  /** 가장 최근 라노 답이 다룬 할 일을 강조한다 */
+  setNow(ids: string[]): void {
+    const next = new Set(ids);
+    if (next.size === this.nowIds.size && [...next].every((id) => this.nowIds.has(id))) return;
+    this.nowIds = next;
+    this.render();
+    // 강조된 항목이 완료 묶음 안이거나 화면 밖이면 보이게 한다
+    const first = ids.length ? this.groupsEl.querySelector<HTMLElement>(`.todo-item[data-id="${CSS.escape(ids[0])}"]`) : null;
+    if (first) {
+      const det = first.closest('details');
+      if (det) det.open = true;
+      first.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }
+
+  /** 말풍선에 마우스를 올린 동안 그 말의 할 일을 강조한다(다시 그리지 않고 표시만) */
+  setHover(ids: string[] | null): void {
+    for (const li of Array.from(this.groupsEl.querySelectorAll<HTMLElement>('.todo-item'))) {
+      li.classList.toggle('todo-hover', !!ids && ids.includes(li.dataset.id ?? ''));
+    }
+  }
 
   constructor() {
     this.form.addEventListener('submit', (e) => {
@@ -182,10 +211,58 @@ export class TodoView {
     }
   }
 
+  /** 단계(마일스톤) 줄: 점을 누르면 끝남·되돌림. 고치는 중이면 한 줄에 하나씩 적는 칸 */
+  private stepsRow(x: TodoItem): HTMLElement | null {
+    if (this.stepsEditing === x.id) {
+      const box = el('div', 'todo-steps-edit');
+      const area = el('textarea', 'todo-steps-input');
+      area.rows = Math.max(3, (x.steps?.length ?? 0) + 1);
+      area.placeholder = '한 줄에 단계 하나 (예: 자료 수집 / 초안 / 검수 / 확인). 6개까지';
+      area.value = (x.steps ?? []).map((s) => s.title).join('\n');
+      area.setAttribute('aria-label', `${x.title} 단계`);
+      const save = el('button', 'todo-tool todo-steps-save', '저장');
+      save.type = 'button';
+      save.addEventListener('click', () => {
+        this.stepsEditing = null;
+        void this.act(this.rano.todosUpdate(x.id, { steps: area.value.split('\n').map((t) => t.trim()).filter(Boolean) }));
+      });
+      const cancel = el('button', 'todo-tool', '취소');
+      cancel.type = 'button';
+      cancel.addEventListener('click', () => {
+        this.stepsEditing = null;
+        this.render();
+      });
+      const btns = el('div', 'todo-steps-btns');
+      btns.append(save, cancel);
+      box.append(area, btns);
+      queueMicrotask(() => area.focus());
+      return box;
+    }
+    const steps = x.steps ?? [];
+    if (!steps.length) return null;
+    const box = el('div', 'todo-steps');
+    const current = steps.findIndex((s) => !s.done);
+    steps.forEach((s, i) => {
+      const dot = el('button', `todo-step${s.done ? ' done' : i === current ? ' current' : ''}`);
+      dot.type = 'button';
+      dot.title = `${i + 1}. ${s.title}${s.done ? ' (끝남 · 누르면 되돌려요)' : ' (누르면 끝남으로 표시해요)'}`;
+      dot.setAttribute('aria-label', dot.title);
+      dot.addEventListener('click', () => void this.act(this.rano.todosUpdate(x.id, s.done ? { undoneSteps: [i + 1] } : { doneSteps: [i + 1] })));
+      box.appendChild(dot);
+    });
+    const doneN = steps.filter((s) => s.done).length;
+    box.appendChild(el('span', 'todo-steps-text', current < 0 ? `${doneN}/${steps.length} · 모든 단계 끝` : `${doneN}/${steps.length} · 지금: ${steps[current].title}`));
+    return box;
+  }
+
   private row(x: TodoItem, siblings: TodoItem[]): HTMLLIElement {
     // 지우기 확인 중이면 도구 줄을 계속 보여 준다(다시 그리면 마우스 올림 상태가 풀리므로)
-    const li = el('li', `todo-item st-${x.status}${this.confirmDelete === x.id ? ' tools-open' : ''}`);
+    const li = el('li', `todo-item st-${x.status}${this.confirmDelete === x.id ? ' tools-open' : ''}${this.nowIds.has(x.id) ? ' todo-now' : ''}${this.talkId === x.id ? ' todo-talk' : ''}`);
     li.dataset.id = x.id;
+    if (this.nowIds.has(x.id)) {
+      const badge = el('div', 'todo-now-badge', '지금 이야기 중');
+      li.appendChild(badge);
+    }
 
     const top = el('div', 'todo-top');
     const sel = el('select', `todo-status st-${x.status}`);
@@ -245,7 +322,30 @@ export class TodoView {
       this.editing = x.id;
       this.render();
     });
-    tools.append(up, down, edit);
+    // 그 일에 관한 대화만 보기(다시 누르면 풀기)
+    const talk = el('button', 'todo-tool', this.talkId === x.id ? '대화 모두 보기' : '대화 보기');
+    talk.type = 'button';
+    talk.title = '이 할 일에 관한 대화만 또렷하게 보여요';
+    talk.addEventListener('click', () => {
+      const next = this.talkId === x.id ? null : x.id;
+      const n = this.onTalk(next);
+      this.talkId = next && n > 0 ? next : null;
+      if (next && n === 0) {
+        this.onTalk(null);
+        talk.textContent = '이어진 대화 없음';
+        setTimeout(() => this.render(), 1500);
+        return;
+      }
+      this.render();
+    });
+    const stepBtn = el('button', 'todo-tool', x.steps?.length ? '단계 고치기' : '단계 넣기');
+    stepBtn.type = 'button';
+    stepBtn.title = '이 일의 단계(마일스톤)를 정해요';
+    stepBtn.addEventListener('click', () => {
+      this.stepsEditing = this.stepsEditing === x.id ? null : x.id;
+      this.render();
+    });
+    tools.append(up, down, edit, talk, stepBtn);
     if (this.confirmDelete === x.id) {
       const yes = el('button', 'todo-tool todo-del-yes', '정말 지우기');
       yes.type = 'button';
@@ -269,7 +369,21 @@ export class TodoView {
       });
       tools.append(del);
     }
+    // 대기 중인 일은 바로 시작시킬 수 있다(라노에게 "이 일을 시작해 주세요"라고 말함)
+    if (x.status === 'waiting' && this.editing !== x.id) {
+      const go = el('button', 'todo-start', '시작');
+      go.type = 'button';
+      go.title = '라노에게 이 일을 시작하라고 말해요';
+      go.addEventListener('click', () => {
+        go.disabled = true;
+        go.textContent = '맡기는 중…';
+        this.onStart(x);
+      });
+      top.appendChild(go);
+    }
     li.appendChild(top);
+    const stepsEl = this.stepsRow(x);
+    if (stepsEl) li.appendChild(stepsEl);
 
     const line = this.progressLine(x);
     if (line || (x.status === 'review' && x.missionId)) {

@@ -23,6 +23,7 @@ import {
 import { appendJsonl, buildSdkEnv, friendlyError, looksLikeMissingSession } from '../engine/ranoSession.js';
 import { LeaderGuard, SUBAGENT_TOOL } from './leaderPermissions.js';
 import { missionTmpDir } from './missionTmp.js';
+import { interruptedReport, taskTitle } from './taskText.js';
 import { PREVIEW_EXTS } from '../approvals/previewSafety.js';
 import { createLeaderMcpServer } from './leaderTools.js';
 import { buildLeaderSystemPrompt, CODE_MAP_FILE, codeMapText, HANDOFF_FILE, readLeaderContext } from './leaderPrompt.js';
@@ -126,6 +127,8 @@ export class MissionLeader implements MissionLeaderApi {
   // 이번 과제에서 리더 자신이 시안 폴더·작업 폴더에 Write/Edit 해 성공한 것 (tick = 그때의 팀원 끝남 순서 번호)
   private leaderEdits: { tick: number; file: string }[] = [];
   private abort: AbortController | null = null;
+  private stopReq = false; // 사용자가 [멈추기]를 누름
+  private taskUsage = { cost: 0, tokens: 0, lastCost: 0, lastTokens: 0 }; // 이번 과제의 사용량(시도마다 누적값의 늘어난 만큼 더함)
   private closed = false;
   private queue: Promise<unknown> = Promise.resolve();
   private pending = 0; // 진행 중 + 대기 중인 과제 수
@@ -172,6 +175,19 @@ export class MissionLeader implements MissionLeaderApi {
     this.abort?.abort();
   }
 
+  /** 엔진 결과의 누적 사용량에서 이번에 늘어난 만큼을 과제 사용량에 더한다 */
+  private addUsage(msg: unknown) {
+    const m = msg as { total_cost_usd?: number; modelUsage?: Record<string, { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number }> };
+    const cost = typeof m.total_cost_usd === 'number' ? m.total_cost_usd : 0;
+    let tokens = 0;
+    for (const u of Object.values(m.modelUsage ?? {})) tokens += (u?.inputTokens ?? 0) + (u?.outputTokens ?? 0) + (u?.cacheReadInputTokens ?? 0) + (u?.cacheCreationInputTokens ?? 0);
+    const u = this.taskUsage;
+    u.cost += cost >= u.lastCost ? cost - u.lastCost : cost;
+    u.tokens += tokens >= u.lastTokens ? tokens - u.lastTokens : tokens;
+    u.lastCost = cost;
+    u.lastTokens = tokens;
+  }
+
   private emitActivity(text: string) {
     this.emit({ kind: 'activity', text, at: new Date().toISOString(), missionId: this.mission.id });
   }
@@ -181,6 +197,14 @@ export class MissionLeader implements MissionLeaderApi {
   }
 
   /** 지금 맡은 과제 (같은 미션의 다른 리더에게 알려 주기용) */
+  /** 사용자가 진행 중 과제를 멈춘다(승인 대기도 함께 풀림). 멈출 과제가 있었으면 true */
+  stop(taskId?: string): boolean {
+    if (!this.currentTask || (taskId && this.currentTask.id !== taskId)) return false;
+    this.stopReq = true;
+    this.abort?.abort();
+    return true;
+  }
+
   current(): MissionTask | null {
     return this.currentTask ? { ...this.currentTask } : null;
   }
@@ -231,16 +255,18 @@ export class MissionLeader implements MissionLeaderApi {
     await this.saveMessage(task.from === 'rano' ? 'rano' : 'user', task.text, task.attachments);
     let started: MissionTask | null = null;
     this.safe(() => {
-      started = this.tracker.taskStart({ title: clip(task.text, 60), from: task.from });
+      started = this.tracker.taskStart({ title: taskTitle(task.text), from: task.from });
     });
     const mt: MissionTask = started ?? {
       id: randomUUID(),
-      title: clip(task.text, 60),
+      title: taskTitle(task.text),
       from: task.from,
       status: 'running',
       startedAt: new Date().toISOString(),
     };
     this.currentTask = mt;
+    this.stopReq = false;
+    this.taskUsage = { cost: 0, tokens: 0, lastCost: 0, lastTokens: 0 };
     this.reviewSeq = { tick: 0, lastWork: 0, lastReview: 0 };
     this.leaderEdits = [];
     this.guard.setTask({ id: mt.id, title: mt.title, planFirst: !!task.planFirst, preSync: !!task.preSync });
@@ -283,12 +309,14 @@ export class MissionLeader implements MissionLeaderApi {
       // 과제마다 새 대화로 시작한다(저장된 리더 대화 번호로 이어 쓰지 않음). 과제 안 이어가기 실패 재시도 규칙은 runTaskAttempts 에 그대로
       let result = await runTaskAttempts((resume) => this.attempt(prompt, resume), undefined, looksLikeMissingSession);
       // 단계 한도에 걸렸으면 실패로 끝내지 않고 같은 대화를 이어서 마무리하게 한다
-      for (let n = 0; n < MAX_CONTINUES && !this.closed && result.sessionId && /max_turns/.test(result.errorText ?? ''); n++) {
+      for (let n = 0; n < MAX_CONTINUES && !this.closed && !this.stopReq && result.sessionId && /max_turns/.test(result.errorText ?? ''); n++) {
         this.safe(() => this.tracker.activity('앱', '단계 한도에 걸려 같은 대화로 이어서 마무리해요'));
         const next = await this.attempt(CONTINUE_PROMPT, result.sessionId);
         result = next.sessionId ? next : { ...next, sessionId: result.sessionId };
       }
-      if (result.errorText === null && result.text) {
+      if (this.stopReq) {
+        report = interruptedReport('사용자가 [멈추기]를 눌러 과제를 멈췄어요. 이미 고친 파일은 그대로 남아 있어요.', result.text);
+      } else if (result.errorText === null && result.text) {
         ok = true;
         report = result.text;
         const seq = this.reviewSeq;
@@ -316,7 +344,7 @@ export class MissionLeader implements MissionLeaderApi {
           result.errorText !== null
             ? friendlyError(result.errorText, result.errorKind, this.leaderLabel)
             : `${this.leaderLabel}가 이번에는 보고를 만들지 못했어요. 다시 한 번 맡겨 주세요.`;
-        report = result.text ? `${result.text}\n\n(중간에 멈췄어요: ${friendly})` : friendly;
+        report = interruptedReport(friendly, result.text);
       }
     } catch (err) {
       report = friendlyError(err instanceof Error ? err.message : String(err), null, this.leaderLabel);
@@ -327,8 +355,18 @@ export class MissionLeader implements MissionLeaderApi {
     const parallel = othersAtStart.length > 0 || this.others().some((t) => t.id !== mt.id);
     await this.saveMessage('leader', parallel ? `**[과제: ${mt.title}]**\n\n${report}` : report);
     this.safe(() => this.tracker.taskEnd({ ok, report }));
+    // 이 과제에 든 것: 사용량(금액 환산·토큰)과 사용자에게 물은 승인 카드 수
+    let cards = 0;
+    try {
+      cards = (this.approvals?.list() ?? []).filter((a) => a.taskId === mt.id).length;
+    } catch {
+      cards = 0;
+    }
+    const stats = { costUsd: Math.round(this.taskUsage.cost * 100) / 100, tokens: this.taskUsage.tokens, cards };
+    const stoppedByUser = this.stopReq;
+    this.stopReq = false;
     if (this.outputs) {
-      const ended: MissionTask = { ...mt, status: ok ? 'done' : 'failed', endedAt: new Date().toISOString(), report };
+      const ended: MissionTask = { ...mt, status: ok ? 'done' : 'failed', endedAt: new Date().toISOString(), report, stats, ...(stoppedByUser ? { stoppedByUser: true } : {}) };
       await this.outputs.taskEnded(this.mission, ended, report).catch(() => undefined);
     }
     this.currentTask = null;
@@ -600,6 +638,7 @@ export class MissionLeader implements MissionLeaderApi {
         }
         if (msg.type === 'result') {
           recordResult(this.mission.id, msg, !!resume);
+          this.addUsage(msg);
           void fetchPlanLimits(q); // 리더가 일한 뒤에도 사용 한도 % 를 새로 받는다
           if (msg.subtype === 'success') {
             if (msg.is_error) out.errorText = msg.result || 'error';

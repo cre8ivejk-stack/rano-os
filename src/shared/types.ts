@@ -235,6 +235,15 @@ export interface MissionTask {
   endedAt?: string;
   report?: string; // 리포 리더의 최종 보고
   stoppedByRejection?: boolean; // 승인함 반려로 팀원 없이 멈춘 과제 (현황판에 '반려로 멈춤'으로 보임)
+  stoppedByUser?: boolean; // 사용자가 [멈추기]로 멈춘 과제
+  stats?: TaskStats; // 끝난 과제의 사용량·승인 카드 수
+}
+
+/** 과제 하나에 든 것(결과물함 카드에 보임) */
+export interface TaskStats {
+  costUsd?: number; // 사용량을 금액으로 바꾼 값(구독이면 실제 청구액이 아니라 참고값)
+  tokens?: number; // 주고받은 글 양(토큰)
+  cards?: number; // 사용자에게 물은 승인 카드 수
 }
 
 export interface ActivityItem {
@@ -272,6 +281,7 @@ export interface ChatMessage {
   at: string; // ISO 시각
   attachments?: ChatAttachment[]; // 사용자가 붙인 그림
   via?: 'mobile'; // 휴대폰(텔레그램)에서 보낸 말
+  todoIds?: string[]; // 라노 답: 이 답이 다룬 할 일 id (화면이 할 일 목록에서 강조한다). 없으면 연결 없음
   replyTo?: string[]; // 라노 답: 이 답이 답한 사용자 말 id (묶어 답하면 여럿). 예전 기록에는 없음
 }
 /** 대화 첨부 그림 */
@@ -331,6 +341,7 @@ export const IPC = {
   // ---- 2단계 ----
   missionList: 'mission:list', // invoke → MissionStatus[]
   missionHistory: 'mission:history', // invoke(missionId) → ChatMessage[] (리포 리더 대화)
+  missionStop: 'mission:stop', // invoke(missionId, taskId?) → { ok, message? } 진행 중 과제 멈추기
   missionSend: 'mission:send', // invoke(missionId, text) → void (접수되면 바로 resolve, 일은 뒤에서 진행)
   // ---- 3단계 ----
   approvalsList: 'approvals:list', // invoke → ApprovalRequest[]
@@ -399,6 +410,7 @@ export interface RanoApi {
   missionList(): Promise<MissionStatus[]>;
   missionHistory(missionId: string): Promise<ChatMessage[]>;
   missionSend(missionId: string, text: string, attachments?: NewAttachment[]): Promise<{ ok: boolean; message?: string }>;
+  missionStop(missionId: string, taskId?: string): Promise<{ ok: boolean; message?: string }>;
   // ---- 3단계 ----
   approvalsList(): Promise<ApprovalRequest[]>;
   approvalDecide(id: string, decision: ApprovalDecision): Promise<void>;
@@ -467,7 +479,7 @@ export interface RanoApi {
   // ---- 할 일 목록 ----
   todosList(): Promise<TodoItem[]>;
   todosAdd(missionId: string | null, title: string): Promise<TodoItem[]>;
-  todosUpdate(id: string, patch: { title?: string; status?: TodoStatus }): Promise<TodoItem[]>;
+  todosUpdate(id: string, patch: { title?: string; status?: TodoStatus; steps?: string[]; doneSteps?: number[]; undoneSteps?: number[] }): Promise<TodoItem[]>;
   todosMove(id: string, dir: -1 | 1): Promise<TodoItem[]>;
   todosRemove(id: string): Promise<TodoItem[]>;
 }
@@ -484,16 +496,22 @@ export interface TodoItem {
   queued?: boolean; // active 인데 리더가 앞 과제를 하느라 아직 시작 못 함
   note?: string; // 짧은 메모 (예: "리더 보고 도착 11/04 23:10", "중단됨")
   taskId?: string; // 이 할 일로 돌린 마지막 과제(결과물함 카드와 잇는다)
+  steps?: TodoStep[]; // 마일스톤(단계). 순서대로, 많아야 6개
   createdAt: string;
   updatedAt: string;
   doneAt?: string;
+}
+/** 할 일의 단계(마일스톤) 하나 */
+export interface TodoStep {
+  title: string;
+  done: boolean;
 }
 export const TODO_MCP_NAME = 'rano-todo';
 export interface TodoStoreApi {
   list(): TodoItem[];
   get(id: string): TodoItem | undefined;
   add(missionId: string | null, title: string, by: 'user' | 'rano'): TodoItem;
-  update(id: string, patch: { title?: string; status?: TodoStatus; queued?: boolean; note?: string; taskId?: string }, by: 'user' | 'rano' | 'app'): TodoItem;
+  update(id: string, patch: { title?: string; status?: TodoStatus; queued?: boolean; note?: string; taskId?: string; steps?: string[]; doneSteps?: number[]; undoneSteps?: number[] }, by: 'user' | 'rano' | 'app'): TodoItem;
   move(id: string, dir: -1 | 1): void;
   remove(id: string, by: 'user' | 'rano'): void;
   describe(): string; // 라노 프롬프트용 글
@@ -581,6 +599,7 @@ export interface MissionLeaderApi {
   run(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; planFirst?: boolean; preSync?: boolean; attachments?: ChatAttachment[] }): Promise<{ ok: boolean; report: string; taskId?: string }>; // preSync: 사용자가 직접 받아오기를 시킴(받아오기는 승인 없이) // planFirst: 기획(안 선택) 먼저, 고른 뒤 구현 // onStart: 앞 과제가 끝나고 이 과제를 실제로 시작할 때
   busy(): boolean;
   working?(): number; // 같은 미션 동시 작업: 지금 일하는 리더 수
+  stop?(taskId?: string): boolean; // 사용자가 진행 중 과제를 멈춤. taskId 가 없으면 진행 중인 과제 모두. 멈춘 것이 있으면 true
   close?(): void; // 3단계: 앱을 끌 때 진행 중인 일과 승인 대기를 정리
 }
 
@@ -713,6 +732,8 @@ export interface TaskOutput {
   leaderReport?: string; // 리포 리더 최종 보고
   reviewReports: { role: string; text: string; at: string }[]; // 검수 역할(reviewerRoles)이 돌려준 결과
   changedFiles: { path: string; change: 'added' | 'modified' | 'deleted'; rel?: string; folder?: string }[]; // 과제 동안 작업 대상 폴더에서 바뀐 파일(절대 경로). rel = 작업 폴더 기준 경로, folder = 작업 폴더 이름
+  stats?: TaskStats; // 사용량·승인 카드 수(0.9.4 부터 기록)
+  stoppedByUser?: boolean;
 }
 
 // 승인함·결과물 담당이 구현: src/main/approvals/outputs.ts

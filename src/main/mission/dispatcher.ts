@@ -1,4 +1,5 @@
 // 라노·사용자의 지시를 미션 리포 리더에게 넘기고, 끝나면 미션 기억에 남긴 뒤 라노에게 보고를 전달한다.
+import { taskTitle } from './taskText.js';
 import { promises as fs } from 'node:fs';
 import { userAskedSync } from './syncIntent.js';
 import path from 'node:path';
@@ -163,6 +164,14 @@ export class MissionDispatcher implements MissionDispatcherApi {
         : `${mission.name} 리더에게 배정했어요. 진행 상황은 현황판에서 볼 수 있어요. 끝나면 보고가 도착해요.`;
   }
 
+  /** 사용자가 진행 중 과제를 멈춘다 */
+  stop(missionId: string, taskId?: string): { ok: boolean; message?: string } {
+    const found = this.find(missionId);
+    if (typeof found === 'string') return { ok: false, message: found };
+    const stopped = found.leader.stop?.(taskId) ?? false;
+    return stopped ? { ok: true } : { ok: false, message: '지금 멈출 수 있는 과제가 없어요' };
+  }
+
   async userSend(missionId: string, text: string, attachments: ChatAttachment[] = []): Promise<void> {
     const found = this.find(missionId);
     if (typeof found === 'string') throw new Error(found);
@@ -207,7 +216,7 @@ export class MissionDispatcher implements MissionDispatcherApi {
         if (entry) queue?.remove(entry.id);
         this.pushQueue(mission.id);
         this.todoAfterRun(todoId, result.ok, 'taskId' in result ? result.taskId : undefined);
-        return this.afterRun(mission, text, result);
+        return this.afterRun(mission, text, result, todoId);
       })
       .catch((e) => console.error('[dispatcher] 마무리 처리 실패:', e));
   }
@@ -224,8 +233,8 @@ export class MissionDispatcher implements MissionDispatcherApi {
     );
   }
 
-  private async afterRun(mission: MissionConfig, text: string, result: { ok: boolean; report: string }) {
-    const title = oneLine(text);
+  private async afterRun(mission: MissionConfig, text: string, result: { ok: boolean; report: string }, todoId?: string) {
+    const title = taskTitle(text);
     const outcome = result.ok ? '완료' : '중단';
     const tracker = this.deps.trackers.get(mission.id);
 
@@ -253,7 +262,16 @@ export class MissionDispatcher implements MissionDispatcherApi {
     }
 
     // ③ 라노에게 보고
-    await this.deps.notifyRano(`[앱 알림] ${mission.name} 리더 보고 (과제: ${title}, 결과: ${outcome})\n\n${result.report}`, 'report');
+    // 연결된 할 일에 단계가 있으면 지금 단계 상태를 함께 알려, 보고로 확인된 단계를 라노가 표시하게 한다
+    let stepNote = '';
+    try {
+      const steps = todoId ? this.deps.todos?.get(todoId)?.steps : undefined;
+      if (steps?.length)
+        stepNote = `\n[앱 안내] 이 할 일의 단계: ${steps.map((s, i) => `${i + 1}.${s.done ? '✓' : ''}${s.title}`).join(' → ')}. 이 보고로 끝난 것이 확인된 단계는 todo_update 의 doneSteps 로 표시하세요(마지막 단계는 사용자가 표시).`;
+    } catch {
+      stepNote = '';
+    }
+    await this.deps.notifyRano(`[앱 알림] ${mission.name} 리더 보고 (과제: ${title}, 결과: ${outcome}${todoId ? `, 연결된 할 일 id: ${todoId}` : ''})${stepNote}\n\n${result.report}`, 'report');
   }
 
   // 제목·설명 아래, 기존 항목들 위에 새 줄을 넣는다(최신순)

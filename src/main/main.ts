@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defaultRootDir, loadConfig } from './config.js';
 import { defaultsDir, ensureDataHome } from './dataHome.js';
-import { IPC, type NewAttachment, type MissionLeaderApi, type MissionTrackerApi, type RanoUiEvent } from '../shared/types.js';
+import { IPC, type NewAttachment, type MissionConfig, type MissionLeaderApi, type MissionTrackerApi, type RanoUiEvent } from '../shared/types.js';
 import { MemoryService } from './memory/memoryService.js';
 import { createMemoryMcpServer } from './memory/memoryTools.js';
 import { ConversationStore } from './engine/conversationStore.js';
@@ -34,6 +34,8 @@ import { TelegramBridge } from './mobile/telegram.js';
 import { candidates as connectorCandidates, importConnector, initConnectors, listConnectors, removeConnector, setConnectorSecret, setMissionConnectors } from './connectors/connectors.js';
 import { registryList, autoSkills, setAutoSkills, initSkills, installSkill, installTools, listSkills, previewSkill, readSkill, removeSkill, roleSkills, setRoleSkills, toolsStatus } from './skills/skills.js';
 import { attachmentDataUrl, saveAttachments } from './engine/attachments.js';
+import { buildStatusNote } from './engine/ranoStatus.js';
+import { describeTerminalSessions, listTerminalSessions, type TerminalSession } from './mission/terminalSessions.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -135,6 +137,26 @@ async function boot() {
     onReport: (card) => emit({ kind: 'report', ...card, at: new Date().toISOString() }),
     todos,
   });
+  // 터미널(앱 밖 Claude Code) 세션 요약: 미션 작업 폴더에서 연 최근 3일 세션. 파일을 읽는 일이라 1분 동안은 읽어 둔 것을 쓴다
+  const TERMINAL_DAYS = 3;
+  const terminalCache = new Map<string, { at: number; list: TerminalSession[] }>();
+  const terminalOf = (m: MissionConfig): TerminalSession[] => {
+    const hit = terminalCache.get(m.id);
+    if (hit && Date.now() - hit.at < 60_000) return hit.list;
+    let list: TerminalSession[] = [];
+    try {
+      list = listTerminalSessions(m.targets, Date.now() - TERMINAL_DAYS * 86_400_000, 6);
+    } catch {
+      list = [];
+    }
+    terminalCache.set(m.id, { at: Date.now(), list });
+    return list;
+  };
+  const terminalText = (missionId?: string): string =>
+    config.missions
+      .filter((m) => !missionId || m.id === missionId)
+      .map((m) => `### ${m.name}\n${describeTerminalSessions(terminalOf(m), true)}`)
+      .join('\n\n') || '(등록된 미션 없음)';
   session = new RanoSession({
     config,
     memory,
@@ -147,9 +169,16 @@ async function boot() {
       const out: string[] = [];
       for (let i = msgs.length - 1; i >= 0 && msgs[i].role === 'user'; i--) out.unshift(msgs[i].text);
       return out.join('\n');
-    }),
+    }, terminalText),
     todoMcp: createTodoMcpServer(todos, config),
     todoText: () => todos.describe(),
+    todoItems: () => todos.list().map((x) => ({ id: x.id, title: x.title, status: x.status })),
+    statusNote: () =>
+      buildStatusNote({
+        missions: dispatcher.statuses(),
+        pending: approvals.list().filter((a) => a.status === 'pending').map((a) => ({ missionId: a.missionId, title: a.title })),
+        terminal: config.missions.map((m) => ({ missionName: m.name, text: terminalOf(m).length ? describeTerminalSessions(terminalOf(m).slice(0, 4)) : '' })),
+      }),
     orgMcp: createOrgMcpServer(org, emit, config),
   });
   const rano = session;
@@ -249,6 +278,9 @@ async function boot() {
         {
           ...(typeof patch.title === 'string' ? { title: patch.title.slice(0, 500) } : {}),
           ...(STATUS_OK.includes(patch.status) ? { status: patch.status } : {}),
+          ...(Array.isArray(patch.steps) ? { steps: patch.steps.filter((x: unknown) => typeof x === 'string').slice(0, 12) } : {}),
+          ...(Array.isArray(patch.doneSteps) ? { doneSteps: patch.doneSteps.filter((x: unknown) => Number.isInteger(x)) } : {}),
+          ...(Array.isArray(patch.undoneSteps) ? { undoneSteps: patch.undoneSteps.filter((x: unknown) => Number.isInteger(x)) } : {}),
         },
         'user',
       );
@@ -431,6 +463,10 @@ async function boot() {
     app.relaunch();
     app.quit();
   });
+
+  ipcMain.handle(IPC.missionStop, async (_e, missionId: unknown, taskId: unknown) =>
+    typeof missionId === 'string' ? dispatcher.stop(missionId, typeof taskId === 'string' ? taskId : undefined) : { ok: false, message: '미션을 찾지 못했어요' },
+  );
 
   ipcMain.handle(IPC.missionSend, async (_e, missionId: unknown, text: unknown, attachments: unknown) => {
     const t = typeof text === 'string' ? text.trim() : '';

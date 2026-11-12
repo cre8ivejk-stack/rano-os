@@ -155,6 +155,9 @@ const api: RanoApi = {
     const list = Array.isArray(attachments) ? attachments.slice(0, 6).map((x) => ({ name: String(x?.name ?? ''), mime: String(x?.mime ?? ''), data: String(x?.data ?? ''), ...(x?.marked === true ? { marked: true } : {}) })) : [];
     return ipcRenderer.invoke(CH_MISSION_SEND, String(missionId), String(text), list);
   },
+  missionStop(missionId: string, taskId?: string): Promise<{ ok: boolean; message?: string }> {
+    return ipcRenderer.invoke('mission:stop', String(missionId), typeof taskId === 'string' ? taskId : undefined);
+  },
   approvalsList(): Promise<ApprovalRequest[]> {
     return ipcRenderer.invoke(CH_APPROVALS_LIST);
   },
@@ -366,8 +369,11 @@ const api: RanoApi = {
   todosAdd(missionId: string | null, title: string): Promise<TodoItem[]> {
     return ipcRenderer.invoke(CH_TODOS_ADD, missionId === null ? null : String(missionId), String(title));
   },
-  todosUpdate(id: string, patch: { title?: string; status?: TodoStatus }): Promise<TodoItem[]> {
-    const clean: { title?: string; status?: TodoStatus } = {};
+  todosUpdate(id: string, patch: { title?: string; status?: TodoStatus; steps?: string[]; doneSteps?: number[]; undoneSteps?: number[] }): Promise<TodoItem[]> {
+    const clean: { title?: string; status?: TodoStatus; steps?: string[]; doneSteps?: number[]; undoneSteps?: number[] } = {};
+    if (Array.isArray(patch.steps)) clean.steps = patch.steps.slice(0, 12).map((x) => String(x));
+    if (Array.isArray(patch.doneSteps)) clean.doneSteps = patch.doneSteps.slice(0, 12).map((x) => Number(x));
+    if (Array.isArray(patch.undoneSteps)) clean.undoneSteps = patch.undoneSteps.slice(0, 12).map((x) => Number(x));
     if (typeof patch.title === 'string') clean.title = patch.title;
     if (typeof patch.status === 'string') clean.status = patch.status;
     return ipcRenderer.invoke(CH_TODOS_UPDATE, String(id), clean);
