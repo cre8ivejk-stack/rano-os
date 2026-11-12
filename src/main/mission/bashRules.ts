@@ -757,6 +757,7 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
   // 읽어도 되는 위치인지: 원래 경로가 읽기 허용 폴더 안이고, realPath 가 있으면 링크를 푼 실제 경로도 읽기 허용 폴더(또는 그 실제 경로) 안
   const realRoots = ctx.realPath ? ctx.readRoots.map((r) => ctx.realPath!(r)) : [];
   const readableAbs = (abs: string): boolean => {
+    if (abs === '/dev/null') return true; // 빈 입력은 읽어도 되는 곳
     if (!ctx.readRoots.some((r) => within(abs, r))) return false;
     if (!ctx.realPath) return true;
     const rp = ctx.realPath(abs);
@@ -1139,6 +1140,13 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
       if (KILL_CMDS.has(name)) risk('kill', name, killTargets(name, args));
       if (name === 'launchctl' && launchctlStops(args)) risk('kill', name, nonOptions(args.slice(1)));
       if (NET_CMDS.has(name) || (name === 'openssl' && /^s_(client|time)$/.test(args[0] ?? ''))) risk('network', name, netHosts(name, args));
+      // curl 이 받은 것을 담는 파일(-o·--output)도 바뀌는 파일로 센다(승인 카드에 보이고, 받는 곳 판단에 쓴다)
+      if (name === 'curl') {
+        args.forEach((x, k) => {
+          const v = /^--output=/.test(x) ? x.slice('--output='.length) : x === '--output' || /^-[a-zA-Z]*o$/.test(x) ? args[k + 1] : undefined;
+          if (v && v !== '-' && v !== '/dev/null') out.writePaths.push(resolve(v));
+        });
+      }
       if (isCodeName(name)) {
         risk('code', name);
         // sh -c '…' · osascript -e '…' · python -c '…' 처럼 글로 넘긴 명령 안의 프로그램 끄기·인터넷 전송도 표시

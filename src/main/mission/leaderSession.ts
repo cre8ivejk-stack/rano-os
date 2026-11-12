@@ -31,6 +31,7 @@ import { shareWithMission } from '../engine/attachments.js';
 import { fetchPlanLimits, recordLimit, recordResult } from '../engine/usage.js';
 import { roleSkills, skillCatalog } from '../skills/skills.js';
 import { mcpServersFor } from '../connectors/connectors.js';
+import { liveMcpServers } from '../connectors/probe.js';
 import { FILE_TOOLS } from '../approvals/approvalQueue.js';
 import { buildCarryBlock, isLeaderEditTarget, leaderEditNote, runTaskAttempts } from './leaderCarry.js';
 
@@ -48,7 +49,9 @@ export interface MissionLeaderDeps {
   others?: () => MissionTask[];
 }
 
-const MAX_TURNS = 60;
+const MAX_TURNS = 300; // 한 번에 쓸 수 있는 단계. 긴 과제(검수 여러 번·수집)가 끝에서 끊기지 않게 넉넉히
+const MAX_CONTINUES = 2; // 그래도 한도에 걸리면 같은 대화를 이어서 마무리하게 하는 횟수
+const CONTINUE_PROMPT = '[앱 안내] 단계 한도에 걸려 잠시 끊겼어요. 이미 한 일은 다시 하지 말고, 남은 일만 마무리한 뒤 보고 형식대로 최종 보고를 남기세요.';
 const MEMBER_ACTIVITY_GAP_MS = 30_000; // 같은 팀원의 같은 움직임은 30초에 한 번만 남긴다
 
 interface AttemptResult {
@@ -56,6 +59,7 @@ interface AttemptResult {
   errorText: string | null;
   errorKind: string | null;
   gotInit: boolean;
+  sessionId?: string;
 }
 
 // Agent tool_result 에서 글만 뽑는다
@@ -277,7 +281,13 @@ export class MissionLeader implements MissionLeaderApi {
     let report = '';
     try {
       // 과제마다 새 대화로 시작한다(저장된 리더 대화 번호로 이어 쓰지 않음). 과제 안 이어가기 실패 재시도 규칙은 runTaskAttempts 에 그대로
-      const result = await runTaskAttempts((resume) => this.attempt(prompt, resume), undefined, looksLikeMissingSession);
+      let result = await runTaskAttempts((resume) => this.attempt(prompt, resume), undefined, looksLikeMissingSession);
+      // 단계 한도에 걸렸으면 실패로 끝내지 않고 같은 대화를 이어서 마무리하게 한다
+      for (let n = 0; n < MAX_CONTINUES && !this.closed && result.sessionId && /max_turns/.test(result.errorText ?? ''); n++) {
+        this.safe(() => this.tracker.activity('앱', '단계 한도에 걸려 같은 대화로 이어서 마무리해요'));
+        const next = await this.attempt(CONTINUE_PROMPT, result.sessionId);
+        result = next.sessionId ? next : { ...next, sessionId: result.sessionId };
+      }
       if (result.errorText === null && result.text) {
         ok = true;
         report = result.text;
@@ -363,9 +373,16 @@ export class MissionLeader implements MissionLeaderApi {
       }),
       config.memoryDir,
     );
-    const conns = (mission.connectors ?? []).map((n) => config.connectors?.[n]).filter((c): c is NonNullable<typeof c> => !!c);
+    // 지금 닿지 않는 외부 연결(사내망 밖 등)은 이번 시도에서 빼고 시작한다. 그대로 두면 연결을 기다리느라 시작이 30초 늦어진다
+    const live = await liveMcpServers(mcpServersFor(config, mission));
+    const downLabels = live.down.map((n) => config.connectors?.[n]?.label ?? n);
+    if (live.down.length) this.safe(() => tracker.activity('앱', `지금 닿지 않는 외부 연결은 빼고 시작해요: ${downLabels.join(', ')}`));
+    const conns = (mission.connectors ?? []).filter((n) => !live.down.includes(n)).map((n) => config.connectors?.[n]).filter((c): c is NonNullable<typeof c> => !!c);
     const connBlock = conns.length
       ? `\n\n## 외부 연결 (MCP)\n이 미션은 다음 외부 서비스 도구를 쓸 수 있어요: ${conns.map((c) => `${c.label}(도구 이름 mcp__${c.name}__…)`).join(', ')}.\n- 검색·조회는 바로 돼요. 만들기·고치기·댓글·라벨 같은 쓰기는 사용자 승인함을 거쳐요(한 번에 하나씩, 무엇을 왜 바꾸는지 먼저 말하세요).\n- 팀원에게 맡길 때도 같은 도구를 써요. 연결이 안 되면 "외부 연결 실패"라고 보고하세요.`
+      : '';
+    const downBlock = live.down.length
+      ? `\n\n## 지금 닿지 않는 외부 연결\n${downLabels.join(', ')} 연결은 지금 닿지 않아(사내망 밖 등) 이번 과제에서 쓸 수 없어요. 이 연결이 꼭 필요한 일은 하지 말고 보고에 "외부 연결 실패: 무엇을 못 했는지"를 적으세요.`
       : '';
     // 이 미션 전용 임시 폴더(~/rano/runs/tmp/<미션>): 세션을 시작할 때 없으면 만든다. 자동으로 지우지 않는다
     const tmpDir = missionTmpDir(config, mission.id);
@@ -373,7 +390,7 @@ export class MissionLeader implements MissionLeaderApi {
       () => true,
       () => false,
     );
-    const systemPrompt = buildLeaderSystemPrompt({ ...ctx, tmpDir }) + (mission.stagePolicy === 'approval' ? skillCatalog([], true) : '') + connBlock;
+    const systemPrompt = buildLeaderSystemPrompt({ ...ctx, tmpDir }) + (mission.stagePolicy === 'approval' ? skillCatalog([], true) : '') + connBlock + downBlock;
 
     // 팀원도 같은 규칙을 따르도록 역할 프롬프트 끝에 규칙 파일을 붙인다(설정 파일은 불러오지 않으므로)
     const rulesBlock = ctx.rules.map((r) => `### ${r.file}\n${r.content.trim()}`).join('\n\n');
@@ -405,6 +422,7 @@ export class MissionLeader implements MissionLeaderApi {
         })
       : null;
     const env = buildSdkEnv(config);
+    env.MCP_TIMEOUT = env.MCP_TIMEOUT ?? '12000'; // 외부 연결이 붙기를 기다리는 한도(기본 30초 → 12초). 평소에는 몇 초 안에 붙는다
     delete env.MCP_TOOL_TIMEOUT; // 승인 대기(request_approval)가 도구 시간 제한에 걸리지 않게
     // 시험 도구·mktemp·tempfile 이 쓰는 임시 폴더도 이 미션 임시 폴더로(모든 미션이 같이 쓰는 /tmp 대신)
     if (tmpReady) env.TMPDIR = tmpDir;
@@ -417,7 +435,7 @@ export class MissionLeader implements MissionLeaderApi {
       // 2단계(readOnly): 읽기 + 팀원 호출. 3단계(approval): 쓰기·명령도 열되 모두 문지기(훅·canUseTool)를 거친다
       tools: approvalStage ? [...APPROVAL_STAGE_TOOLS, SUBAGENT_TOOL] : [...READ_ONLY_TOOLS, SUBAGENT_TOOL],
       agents: roles,
-      mcpServers: { ...mcpServersFor(config, mission), ...(leaderMcp ? { [LEADER_MCP_NAME]: leaderMcp } : {}) },
+      mcpServers: { ...live.servers, ...(leaderMcp ? { [LEADER_MCP_NAME]: leaderMcp } : {}) },
       abortController: abort,
       strictMcpConfig: true,
       settingSources: [], // 작업 리포의 .claude 설정·hooks·CLAUDE.md 를 불러오지 않는다(규칙은 프롬프트에 직접 넣음)
@@ -452,7 +470,10 @@ export class MissionLeader implements MissionLeaderApi {
       if (okFlag) {
         const seq = this.reviewSeq;
         seq.tick += 1;
-        if (reviewerRoles.has(role)) seq.lastReview = seq.tick;
+        if (reviewerRoles.has(role)) {
+          seq.lastReview = seq.tick;
+          this.guard.countReview(role);
+        }
         else seq.lastWork = seq.tick;
       }
       this.safe(() => tracker.memberEnd(role, okFlag));
@@ -464,6 +485,7 @@ export class MissionLeader implements MissionLeaderApi {
         if (msg.type === 'system') {
           if (msg.subtype === 'init') {
             out.gotInit = true;
+            if (msg.session_id) out.sessionId = msg.session_id;
             if (msg.session_id) await this.store.setSessionId(msg.session_id).catch(() => undefined);
           } else if (msg.subtype === 'task_notification' && msg.tool_use_id) {
             // 팀원이 백그라운드로 돌았을 때를 위한 예비 처리

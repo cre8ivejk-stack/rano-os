@@ -88,6 +88,9 @@ const MSG_READ_ONLY = '이 미션은 읽기 전용이라 쓰기·실행을 할 �
 const MSG_BLOCKED = '이 위치는 비밀 정보가 있거나 다른 구역(회사·개인) 폴더라서 열 수 없어요. 우회하지 말고 필요하면 보고에 적어 주세요.';
 const MSG_OUTSIDE = '이 미션의 작업 폴더와 참고 폴더 밖이라 열 수 없어요.';
 const MSG_ROLE = '이 미션 팀에 없는 역할이라 부를 수 없어요. 팀 편성에 있는 역할만 불러 주세요.';
+/** 검수 역할 하나를 한 과제에서 부를 수 있는 횟수(첫 검수 + 고친 부분 재검수) */
+export const MAX_REVIEWS = 2;
+const MSG_REVIEW_CAP = `이 검수 역할은 이번 과제에서 이미 ${MAX_REVIEWS}번 확인했어요(첫 검수 + 재검수). 더 부르지 말고, 남은 지적은 직접 고치고 고친 곳을 직접 확인한 뒤 보고 "3. 검수"에 남은 지적과 처리한 내용을 적어 마무리하세요.`;
 const MSG_TEAM = '먼저 request_approval 도구로 팀 구성안(누구에게 무엇을 맡길지)을 올려 승인받으세요.';
 const MSG_PLAN = '이 과제는 기획 먼저예요. 안 2~3개와 권장안을 request_approval(kind: decision, planGate: true)로 올려 사용자가 고른 뒤에 작업 폴더를 고칠 수 있어요. 시안은 시안 폴더에 만들어 주세요.';
 const MSG_REFS = '참고 폴더는 읽기만 할 수 있어요. 바꿀 내용은 보고에 적어 주세요.';
@@ -315,7 +318,7 @@ function checkReadPath(config: RanoConfig, mission: MissionConfig, raw: string, 
   const resolved = absPath(raw, cwd);
   const hit = blockedHit(config, resolved);
   if (hit) return { allow: false, reason: `차단 목록에 걸림: ${hit}`, message: MSG_BLOCKED, blocked: hit };
-  const roots = [...allowedRoots(mission), path.join(config.runsDir, 'drafts', mission.id), path.join(config.rootDir, 'skills')]; // 시안 폴더·스킬 보관함도 읽기 허용
+  const roots = [...allowedRoots(mission), path.join(config.runsDir, 'drafts', mission.id), path.join(config.rootDir, 'skills'), missionTmpDir(config, mission.id)]; // 시안 폴더·스킬 보관함·이 미션 임시 폴더도 읽기 허용
   for (const c of new Set([resolved, real(resolved)])) {
     if (!inAny(c, roots)) return { allow: false, reason: `작업 폴더 밖: ${c}`, message: MSG_OUTSIDE };
   }
@@ -409,6 +412,7 @@ export interface ApprovalAsk {
   paths?: string[]; // Bash 명령이 바꾸거나 지울 수 있는 경로(절대 경로)
   fileOpsOnly?: boolean; // Bash 명령이 파일 일(쓰기·지우기)만 하는지
   syncOnly?: boolean; // Bash 명령의 기록 바꾸기가 원격 최신 받아오기·보관/되살리기뿐인지
+  netHosts?: string[]; // Bash 명령이 curl 로 여는 사이트(호스트). 승인되면 이 과제 동안 같은 사이트 읽기(GET)는 다시 묻지 않는다
   logTarget?: string; // Bash 기록용: 프로그램 끄기·지우기·인터넷 전송의 대상(끌 이름·지울 경로·보낼 호스트). 비밀 가림
 }
 
@@ -719,20 +723,24 @@ const CURL_SENDS = /\bcurl\b[^;&|\n]*\s(-[a-zA-Z]*[dFT]\b|--data\S*|--form\S*|--
 
 /** curl 이 받은 것을 파일로 남기는 옵션(-o /dev/null 은 빼고 본다) */
 const CURL_WRITES = /\bcurl\b[^;&|\n]*\s(-[a-zA-Z]*[oODc]\b|--output\b|--remote-name\S*|--dump-header|--cookie-jar|--trace\S*|--stderr|--libcurl|--create-dirs)/;
+/** -o·--output 말고 다른 파일을 남기는 옵션(쿠키·추적·설정 등) */
+const CURL_NON_OUTPUT_WRITES = /\bcurl\b[^;&|\n]*\s(-[a-zA-Z]*[ODc]\b|--remote-name\S*|--dump-header|--cookie-jar|--trace\S*|--stderr|--libcurl|--output-dir|-[a-zA-Z]*o\S)/;
 /** 받은 것을 실행 프로그램으로 넘기기 */
 const PIPE_TO_CODE = /\|\s*(sudo\s+)?(env\s+)?(sh|bash|zsh|dash|ksh|fish|python\d*(\.\d+)?|node|deno|bun|perl|ruby|php|osascript|eval|source|xargs|tee)\b/;
 
 /** 믿는 미션에서 그 위험 표시를 넘어갈 수 있는지: 개발 서버 끄기(pkill -f 패턴), 이 맥 안 주소 읽기(curl GET) */
-function trustedRisk(r: { kind: string; program: string; targets: string[] }, command: string): boolean {
+function trustedRisk(r: { kind: string; program: string; targets: string[] }, command: string, okHosts?: ReadonlySet<string>): boolean {
   if (r.kind === 'kill') return r.program === 'pkill' && r.targets.length > 0 && r.targets.every((t) => TRUST_DEV_SERVER.test(t)) && /\bpkill\s+-f\s/.test(command);
   if (r.kind === 'network')
     return (
       r.program === 'curl' &&
       r.targets.length > 0 &&
-      r.targets.every((t) => TRUST_LOCAL_HOST.test(t)) &&
       !CURL_SENDS.test(command) &&
-      !CURL_WRITES.test(command.replace(/\s(-o|--output)\s+\/dev\/null\b/g, ' ')) &&
-      !PIPE_TO_CODE.test(command)
+      !PIPE_TO_CODE.test(command) &&
+      // 이 맥 안 주소: 읽기만(파일로 남기지 않음). 이 과제에서 사용자가 승인한 사이트: 읽어서 파일로 받기(-o)까지(받는 곳은 쓰기 경로 판단을 그대로 거친다)
+      (r.targets.every((t) => TRUST_LOCAL_HOST.test(t))
+        ? !CURL_WRITES.test(command.replace(/\s(-o|--output)\s+\/dev\/null\b/g, ' '))
+        : !!okHosts && r.targets.every((t) => okHosts.has(t) || TRUST_LOCAL_HOST.test(t)) && !CURL_NON_OUTPUT_WRITES.test(command))
     );
   return false;
 }
@@ -746,10 +754,11 @@ export function trustedBash(
   b: Pick<BashDecision, 'reasons' | 'writePaths' | 'risks' | 'linkSources' | 'modeChange'>,
   scratch: string[] = [],
   command = '',
+  okHosts?: ReadonlySet<string>,
 ): boolean {
   if (kind !== 'write' && kind !== 'command') return false; // 커밋·삭제·DB·배포·리포 밖 쓰기는 그대로
   if (b.modeChange || (b.linkSources ?? []).length) return false;
-  if ((b.risks ?? []).some((r) => TRUST_ASK_RISKS.has(r.kind) && !trustedRisk(r, command))) return false;
+  if ((b.risks ?? []).some((r) => TRUST_ASK_RISKS.has(r.kind) && !trustedRisk(r, command, okHosts))) return false;
   if (b.reasons.some((r) => TRUST_ASK_REASON.test(r) && !TRUST_OK_REASON.test(r))) return false;
   if (b.reasons.some((r) => /^(pkill|curl) \(판단이 필요한 명령\)$/.test(r)) && !(b.risks ?? []).length) return false;
   return b.writePaths.every((p) => trustedRepoPath(mission, p) || scratch.some((s) => insideBoth(p, s)));
@@ -768,6 +777,13 @@ export function expandSimpleBraces(command: string): string {
   return out;
 }
 
+/** 명령의 인터넷 위험이 모두 curl 이고 주소(호스트)를 다 알 때 그 호스트들. 하나라도 모르면 빈 목록 */
+function curlHosts(b: Pick<BashDecision, 'risks'>): string[] {
+  const net = (b.risks ?? []).filter((r) => r.kind === 'network');
+  if (!net.length || net.some((r) => r.program !== 'curl' || !r.targets.length || r.targets.some((t) => !t))) return [];
+  return [...new Set(net.flatMap((r) => r.targets))];
+}
+
 /** 3단계 판단. 승인함을 기다리는 일은 하지 않는다(type 'ask' 로 돌려줌). */
 export function decideApprovalStage(
   config: RanoConfig,
@@ -775,7 +791,7 @@ export function decideApprovalStage(
   toolName: string,
   input: Record<string, unknown>,
   cwd: string,
-  actor: { isSubagent: boolean; teamApproved: boolean; draftsDir?: string; planBlocked?: boolean; memberModels?: Record<string, 'opus' | 'sonnet'>; trustRepo?: boolean },
+  actor: { isSubagent: boolean; teamApproved: boolean; draftsDir?: string; planBlocked?: boolean; memberModels?: Record<string, 'opus' | 'sonnet'>; trustRepo?: boolean; netHosts?: ReadonlySet<string> },
   mcpServer?: { name: string; source: string },
 ): StageDecision {
   // 믿는 미션 규칙은 미션이 믿는 미션이고, 기획 결정 전·읽기만 하는 과제가 아닐 때만(부르는 쪽이 actor.trustRepo 로 알려 줌)
@@ -901,6 +917,12 @@ export function decideApprovalStage(
     // 명령 결과를 이 미션 임시 폴더에 담기만 하는 명령(예: npm test > ~/rano/runs/tmp/<미션>/x.txt)은 허용. 쓰기 말고 다른 판단 근거가 있으면 승인함으로
     if (kind === 'outsideWrite' && onlyIn(tmpDir))
       return { type: 'allow', reason: `미션 임시 폴더에 결과 담기: ${b.writePaths.map(displayPath).join(', ')}` };
+    // 인수 메모·코드 지도 덧붙이기처럼 시안 폴더·임시 폴더·코드 지도 파일에만 쓰는 파일 명령(여러 곳이 섞여도)은 바로
+    const codeMap = path.join(mission.home, 'memory', CODE_MAP_FILE);
+    const ownSpot = (p: string) =>
+      (!!actor.draftsDir && insideBoth(p, actor.draftsDir)) || insideBoth(p, tmpDir) || ((p === codeMap || p === `${codeMap}.tmp`) && real(path.dirname(p)) === real(path.dirname(codeMap)) && (!existsSync(p) || real(p) === path.join(real(path.dirname(codeMap)), path.basename(p))));
+    if ((kind === 'write' || kind === 'outsideWrite') && b.fileOpsOnly === true && !b.modeChange && !(b.linkSources ?? []).length && b.writePaths.length > 0 && b.writePaths.every(ownSpot))
+      return { type: 'allow', reason: `시안·임시 폴더·코드 지도에 쓰기(${kind}): ${b.writePaths.map(displayPath).join(', ')}` };
     if (trust) {
       // 믿는 미션: 이 미션 임시 폴더·이 과제 시안 폴더도 작업 폴더처럼 보고 다시 판단한다(결과 담기·시안 코드 실행)
       const scratch = [tmpDir, ...(actor.draftsDir ? [actor.draftsDir] : [])];
@@ -917,7 +939,7 @@ export function decideApprovalStage(
         hasLinksUnder,
       });
       if (bt.decision === 'allow') return { type: 'allow', reason: `믿는 미션, 읽기·확인 명령: ${bt.reasons.join('; ')}` };
-      if (bt.decision === 'ask' && trustedBash(mission, bt.kind ?? 'command', bt, scratch, judged))
+      if (bt.decision === 'ask' && trustedBash(mission, bt.kind ?? 'command', bt, scratch, judged, actor.netHosts))
         return { type: 'allow', reason: `믿는 미션, 작업 폴더 안 명령(${bt.kind ?? 'command'}): ${bt.reasons.join('; ')}` };
     }
     const files = b.writePaths.length ? `\n바뀔 수 있는 파일: ${b.writePaths.map(displayPath).join(', ')}${realPathNote(mission, b.writePaths)}` : '';
@@ -937,6 +959,7 @@ export function decideApprovalStage(
         fileOpsOnly: !!b.fileOpsOnly,
         ...(b.syncOnly ? { syncOnly: true } : {}),
         ...(bashLogTarget(b) ? { logTarget: bashLogTarget(b) } : {}),
+        ...(curlHosts(b).length ? { netHosts: curlHosts(b) } : {}),
       },
     };
   }
@@ -1041,6 +1064,8 @@ export class LeaderGuard {
   private readonly taskModels = new Map<string, Record<string, 'opus' | 'sonnet'>>(); // 과제 → 역할별로 승인된 모델
   private readonly commandGrants = new Map<string, CommandGrant[]>(); // 과제 → 실행 목록 승인
   private readonly soloTasks = new Set<string>(); // 빠른 모드(리더 혼자) 과제
+  private readonly netGrants = new Map<string, Set<string>>(); // 과제 → 사용자가 승인한 사이트(호스트). 믿는 미션에서 같은 사이트 읽기는 다시 묻지 않는다
+  private readonly reviewCalls = new Map<string, number>(); // 과제 → 검수 역할을 부른 횟수
   private readonly deleteGrants = new Map<string, string[]>(); // 과제 → 리더 확인 승인으로 지워도 되는 위치(실제 경로)
   private task:{ id: string; title: string; planFirst?: boolean; preSync?: boolean } | null = null;
 
@@ -1113,6 +1138,19 @@ export class LeaderGuard {
   isReviewSkipped(taskId?: string): boolean {
     const id = taskId ?? this.task?.id;
     return !!id && this.reviewSkippedTasks.has(id);
+  }
+
+  /** 검수 역할이 한 번 끝날 때마다 센다(역할별) */
+  countReview(role: string, taskId?: string) {
+    const id = taskId ?? this.task?.id;
+    if (!id) return;
+    const key = `${id}:${role}`;
+    this.reviewCalls.set(key, (this.reviewCalls.get(key) ?? 0) + 1);
+  }
+
+  reviewCount(role: string, taskId?: string): number {
+    const id = taskId ?? this.task?.id;
+    return id ? this.reviewCalls.get(`${id}:${role}`) ?? 0 : 0;
   }
 
   /** 팀 구성안에서 승인된 역할별 모델(이 과제 동안 팀원을 부를 때 앱이 넣는다) */
@@ -1295,6 +1333,12 @@ export class LeaderGuard {
       if (ext.type === 'ask' && this.isReadOnlyTask()) return { type: 'deny', reason: `읽기만 하는 과제에서 외부 쓰기: ${toolName}`, message: MSG_READ_TASK };
       return ext;
     }
+    // 검수는 역할마다 과제당 MAX_REVIEWS 번까지(첫 검수 + 재검수). 그 뒤 남은 지적은 리더가 직접 고치고 확인해 보고한다
+    if (toolName === SUBAGENT_TOOL && !isSub) {
+      const role = str(input.subagent_type);
+      if (role && mission.reviewerRoles.includes(role) && this.reviewCount(role) >= MAX_REVIEWS)
+        return { type: 'deny', reason: `검수 ${MAX_REVIEWS}번을 넘김: ${role}`, message: MSG_REVIEW_CAP };
+    }
     if (mission.stagePolicy === 'readOnly') {
       const d = decideLeaderTool(config, mission, toolName, input, cwd, isSub, this.memberModels());
       return { type: d.allow ? 'allow' : 'deny', reason: d.reason, message: d.message, updatedInput: d.updatedInput, blocked: d.blocked };
@@ -1305,7 +1349,7 @@ export class LeaderGuard {
       toolName,
       input,
       cwd,
-      { isSubagent: isSub, teamApproved: this.isTeamApproved(), draftsDir: this.draftsDir(), planBlocked: this.planBlocked(), memberModels: this.memberModels(), trustRepo: !this.isReadOnlyTask() },
+      { isSubagent: isSub, teamApproved: this.isTeamApproved(), draftsDir: this.draftsDir(), planBlocked: this.planBlocked(), memberModels: this.memberModels(), trustRepo: !this.isReadOnlyTask(), netHosts: this.task ? this.netGrants.get(this.task.id) : undefined },
       mcpServer,
     );
     // 기획 결정 전에는 작업 폴더를 바꾸는 명령(커밋·삭제·쓰기 명령 등)도 승인함에 올리지 않고 막는다
@@ -1389,6 +1433,11 @@ export class LeaderGuard {
     if (d.decision === 'approve') {
       rec('allow', `사용자 승인(${d.id})${d.rememberFile && !isBash ? ', 이번 과제 동안 다시 묻지 않기' : ''}`);
       this.activity(whoInfo.label, `승인됨: ${ask.title}`);
+      if (isBash && taskId && ask.netHosts?.length) {
+        const set = this.netGrants.get(taskId) ?? new Set<string>();
+        for (const h of ask.netHosts) set.add(h);
+        this.netGrants.set(taskId, set);
+      }
       return { behavior: 'allow', updatedInput: input };
     }
     const note = d.note?.trim() || '사유 없음';
