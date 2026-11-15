@@ -6,7 +6,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { LEADER_MCP_NAME, type ApprovalQueueApi, type BundleFile, type DecisionItem, type MissionConfig, type MissionTrackerApi } from '../../shared/types.js';
-import { fileChangeFor, fileFingerprint, grantInfoFor, RUN_PLAN_KINDS, redactCommand, type CommandGrant, type LeaderGuard } from './leaderPermissions.js';
+import { fileChangeFor, fileFingerprint, grantInfoFor, releaseCommandProblem, RUN_PLAN_KINDS, redactCommand, type CommandGrant, type LeaderGuard } from './leaderPermissions.js';
 import { checkPreviewFile, PREVIEW_EXTS } from '../approvals/previewSafety.js';
 
 export const LEADER_APPROVAL_KINDS = ['teamPlan', 'decision', 'numbers', 'reverseDecision', 'estimate', 'external', 'other'] as const;
@@ -635,6 +635,108 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
     },
   );
 
+  // 릴리즈 목록 한 번에 승인 (0.9.11): 커밋·push·포장·배포본 올리기를 카드 한 장으로. 리더만 쓴다.
+  // 승인되면 목록의 명령은 글자·실행 위치가 같을 때 한 번씩만 다시 묻지 않는다. 지우기·DB·파일 쓰기·폴더 전체 git 명령·강제 push 는 넣을 수 없다
+  const proposeRelease = tool(
+    'propose_release',
+    [
+      '사용자가 릴리즈(커밋·push·포장·배포본 올리기)를 시켰을 때, 마무리 명령 전체를 카드 한 장으로 승인받는 도구입니다. 리더만 씁니다(팀원은 못 씀).',
+      '방법: ① 먼저 타입 검사·시험을 돌려 통과를 확인한다. ② commands 에 실행할 명령을 순서대로, 글자 그대로 넣는다(git add 는 고친 파일 이름을 적는다). ③ 승인되면 글자 그대로 차례로 실행하고, 하나라도 실패하면 멈추고 보고한다.',
+      '넣을 수 있는 것: 커밋(git add·commit·tag·push), 포장·배포 명령(npm run release 등), 일반 명령(gh release create 등). 넣을 수 없는 것: 지우기, DB, 작업 폴더 밖 쓰기, 폴더 전체를 바꾸는 git 명령(reset·checkout·stash·pull 등), 강제 push.',
+      '각 명령은 승인 뒤 한 번만 실행됩니다. 글자가 다르면 다시 묻습니다. 사용자가 릴리즈를 시키지 않았으면 쓰지 마세요.',
+      '모든 글은 비개발자도 읽을 수 있는 쉬운 한국어로 씁니다.',
+    ].join('\n'),
+    {
+      title: z.string().describe('한 줄 제목 (예: "0.9.11 커밋·push·포장·GitHub 릴리즈")'),
+      why: z.string().describe('무엇을 내보내는지(바뀐 내용 요약)와 시험 결과'),
+      recommendation: z.string().describe('권장안 한 줄'),
+      commands: z
+        .array(
+          z.object({
+            command: z.string().describe('실행할 명령, 글자 그대로'),
+            purpose: z.string().describe('이 명령이 하는 일 한 줄(쉬운 말)'),
+            cwd: z.string().optional().describe('실행 위치(절대 경로). 비우면 작업 폴더'),
+          }),
+        )
+        .min(1)
+        .max(12),
+    },
+    async (args, extra) => {
+      const task = guard.currentTask();
+      if (!deps.approvals) return text('지금은 승인함이 연결되지 않았어요. 보고에 "승인이 필요한 일"로 적어 주세요.', true);
+      if (!task) return text('진행 중인 과제가 없어 승인을 올릴 수 없어요.', true);
+      const root = mission.targets[0] ?? mission.home;
+      const home = process.env.HOME ?? '';
+      const show = (p: string) => (home && p.startsWith(home + '/') ? '~' + p.slice(home.length) : p);
+      const grants: CommandGrant[] = [];
+      const problems: string[] = [];
+      const lines: string[] = [];
+      const details: string[] = [];
+      for (const [i, c] of args.commands.entries()) {
+        const command = c.command.trim();
+        const cwd = c.cwd ? path.resolve(c.cwd.replace(/^~(?=\/|$)/, home || '~')) : root;
+        const d = guard.previewCommand(command, cwd, false);
+        const label = `${i + 1}. ${c.purpose.trim()}`;
+        if (d.type === 'deny') {
+          problems.push(`${i + 1}. ${command} — ${d.message ?? '막힌 명령이에요'}`);
+          continue;
+        }
+        if (d.type === 'allow') {
+          // 이미 바로 되는 명령(시험 등)도 순서를 보이려고 목록에는 적는다(승인으로 묶지는 않음)
+          lines.push(`${label} (바로 되는 명령)`);
+          details.push(`${i + 1}. 명령: ${redactCommand(command)}\n  실행 위치: ${show(cwd)}\n  판단: 승인 없이 바로 되는 명령`);
+          continue;
+        }
+        const releaseProblem = releaseCommandProblem(command, d.ask?.kind, d.ask?.gitWide);
+        if (!d.ask || releaseProblem) {
+          problems.push(`${i + 1}. ${command} — ${releaseProblem ?? '판단할 수 없는 명령이에요'}`);
+          continue;
+        }
+        const { files } = grantInfoFor(command, cwd);
+        grants.push({ command, cwd, files, release: true });
+        lines.push(label);
+        details.push(`${i + 1}. 명령: ${redactCommand(command)}\n  실행 위치: ${show(cwd)}\n  판단: ${d.ask.title}`);
+      }
+      if (problems.length) return text(`릴리즈 목록에 넣을 수 없는 명령이 있어 올리지 않았어요. 빼거나 따로 실행하세요(따로 실행하면 하나씩 물어요):\n- ${problems.join('\n- ')}`, true);
+      if (!grants.length) return text('승인이 필요한 명령이 없어요. 그대로 실행하세요.');
+      const extraSignal = (extra as { signal?: AbortSignal } | undefined)?.signal;
+      const signal = extraSignal && deps.signal ? AbortSignal.any([extraSignal, deps.signal]) : extraSignal ?? deps.signal;
+      deps.emitActivity?.(`${guard.leaderLabel}: 승인을 기다리는 중: ${args.title}`);
+      let d;
+      try {
+        d = await deps.approvals.request(
+          {
+            missionId: mission.id,
+            taskId: task.id,
+            who: guard.leaderLabel,
+            kind: 'deploy',
+            title: `릴리즈 목록 ${grants.length}개: ${args.title}`,
+            what: lines.join('\n'),
+            why: args.why,
+            recommendation: args.recommendation,
+            detail: `승인하면 아래 명령을 이번 과제에서 순서대로 한 번씩 실행해요(커밋·push·포장·배포본 올리기 포함). 글자나 실행 위치가 다르면 다시 물어요. push 한 것과 올린 배포본은 되돌리기 어려워요.\n\n${details.join('\n\n')}`,
+            tool: 'Bash',
+          },
+          signal,
+        );
+      } catch {
+        return text('승인을 기다리던 중에 작업이 멈췄어요. 이 명령들은 실행하지 마세요.', true);
+      }
+      const note = d.note?.trim();
+      if (d.decision === 'approve') {
+        const changed = grants.filter((g) => g.files.some((f) => fileFingerprint(f.path) !== f.hash));
+        const ok = grants.filter((g) => !changed.includes(g));
+        guard.grantCommands(task.id, ok);
+        deps.emitActivity?.(`${guard.leaderLabel}: 승인됨: ${args.title}`);
+        return text(
+          `사용자가 릴리즈 목록을 승인했어요${note ? ` (메모: ${note})` : ''}. 아래 명령을 글자 그대로, 같은 위치에서, 순서대로 한 번씩 실행하세요. 하나라도 실패하면 멈추고 보고하세요.\n${ok.map((g) => `- ${g.command}`).join('\n')}${changed.length ? `\n승인을 기다리는 동안 스크립트가 바뀐 명령은 빠졌어요(따로 실행하면 물어요): ${changed.map((g) => g.command).join(' / ')}` : ''}`,
+        );
+      }
+      if (d.decision === 'revise') return text(`사용자가 수정을 요청했어요: ${note || '사유 없음'}. 반영해서 다시 올리세요.`);
+      return text(`사용자가 반려했어요: ${note || '사유 없음'}. 이 명령들은 실행하지 말고 보고에 적으세요.`);
+    },
+  );
+
   // 빠른 모드: 범위가 분명한 작은·중간 일은 팀 구성안 없이 리더가 혼자 바로 한다(사용자에게 묻지 않음, 검수 역할 없음)
   const workSolo = tool(
     'work_solo',
@@ -662,5 +764,5 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
     },
   );
 
-  return createSdkMcpServer({ name: LEADER_MCP_NAME, version: '0.1.0', tools: [requestApproval, proposeChanges, proposeCommands, workSolo] });
+  return createSdkMcpServer({ name: LEADER_MCP_NAME, version: '0.1.0', tools: [requestApproval, proposeChanges, proposeCommands, proposeRelease, workSolo] });
 }

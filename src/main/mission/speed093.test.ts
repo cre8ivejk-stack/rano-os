@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import type { CanUseTool } from '@anthropic-ai/claude-agent-sdk';
 import type { ApprovalQueueApi, MissionConfig, RanoConfig } from '../../shared/types.js';
 import { liveMcpServers } from '../connectors/probe.js';
-import { LeaderGuard, MAX_REVIEWS } from './leaderPermissions.js';
+import { LeaderGuard, MAX_REVIEWS, MORE_REVIEW_RE } from './leaderPermissions.js';
 import { buildLeaderSystemPrompt } from './leaderPrompt.js';
 import { missionTmpDir } from './missionTmp.js';
 
@@ -117,6 +117,12 @@ test('승인한 사이트는 그 과제 동안 읽기를 다시 묻지 않는다
 test(`검수는 역할마다 과제당 ${MAX_REVIEWS}번까지, 그 뒤에는 막는다`, async () => {
   const g = newGuard();
   const call = { subagent_type: 'rev', prompt: '검수', description: '검수' };
+  // 0.9.11: 평소에는 한 번, 지시에 재검수·꼼꼼히 가 있으면(moreReview) 두 번까지
+  assert.equal(await judge(g, 'Agent', call), 'allow');
+  g.countReview('rev');
+  assert.equal(await judge(g, 'Agent', call), 'deny');
+  g.setTask({ id: 't1b', title: '꼼꼼히', moreReview: true });
+  g.markTeamApproved('t1b');
   assert.equal(await judge(g, 'Agent', call), 'allow');
   g.countReview('rev');
   assert.equal(await judge(g, 'Agent', call), 'allow'); // 재검수 한 번
@@ -128,13 +134,19 @@ test(`검수는 역할마다 과제당 ${MAX_REVIEWS}번까지, 그 뒤에는 �
   assert.equal(await judge(g, 'Agent', call), 'allow'); // 과제가 바뀌면 다시 셈
 });
 
-test('믿는 미션 안내: 빠른 모드가 기본, 검수는 2번까지', () => {
+test('믿는 미션 안내: 빠른 모드가 기본, 검수는 1번(재검수를 시키면 2번까지)', () => {
   const p = buildLeaderSystemPrompt({ mission, rules: [], charter: '', team: '', memory: [], roles: [] });
   assert.match(p, /빠른 모드가 기본이다/);
-  assert.match(p, /과제당 2번까지/);
+  assert.match(p, /과제당 1번이다/);
   const normal = buildLeaderSystemPrompt({ mission: { ...mission, trustRepo: false }, rules: [], charter: '', team: '', memory: [], roles: [] });
   assert.doesNotMatch(normal, /빠른 모드가 기본이다/);
   assert.match(normal, /일의 크기를 보고 빠른 모드와 팀 모드 중 하나를 고른다/);
+  // 0.9.11: 승인 받고 쓰기 미션도 정해진 수정은 파일 수와 상관없이 혼자, 팀 모드에서도 리더가 직접 일한다
+  assert.match(normal, /망설여지면 빠른 모드다/);
+  assert.match(normal, /파일 수와 상관없이/);
+  assert.doesNotMatch(normal, /계획·배분·취합을 맡는 리더/);
+  assert.match(normal, /propose_release/);
+  assert.ok(MORE_REVIEW_RE.test('고치고 재검수까지 받아 줘') && MORE_REVIEW_RE.test('꼼꼼히 봐 줘') && !MORE_REVIEW_RE.test('검수받아 줘'));
 });
 
 test('닿지 않는 외부 연결은 빼고, 닿는 연결과 이 맥에서 띄우는 연결은 남긴다', async () => {

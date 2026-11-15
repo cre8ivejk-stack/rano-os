@@ -410,6 +410,8 @@ interface RanoApi {
   openDataFolder(): Promise<void>;
   updateCheck(): Promise<UpdateInfo>;
   openReleasePage(url: string): Promise<void>;
+  updateLocal(): Promise<{ path: string; version: string; builtAt: number; current: string } | null>;
+  updateInstallLocal(): Promise<{ ok: boolean; message?: string }>;
   guideRead(): Promise<{ ok: boolean; text: string; url?: string }>;
   mobileStatus(): Promise<MobileStatus>;
   mobileConnect(token: string): Promise<{ ok: boolean; message: string }>;

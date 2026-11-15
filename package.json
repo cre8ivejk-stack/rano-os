@@ -1,6 +1,6 @@
 {
   "name": "rano-os",
-  "version": "0.9.10",
+  "version": "0.9.11",
   "private": true,
   "description": "라노 OS - 에이전트 조직 운영 데스크톱 앱",
   "main": "dist/main/main.js",
@@ -10,7 +10,7 @@
     "start": "npm run build && electron .",
     "package": "npm run package:check && npm run build && electron-packager . \"라노 OS\" --platform=darwin --arch=arm64 --out=out --overwrite --asar.unpack=\"**/claude-agent-sdk-darwin-arm64/**\" --ignore=\"^/src\" --ignore=\"^/out\" --ignore=\"^/tsconfig\" --ignore=\"^/scripts\" --app-bundle-id=local.rano.os",
     "test": "tsc -p tsconfig.json && node --test dist/main/*/*.test.js",
-    "package:check": "node -e \"const r=require('child_process').spawnSync('pgrep',['-f',' OS[.]app/Contents/(MacOS|Frameworks)/']);if(r.status===0){console.error('라노 OS 앱이 켜져 있어요. 앱을 닫은 뒤 다시 포장해 주세요.');process.exit(1)}\"",
+    "package:check": "node -e \"const r=require('child_process').spawnSync('pgrep',['-f','/out/[^/]*-darwin-arm64/[^/]* OS[.]app/Contents/(MacOS|Frameworks)/']);if(r.status===0){console.error('out 폴더의 라노 OS 앱이 켜져 있어요. 그 앱을 닫은 뒤 다시 포장해 주세요.');process.exit(1)}\"",
     "release": "npm run package && node scripts/release.mjs"
   },
   "dependencies": {

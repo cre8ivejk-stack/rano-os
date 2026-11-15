@@ -21,7 +21,7 @@ import {
   type ChatAttachment,
 } from '../../shared/types.js';
 import { appendJsonl, buildSdkEnv, friendlyError, looksLikeMissingSession } from '../engine/ranoSession.js';
-import { LeaderGuard, SUBAGENT_TOOL } from './leaderPermissions.js';
+import { LeaderGuard, MORE_REVIEW_RE, SUBAGENT_TOOL } from './leaderPermissions.js';
 import { missionTmpDir } from './missionTmp.js';
 import { behindNotes } from './gitBehind.js';
 import { interruptedReport, taskTitle } from './taskText.js';
@@ -272,7 +272,7 @@ export class MissionLeader implements MissionLeaderApi {
     this.taskUsage = { cost: 0, tokens: 0, lastCost: 0, lastTokens: 0 };
     this.reviewSeq = { tick: 0, lastWork: 0, lastReview: 0 };
     this.leaderEdits = [];
-    this.guard.setTask({ id: mt.id, title: mt.title, planFirst: !!task.planFirst, preSync: !!task.preSync });
+    this.guard.setTask({ id: mt.id, title: mt.title, planFirst: !!task.planFirst, preSync: !!task.preSync, moreReview: MORE_REVIEW_RE.test(task.text) });
     // 이 과제의 시안 폴더: 작업 리포 밖이라 승인 없이 쓸 수 있다
     const drafts = this.guard.draftsDir(mt.id);
     if (drafts) await mkdir(drafts, { recursive: true }).catch(() => undefined);

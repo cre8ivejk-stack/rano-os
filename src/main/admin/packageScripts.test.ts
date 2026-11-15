@@ -51,15 +51,17 @@ test('package:check 패턴: 한글·역슬래시 없이 pgrep(확장 정규식)�
 });
 
 const APP = '라노 OS';
+// 0.9.11: 포장은 out 폴더만 덮어쓰므로 out 폴더의 앱이 켜져 있을 때만 막는다. 설치한 앱(/Applications)이 켜져 있어도 포장할 수 있다
+// (라노 OS 로 라노 OS 를 고칠 때 앱을 닫지 않고 포장하려고). 새 판으로 바꾸는 일은 앱의 [바꾸고 다시 켜기]가 한다
 const SHOULD_MATCH = [
-  `/Applications/${APP}.app/Contents/MacOS/${APP}`,
-  `/Applications/${APP}.app/Contents/Frameworks/${APP} Helper.app/Contents/MacOS/${APP} Helper --type=utility`,
-  `/Applications/${APP}.app/Contents/Frameworks/${APP} Helper (Renderer).app/Contents/MacOS/${APP} Helper (Renderer) --type=renderer`,
-  `/Applications/${APP}.app/Contents/Frameworks/${APP} Helper (GPU).app/Contents/MacOS/${APP} Helper (GPU) --type=gpu-process`,
   `/Users/x/personal/rano-app/out/${APP}-darwin-arm64/${APP}.app/Contents/MacOS/${APP}`,
   `/Users/x/personal/rano-app/out/${APP}-darwin-arm64/${APP}.app/Contents/Frameworks/${APP} Helper (Renderer).app/Contents/MacOS/${APP} Helper (Renderer)`,
 ];
 const SHOULD_NOT_MATCH = [
+  `/Applications/${APP}.app/Contents/MacOS/${APP}`,
+  `/Applications/${APP}.app/Contents/Frameworks/${APP} Helper.app/Contents/MacOS/${APP} Helper --type=utility`,
+  `/Applications/${APP}.app/Contents/Frameworks/${APP} Helper (Renderer).app/Contents/MacOS/${APP} Helper (Renderer) --type=renderer`,
+  `/Applications/${APP}.app/Contents/Frameworks/${APP} Helper (GPU).app/Contents/MacOS/${APP} Helper (GPU) --type=gpu-process`,
   '/Users/x/personal/rano-app/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron .',
   '/Users/x/personal/rano-app/node_modules/electron/dist/Electron.app/Contents/Frameworks/Electron Helper.app/Contents/MacOS/Electron Helper',
   '/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal',
@@ -69,7 +71,7 @@ const SHOULD_NOT_MATCH = [
   '/Users/x/rano/app/out/rano.app/Contents/MacOS/rano',
 ];
 
-test('package:check 패턴: 켜진 라노 OS 앱(설치·out 폴더, 본체·도우미)을 잡는다 — 한글 NFC·NFD 모두', () => {
+test('package:check 패턴: out 폴더에서 켜진 라노 OS 앱(본체·도우미)을 잡는다 — 한글 NFC·NFD 모두', () => {
   const re = new RegExp(checkPattern());
   for (const s of SHOULD_MATCH) {
     for (const form of ['NFC', 'NFD'] as const) {
@@ -79,7 +81,7 @@ test('package:check 패턴: 켜진 라노 OS 앱(설치·out 폴더, 본체·도
   }
 });
 
-test('package:check 패턴: 다른 앱·개발용 Electron·엔진 프로세스는 잡지 않는다', () => {
+test('package:check 패턴: 설치한 앱·다른 앱·개발용 Electron·엔진 프로세스는 잡지 않는다', () => {
   const re = new RegExp(checkPattern());
   for (const s of SHOULD_NOT_MATCH) {
     for (const form of ['NFC', 'NFD'] as const) assert.ok(!re.test(s.normalize(form)), `${form} 에서 잘못 잡음: ${s}`);

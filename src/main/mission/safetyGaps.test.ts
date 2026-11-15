@@ -20,6 +20,7 @@ import {
   OTHER_TASK_TITLE,
   RELATED_MAX_FILES,
   relatedFilesFor,
+  releaseCommandProblem,
   trustedRunProblem,
 } from './leaderPermissions.js';
 import { missionTmpDir } from './missionTmp.js';
@@ -654,4 +655,44 @@ test('0.9.10: 파일을 콕 집은 되돌리기는 폴더 전체 git 명령이 �
   assert.deepEqual(wide('git restore src/a.ts'), []);
   assert.deepEqual(wide('git checkout -- src/a.ts'), []);
   for (const c of ['git restore .', 'git restore --source=HEAD~1 src/a.ts', 'git checkout main', 'git checkout -- .', "git restore 'src/*'", 'git stash']) assert.ok(wide(c).length > 0, c);
+});
+
+// ---------------- 0.9.11: 릴리즈 목록 한 장 승인 ----------------
+test('0.9.11: 릴리즈 목록에 넣을 수 있는 명령·없는 명령', () => {
+  const g = new LeaderGuard({ config, mission: base, log: () => {} });
+  g.setTask({ id: 'rel0', title: '릴리즈' });
+  const why = (c: string) => {
+    const d = g.previewCommand(c, TARGET, false);
+    return d.type === 'ask' ? releaseCommandProblem(c, d.ask?.kind, d.ask?.gitWide) : d.type;
+  };
+  for (const c of ['git add src/a.ts package.json', 'git commit -m "0.9.11"', 'git push origin main', 'git tag -a v0.9.11 -m 0.9.11', 'git push origin v0.9.11', 'npm run release', 'gh release create v0.9.11 out/x.zip --title x'])
+    assert.equal(why(c), null, c);
+  for (const c of ['git push --force origin main', 'git push -f', 'git push origin :main', 'git push origin +main', 'git add -A', 'git add .', 'git commit -am x', 'git commit --amend -m x', 'git reset --hard HEAD~1', 'git checkout main', 'rm -rf out', 'git clean -fd'])
+    assert.equal(typeof why(c), 'string', c);
+});
+
+test('0.9.11: 릴리즈 목록으로 승인받은 커밋·push·포장은 한 번씩만 바로, 실행 목록 승인으로는 커밋이 안 된다', async () => {
+  const g = new LeaderGuard({ config, mission: base, log: () => {} });
+  g.setTask({ id: 'rel1', title: '릴리즈' });
+  g.markTeamApproved('rel1');
+  const commit = 'git commit -m "0.9.11"';
+  const push = 'git push origin main';
+  // 실행 목록(release 표시 없음)으로는 커밋·push 가 풀리지 않는다
+  g.grantCommands('rel1', [{ command: commit, cwd: TARGET, files: [] }]);
+  assert.equal(await hook(g, commit), 'ask');
+  g.grantCommands('rel1', [
+    { command: commit, cwd: TARGET, files: [], release: true },
+    { command: push, cwd: TARGET, files: [], release: true },
+    { command: 'npm run release', cwd: TARGET, files: grantFilesFor('npm run release', TARGET), release: true },
+  ]);
+  assert.equal(await hook(g, 'git commit -m "다른 글"'), 'ask'); // 글자가 다르면 묻는다
+  assert.equal(await hook(g, commit), 'allow');
+  assert.equal(await hook(g, commit), 'ask'); // 한 번 쓰면 없어진다
+  assert.equal(await hook(g, push), 'allow');
+  assert.equal(await hook(g, 'npm run release'), 'allow');
+  assert.equal(await hook(g, 'npm run release'), 'ask');
+  // 다른 과제로 바뀌면 남은 승인도 쓰지 못한다
+  g.grantCommands('rel1', [{ command: push, cwd: TARGET, files: [], release: true }]);
+  g.setTask({ id: 'rel2', title: '다른 과제' });
+  assert.equal(await hook(g, push), 'ask');
 });

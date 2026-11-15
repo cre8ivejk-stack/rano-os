@@ -264,6 +264,12 @@ const api: RanoApi = {
   updateCheck(): Promise<UpdateInfo> {
     return ipcRenderer.invoke(CH_UPDATE_CHECK);
   },
+  updateLocal(): Promise<any> {
+    return ipcRenderer.invoke('update:local');
+  },
+  updateInstallLocal(): Promise<{ ok: boolean; message?: string }> {
+    return ipcRenderer.invoke('update:install-local');
+  },
   guideRead(): Promise<any> {
     return ipcRenderer.invoke('guide:read');
   },

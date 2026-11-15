@@ -44,6 +44,18 @@ const LEADER_TOOL_PREFIX = `mcp__${LEADER_MCP_NAME}__`;
 export const PROPOSE_COMMANDS_TOOL = `${LEADER_TOOL_PREFIX}propose_commands`;
 /** 실행 목록으로 미리 승인할 수 있는 명령 종류. 커밋·삭제·DB·배포·작업 폴더 쓰기는 하나씩 묻는다 */
 export const RUN_PLAN_KINDS = new Set(['command', 'outsideWrite']);
+/** 릴리즈 목록(propose_release, 리더만)으로 한 장에 승인할 수 있는 명령 종류: 일반 명령·커밋(push 포함)·배포. 지우기·DB·파일 쓰기는 안 된다 (0.9.11) */
+export const RELEASE_PLAN_KINDS = new Set(['command', 'commit', 'deploy']);
+/** 릴리즈 목록에 넣을 수 없는 이유(쉬운 말). 넣어도 되면 null */
+export function releaseCommandProblem(command: string, kind: string | undefined, gitWide?: string[]): string | null {
+  if (!kind || !RELEASE_PLAN_KINDS.has(kind)) return '지우기·DB·파일 쓰기·작업 폴더 밖 쓰기는 릴리즈 목록에 넣을 수 없어요';
+  if (gitWide?.length) return `폴더 전체를 바꾸는 git 명령(${gitWide.join('·')})은 릴리즈 목록에 넣을 수 없어요`;
+  if (/\bgit\b[^;&|\n]*\bpush\b[^;&|\n]*(\s-[A-Za-z]*f[A-Za-z]*\b|\s--force|\s--mirror|\s--delete|\s-d\b|\s\+|\s:[^\s])/.test(command)) return '강제 push·원격 가지 지우기는 릴리즈 목록에 넣을 수 없어요';
+  if (/\bgit\b[^;&|\n]*\b(add)\b[^;&|\n]*(\s-A\b|\s--all\b|\s\.(\s|$))/.test(command)) return 'git add -A · git add . 은 넣을 수 없어요(고친 파일 이름을 적어 주세요. 다른 과제의 변경이 섞일 수 있어요)';
+  if (/\bgit\b[^;&|\n]*\bcommit\b[^;&|\n]*(\s--amend\b|\s-[A-Za-z]*a[A-Za-z]*\b)/.test(command)) return 'git commit --amend · -a 는 넣을 수 없어요(고친 파일만 git add 로 담아 주세요)';
+  return null;
+}
+
 /** 실행 목록 승인에서 내용까지 묶어 둘 스크립트 파일 */
 const SCRIPT_EXT = /\.(m?js|cjs|ts|mts|cts|tsx|jsx|py|sh|bash|zsh|rb|pl|php|sql|json|ya?ml|toml)$/i;
 /** 자료·설정 파일(.json·.yaml·.toml): 내용은 묶지만 폴더 목록 지문에는 넣지 않는다 — 스크립트가 옆에 결과 파일(result.json 등)을 새로 써도 승인이 풀리지 않게 (0.9.10) */
@@ -207,6 +219,7 @@ export interface CommandGrant {
   command: string; // 글자 그대로
   cwd: string; // 실행 위치
   files: { path: string; hash: string; related?: boolean }[]; // 묶어 둔 스크립트 지문(related: 옆 파일·폴더 목록·package.json)
+  release?: boolean; // 릴리즈 목록 승인(커밋·push·포장·배포 명령). 한 번 실행하면 없어진다
 }
 
 /** 실행 목록 승인에 묶을 지문 전체: 명령에 적힌 스크립트 + 옆 파일 (H3-A) */
@@ -235,7 +248,11 @@ const MSG_OUTSIDE = '이 미션의 작업 폴더와 참고 폴더 밖이라 열 
 const MSG_ROLE = '이 미션 팀에 없는 역할이라 부를 수 없어요. 팀 편성에 있는 역할만 불러 주세요.';
 /** 검수 역할 하나를 한 과제에서 부를 수 있는 횟수(첫 검수 + 고친 부분 재검수) */
 export const MAX_REVIEWS = 2;
-const MSG_REVIEW_CAP = `이 검수 역할은 이번 과제에서 이미 ${MAX_REVIEWS}번 확인했어요(첫 검수 + 재검수). 더 부르지 말고, 남은 지적은 직접 고치고 고친 곳을 직접 확인한 뒤 보고 "3. 검수"에 남은 지적과 처리한 내용을 적어 마무리하세요.`;
+/** 평소 검수 횟수: 한 번(사용자가 지시에 재검수·꼼꼼히 라고 하면 MAX_REVIEWS 번까지). 0.9.11 속도 개선 */
+export const DEFAULT_REVIEWS = 1;
+/** 지시에 이 말이 있으면 재검수까지(2번) */
+export const MORE_REVIEW_RE = /재검수|꼼꼼|검수\S{0,6}\s?(두|2)\s?번|(두|2)\s?번\s?검수/;
+const MSG_REVIEW_CAP = (n: number) => `이 검수 역할은 이번 과제에서 이미 ${n}번 확인했어요. 더 부르지 말고, 남은 지적은 직접 고치고 고친 곳을 직접 확인한 뒤 보고 "3. 검수"에 남은 지적과 처리한 내용을 적어 마무리하세요.`;
 const MSG_TEAM = '먼저 request_approval 도구로 팀 구성안(누구에게 무엇을 맡길지)을 올려 승인받으세요.';
 const MSG_PLAN = '이 과제는 기획 먼저예요. 안 2~3개와 권장안을 request_approval(kind: decision, planGate: true)로 올려 사용자가 고른 뒤에 작업 폴더를 고칠 수 있어요. 시안은 시안 폴더에 만들어 주세요.';
 const MSG_REFS = '참고 폴더는 읽기만 할 수 있어요. 바꿀 내용은 보고에 적어 주세요.';
@@ -1704,7 +1721,7 @@ export class LeaderGuard {
   private readonly netGrants = new Map<string, Set<string>>(); // 과제 → 사용자가 승인한 사이트(호스트). 믿는 미션에서 같은 사이트 읽기는 다시 묻지 않는다
   private readonly reviewCalls = new Map<string, number>(); // 과제 → 검수 역할을 부른 횟수
   private readonly deleteGrants = new Map<string, string[]>(); // 과제 → 리더 확인 승인으로 지워도 되는 위치(실제 경로)
-  private task:{ id: string; title: string; planFirst?: boolean; preSync?: boolean } | null = null;
+  private task:{ id: string; title: string; planFirst?: boolean; preSync?: boolean; moreReview?: boolean } | null = null;
 
   private readonly deps: LeaderGuardDeps;
 
@@ -1721,7 +1738,7 @@ export class LeaderGuard {
     return `${this.deps.mission.id}-leader`;
   }
 
-  setTask(task: { id: string; title: string; planFirst?: boolean; preSync?: boolean } | null) {
+  setTask(task: { id: string; title: string; planFirst?: boolean; preSync?: boolean; moreReview?: boolean } | null) {
     this.task = task;
     this.memberTask.clear();
     this.lastText.clear();
@@ -1853,15 +1870,19 @@ export class LeaderGuard {
   }
 
   /** 실행 목록 승인에 맞는 명령인지(글자·위치·스크립트 지문이 모두 같아야 함) */
-  private commandGranted(command: string, cwd: string): CommandGrant | null {
+  private commandGranted(command: string, cwd: string, releaseOnly = false): CommandGrant | null {
     const id = this.task?.id;
     const list = id ? this.commandGrants.get(id) : undefined;
-    if (!list?.length) return null;
+    if (!id || !list?.length) return null;
     const cmd = command.trim();
     const here = path.resolve(cwd);
     for (const g of list) {
       if (g.command !== cmd || path.resolve(g.cwd) !== here) continue;
-      if (g.files.every((f) => fileFingerprint(f.path) === f.hash)) return g;
+      if (releaseOnly && !g.release) continue; // 커밋·push·배포는 릴리즈 목록으로 승인받은 것만
+      if (!g.files.every((f) => fileFingerprint(f.path) === f.hash)) continue;
+      // 릴리즈 목록의 명령은 한 번 쓰면 없앤다(같은 커밋·push 를 다시 하려면 다시 묻는다)
+      if (g.release) this.commandGrants.set(id, list.filter((x) => x !== g));
+      return g;
     }
     return null;
   }
@@ -1982,8 +2003,9 @@ export class LeaderGuard {
     // 검수는 역할마다 과제당 MAX_REVIEWS 번까지(첫 검수 + 재검수). 그 뒤 남은 지적은 리더가 직접 고치고 확인해 보고한다
     if (toolName === SUBAGENT_TOOL && !isSub) {
       const role = str(input.subagent_type);
-      if (role && mission.reviewerRoles.includes(role) && this.reviewCount(role) >= MAX_REVIEWS)
-        return { type: 'deny', reason: `검수 ${MAX_REVIEWS}번을 넘김: ${role}`, message: MSG_REVIEW_CAP };
+      const cap = this.task?.moreReview ? MAX_REVIEWS : DEFAULT_REVIEWS;
+      if (role && mission.reviewerRoles.includes(role) && this.reviewCount(role) >= cap)
+        return { type: 'deny', reason: `검수 ${cap}번을 넘김: ${role}`, message: MSG_REVIEW_CAP(cap) };
     }
     if (mission.stagePolicy === 'readOnly') {
       const d = decideLeaderTool(config, mission, toolName, input, cwd, isSub, this.memberModels());
@@ -2044,8 +2066,11 @@ export class LeaderGuard {
       return { type: 'allow', reason: '사용자가 직접 시킨 원격 최신 받아오기' };
     }
     // 실행 목록으로 미리 승인받은 명령: 글자·실행 위치·스크립트 내용이 모두 같을 때만(실제 실행 위치를 아는 훅에서만 본다)
-    if (useGrants && d.type === 'ask' && d.ask?.bash && (RUN_PLAN_KINDS.has(d.ask.kind) || (d.ask.kind === 'commit' && d.ask.syncOnly)) && typeof input.command === 'string') {
-      const g = this.commandGranted(input.command, cwd);
+    if (useGrants && d.type === 'ask' && d.ask?.bash && typeof input.command === 'string') {
+      // 실행 목록은 일반 명령·폴더 밖 쓰기·받아오기만. 커밋·push·배포는 릴리즈 목록 승인(propose_release)으로만, 한 번씩 (0.9.11)
+      const plain = RUN_PLAN_KINDS.has(d.ask.kind) || (d.ask.kind === 'commit' && !!d.ask.syncOnly);
+      const g = plain || RELEASE_PLAN_KINDS.has(d.ask.kind) ? this.commandGranted(input.command, cwd, !plain) : null;
+      if (g?.release) return { type: 'allow', reason: `릴리즈 목록 승인으로 미리 허락된 명령(${d.ask.kind}, 한 번)` };
       if (g) return { type: 'allow', reason: `실행 목록 승인으로 미리 허락된 명령${g.files.length ? ` (스크립트 ${g.files.length}개 내용 같음)` : ''}` };
     }
     return d;

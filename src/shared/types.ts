@@ -16,6 +16,14 @@ export interface AuthStatus {
 export type AuthResult = { ok: boolean; message: string };
 
 /** 새 버전 확인 결과 */
+/** 이 맥에서 포장한 새 판(미션 작업 폴더의 out 폴더) */
+export interface LocalBuildInfo {
+  path: string; // ~ 로 줄인 위치
+  version: string;
+  builtAt: number;
+  current: string; // 지금 앱 버전
+}
+
 export interface UpdateInfo {
   current: string;
   latest?: string;
@@ -380,6 +388,8 @@ export const IPC = {
   attachmentData: 'rano:attachment-data', // invoke(ChatAttachment) → data URL | null
   updateCheck: 'update:check', // invoke → UpdateInfo (GitHub Releases 최신 버전)
   openReleasePage: 'update:open-page', // github.com 주소만 연다
+  updateLocal: 'update:local', // invoke → LocalBuildInfo | null (이 맥에서 포장한 새 판)
+  updateInstallLocal: 'update:install-local', // invoke → { ok, message? } (확인 창 뒤 앱을 끄고 새 판으로 바꿔 다시 켠다)
   settingsSaveProfile: 'settings:save-profile', // invoke(profile) → me.md
   settingsSaveZones: 'settings:save-zones', // invoke(zones) 미션이 있는 구역은 거절
   openDataFolder: 'settings:open-data-folder', // Finder 로 데이터 폴더 열기
@@ -450,6 +460,8 @@ export interface RanoApi {
   openDataFolder(): Promise<void>;
   updateCheck(): Promise<UpdateInfo>;
   openReleasePage(url: string): Promise<void>;
+  updateLocal(): Promise<LocalBuildInfo | null>;
+  updateInstallLocal(): Promise<{ ok: boolean; message?: string }>;
   guideRead(): Promise<{ ok: boolean; text: string; url?: string }>;
   mobileStatus(): Promise<MobileStatus>;
   mobileConnect(token: string): Promise<{ ok: boolean; message: string }>;

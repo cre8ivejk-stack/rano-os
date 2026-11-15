@@ -30,6 +30,8 @@ import { checkTrustAtStart, trustNoticeText } from './admin/trustLog.js';
 import { createSetup } from './setup.js';
 import { createAuth } from './engine/auth.js';
 import { checkForUpdate, repoSlug } from './engine/update.js';
+import { findLocalBuild, readBundleInfo, runningBundle, SWAP_SCRIPT } from './engine/localBuild.js';
+import { spawn } from 'node:child_process';
 import { initUsage, refreshPlanLimits, usageSummary } from './engine/usage.js';
 import { searchAll } from './engine/search.js';
 import { TelegramBridge } from './mobile/telegram.js';
@@ -431,6 +433,44 @@ async function boot() {
     } catch {
       return { ok: false, text: '' };
     }
+  });
+  // 이 맥에서 포장한 새 판(미션 작업 폴더의 out 폴더): 찾아서 알리고, 사용자가 누르면 앱을 끄고 바꿔 넣은 뒤 다시 켠다 (localBuild.ts)
+  const localBuild = () => {
+    if (!app.isPackaged) return null;
+    const bundle = runningBundle(app.getPath('exe'));
+    const cur = bundle ? readBundleInfo(bundle) : null;
+    if (!bundle || !cur) return null;
+    const found = findLocalBuild(config.missions.flatMap((m) => m.targets), { bundle, id: cur.id, version: cur.version, builtAt: cur.builtAt });
+    return found ? { ...found, bundle } : null;
+  };
+  const tilde = (p: string) => (p.startsWith(homedir() + path.sep) ? `~${p.slice(homedir().length)}` : p);
+  ipcMain.handle(IPC.updateLocal, () => {
+    try {
+      const b = localBuild();
+      return b ? { path: tilde(b.path), version: b.version, builtAt: b.builtAt, current: app.getVersion() } : null;
+    } catch {
+      return null;
+    }
+  });
+  ipcMain.handle(IPC.updateInstallLocal, async () => {
+    const b = localBuild();
+    if (!b) return { ok: false, message: '바꿀 새 판을 찾지 못했어요' };
+    const r = await dialog.showMessageBox({
+      type: 'warning',
+      buttons: ['바꾸고 다시 켜기', '취소'],
+      defaultId: 1,
+      cancelId: 1,
+      message: `이 맥에서 포장한 ${b.version} 판으로 바꿀까요?`,
+      detail: `새 판: ${tilde(b.path)}\n지금 앱: ${tilde(b.bundle)} (${app.getVersion()})\n\n앱이 꺼졌다가 새 판으로 다시 켜져요. 진행 중인 과제는 멈추고, 기다리던 승인 카드는 사라져요. 내 데이터는 그대로예요.`,
+    });
+    if (r.response !== 0) return { ok: false, message: '취소했어요' };
+    try {
+      spawn('/bin/sh', ['-c', SWAP_SCRIPT, 'rano-swap', String(process.pid), b.path, b.bundle], { detached: true, stdio: 'ignore' }).unref();
+    } catch {
+      return { ok: false, message: '바꾸기를 시작하지 못했어요' };
+    }
+    app.quit();
+    return { ok: true };
   });
   ipcMain.handle(IPC.openReleasePage, async (_e, url: unknown) => {
     try {
