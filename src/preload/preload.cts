@@ -103,7 +103,7 @@ function cleanMissionDraft(d: MissionDraft): MissionDraft {
     target: String(d?.target ?? ''),
     readonlyRefs: strList(d?.readonlyRefs),
     blocked: strList(d?.blocked),
-    writeMode: d?.writeMode === 'approval' ? 'approval' : 'readOnly',
+    writeMode: d?.writeMode === 'approval' || d?.writeMode === 'trusted' ? d.writeMode : 'readOnly',
     writeConfirmed: d?.writeConfirmed === true,
     roles: strList(d?.roles),
     reviewerRoles: strList(d?.reviewerRoles),
@@ -117,6 +117,7 @@ function cleanRoleDraft(d: RoleDraft): RoleDraft {
     canWrite: d?.canWrite === true,
     canRun: d?.canRun === true,
     body: String(d?.body ?? ''),
+    model: d?.model === 'opus' || d?.model === 'sonnet' ? d.model : 'default',
   };
 }
 

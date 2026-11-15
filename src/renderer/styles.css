@@ -828,6 +828,16 @@ button.approvals:hover { background: #efeeea; }
 .org-modal-body p { margin: 0; }
 .org-understood { font-weight: 700; }
 .org-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+/* 믿는 미션 확인 창 세 칸: 바로 하는 일 / 승인함에서 묻는 일 / 앱이 못 보는 일(빨간 칸) */
+.org-trust-sec { border-radius: 10px; padding: 8px 12px; }
+.org-trust-sec strong { display: block; margin-bottom: 4px; font-size: 13.5px; }
+.org-trust-sec ul { margin: 0; padding-left: 18px; }
+.org-trust-sec li { margin: 2px 0; font-size: 13px; }
+.org-trust-go { background: var(--green-soft); }
+.org-trust-ask { background: var(--blue-soft); }
+.org-trust-blind { background: var(--error-soft); border: 1px solid #ecc5c1; color: var(--error); }
+/* 앱 다시 시작 확인 창: 멈출 일 */
+.org-restart-warn { color: var(--error); }
 .org-team-main .org-hint { white-space: pre-line; }
 .org-roles > p { grid-column: 1 / -1; }
 
@@ -1128,6 +1138,10 @@ button.approvals:hover { background: #efeeea; }
 .now-text { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .now-tag { flex: none; font-size: 11.5px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: #e3edf9; color: #33598c; }
 .now-tag-wait { background: #fbe8d2; color: #96591a; }
+/* 바로 승인하지 않는 종류(커밋·지우기 등): 빨간 표 */
+.now-tag-risk { background: var(--error-soft); color: var(--error); border: 1px solid #ecc5c1; margin-right: 4px; }
+/* 바로 승인 줄의 실제 명령 한 줄 */
+.now-cmd { flex-basis: 100%; display: block; font-family: Menlo, Monaco, monospace; font-size: 11.5px; color: #4a4945; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .now-title { font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .now-sub { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .now-btns { flex: none; display: flex; gap: 6px; }

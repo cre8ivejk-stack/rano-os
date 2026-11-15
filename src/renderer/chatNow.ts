@@ -1,8 +1,7 @@
 // 대화 화면 위쪽의 "지금" 줄: 진행 중인 과제([멈추기])와 나를 기다리는 승인 카드([승인]·[반려]·[자세히])를 탭을 옮기지 않고 본다.
+// 바로 승인은 일반 명령·작업 폴더 밖 쓰기만(approvalSafety.ts). 커밋·지우기·파일 쓰기·DB·배포·외부 게시는 빨간 표를 붙이고 [열어서 정하기]로 승인함에서 본다.
+import { canQuickApprove, carefulTag, commandOf, filesOf } from './approvalSafety.js';
 import { el, mustGet } from './dom.js';
-
-/** 그 자리에서 바로 승인·반려할 수 있는 카드 종류(고를 것·볼 것이 없는 단순 확인). 나머지는 [자세히]로 승인함에서 본다 */
-export const SIMPLE_APPROVALS = new Set<string>(['command', 'write', 'outsideWrite', 'commit', 'delete', 'external', 'db', 'deploy']);
 
 function minutesSince(iso: string): string {
   const m = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
@@ -85,12 +84,22 @@ export class ChatNow {
       row.dataset.approval = a.id;
       const text = el('div', 'now-text');
       text.appendChild(el('span', 'now-tag now-tag-wait', '승인 대기'));
+      const risk = carefulTag(a.kind);
+      if (risk) text.appendChild(el('span', 'now-tag now-tag-risk', risk));
       text.appendChild(el('span', 'now-title', a.title));
       const what = [a.who, a.what].filter(Boolean).join(' · ');
       if (what) text.appendChild(el('span', 'now-sub', what));
+      const simple = canQuickApprove(a);
+      // 바로 승인 줄에는 무엇을 승인하는지 실제 명령(앱이 비밀을 가린 판)을, 명령이 없으면(폴더 밖 파일 쓰기) 파일 위치를 한 줄 보인다
+      const cmd = simple ? commandOf(a.detail) : '';
+      const file = simple && !cmd ? filesOf(a) : '';
+      if (cmd || file) {
+        const line = el('span', 'now-cmd', cmd ? `명령: ${cmd}` : `파일: ${file}`);
+        line.title = cmd ? commandOf(a.detail, 2000) : filesOf(a, 2000);
+        text.appendChild(line);
+      }
       row.appendChild(text);
       const btns = el('div', 'now-btns');
-      const simple = SIMPLE_APPROVALS.has(a.kind) && !a.decisionItems?.length && !a.bundle?.length;
       if (simple) {
         const ok = el('button', 'now-btn now-btn-main', '승인');
         ok.type = 'button';

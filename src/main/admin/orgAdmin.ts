@@ -21,6 +21,7 @@ import { inspectFolder, type InspectContext } from './folderInspect.js';
 import { cell, exists, isInside, readRaw, resolveIn, shrinkHome, today, writeRaw, zoneRoot, zoneText } from './paths.js';
 import { savePoolRole, scanRoles } from './rolePool.js';
 import { OUTPUTS_HEADER } from '../approvals/outputs.js';
+import { appendDecisionLog, noteTrustChange, WRITE_LABEL, writeModeDecision } from './trustLog.js';
 
 export interface OrgAdminDeps {
   config: RanoConfig;
@@ -40,7 +41,6 @@ export interface OrgAdminApi {
   missionDocs(id: string): MissionDoc[];
 }
 
-const WRITE_LABEL = { readOnly: '읽기만', approval: '승인함을 거쳐 쓰기', trusted: '믿는 미션(리포 안 고치기는 묻지 않기)' } as const;
 /** rano.json 미션 → 쓰기 방식 */
 const writeModeOf = (m: any): WriteMode => (m?.stagePolicy !== 'approval' ? 'readOnly' : m.trustRepo === true ? 'trusted' : 'approval');
 const zoneOf = (z: unknown): Zone => (z === 'personal' ? 'personal' : 'work');
@@ -217,7 +217,7 @@ export function createOrgAdmin(deps: OrgAdminDeps): OrgAdminApi {
     lines.push(`## 권한 (${today()} 앱 조직 화면에서 정함)`);
     lines.push('- 읽기·검색은 바로 한다');
     if (d.writeMode === 'trusted') {
-      lines.push('- **믿는 미션:** 작업 폴더 안 파일 고치기·시험·코드 실행은 묻지 않고 한다');
+      lines.push('- **믿는 미션:** 작업 폴더 안 파일 고치기·시험·스크립트 파일 실행은 묻지 않고 한다. 모르는 프로그램·명령에 글로 넣은 코드·설치는 승인함에서 묻는다');
       lines.push('- 커밋·push·삭제·DB·배포·작업 폴더 밖 쓰기·인터넷 전송은 승인함을 거친다');
     } else if (d.writeMode === 'approval') {
       lines.push('- **쓰기는 파일 하나까지 모두 승인함에서 사용자 승인을 받은 뒤** 한다');
@@ -251,7 +251,7 @@ export function createOrgAdmin(deps: OrgAdminDeps): OrgAdminApi {
         : [
             '읽기',
             ...(ri.canWrite ? [d.writeMode === 'trusted' ? '파일 쓰기(작업 폴더 안은 바로)' : d.writeMode === 'approval' ? '파일 쓰기(승인함)' : '파일 쓰기(지금은 읽기만)'] : []),
-            ...(ri.canRun ? [d.writeMode === 'trusted' ? '명령(커밋·삭제·배포 등은 승인함)' : d.writeMode === 'approval' ? '명령(승인함)' : '명령(지금은 읽기만)'] : []),
+            ...(ri.canRun ? [d.writeMode === 'trusted' ? '명령(시험·스크립트 실행은 바로, 커밋·삭제·배포·모르는 프로그램·설치는 승인함)' : d.writeMode === 'approval' ? '명령(승인함)' : '명령(지금은 읽기만)'] : []),
           ].join(', ');
       const tag = d.reviewerRoles.includes(r) ? '[검수] ' : '';
       lines.push(`| ${r} | ${cell(tag + (ri?.description ?? ''))} | ${tools} |`);
@@ -343,6 +343,14 @@ export function createOrgAdmin(deps: OrgAdminDeps): OrgAdminApi {
         return { ok: false, message: '설정 파일(rano.json)을 저장하지 못했어요. 잠시 뒤 다시 해 주세요' };
       }
       changed.add(id);
+      // 앱에서 허용한 믿는 미션은 다음에 켤 때 "앱 밖에서 바뀜"으로 보지 않게 목록에 올려 둔다(trustLog.ts)
+      if (draft.writeMode === 'trusted') {
+        try {
+          noteTrustChange(config.runsDir, id, true);
+        } catch {
+          // 목록을 못 맞추면 다음에 켤 때 한 번 더 기록·알림될 뿐이다
+        }
+      }
 
       // 라노 기억(미션별 한 줄 현황)에 한 줄 더한다. 실패해도 미션은 만들어진 것으로 둔다
       let memNote = '';
@@ -417,9 +425,17 @@ export function createOrgAdmin(deps: OrgAdminDeps): OrgAdminApi {
         return { ok: false, message: '설정 파일(rano.json)을 저장하지 못했어요. 잠시 뒤 다시 해 주세요' };
       }
       changed.add(id);
+      if (before.writeMode !== draft.writeMode && (before.writeMode === 'trusted' || draft.writeMode === 'trusted')) {
+        try {
+          noteTrustChange(config.runsDir, id, draft.writeMode === 'trusted');
+        } catch {
+          // 목록을 못 맞추면 다음에 켤 때 한 번 더 기록·알림될 뿐이다
+        }
+      }
 
-      // 미션 홈 기록: 헌장 맨 아래 '변경 기록'에 한 줄, 쓰기 허용으로 바뀌면 결정로그에 한 줄
+      // 미션 홈 기록: 헌장 맨 아래 '변경 기록'에 한 줄, 쓰기 방식이 바뀌면(믿는 미션으로·믿는 미션에서 포함) 결정로그에 한 줄
       let homeNote = '';
+      let logNote = '';
       try {
         const charter = path.join(before.home, 'charter.md');
         let text = '';
@@ -433,26 +449,22 @@ export function createOrgAdmin(deps: OrgAdminDeps): OrgAdminApi {
         const head = /^##\s*변경 기록\s*$/m.test(text) ? '' : `${text ? '\n' : ''}## 변경 기록\n`;
         await mkdir(before.home, { recursive: true });
         await appendFile(charter, lead + head + line, 'utf-8');
-        if (before.writeMode === 'readOnly' && draft.writeMode === 'approval') {
-          await mkdir(path.join(before.home, 'memory'), { recursive: true });
-          const log = path.join(before.home, 'memory', '결정로그.md');
-          let cur = '';
-          try {
-            cur = await readFile(log, 'utf-8');
-          } catch {
-            cur = '# 결정로그\n\n';
-          }
-          const sep = cur && !cur.endsWith('\n') ? '\n' : '';
-          await writeFile(log, `${cur}${sep}- ${today()} 사용자가 앱에서 승인함을 거친 쓰기를 허용\n`, 'utf-8');
-        }
       } catch {
         homeNote = ' (미션 헌장에 변경 기록을 남기지는 못했어요)';
+      }
+      const decision = writeModeDecision(before.writeMode, draft.writeMode);
+      if (decision) {
+        try {
+          appendDecisionLog(before.home, today(), decision);
+        } catch {
+          logNote = ' (결정로그에 쓰기 방식 변경을 남기지는 못했어요)';
+        }
       }
       return {
         ok: true,
         id,
         needsRestart: true,
-        message: `「${name}」을(를) 고쳤어요. 앱을 다시 시작하면 반영돼요${homeNote}`,
+        message: `「${name}」을(를) 고쳤어요. 앱을 다시 시작하면 반영돼요${homeNote}${logNote}`,
       };
     });
 

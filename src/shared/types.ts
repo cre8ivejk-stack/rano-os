@@ -211,7 +211,7 @@ export interface MissionConfig {
   stagePolicy: 'readOnly' | 'approval'; // 2단계 readOnly: 읽기만. 3단계 approval: 쓰기는 승인 규칙대로
   connectors?: string[]; // 이 미션이 쓰는 외부 연결 이름
   directWriteDirs: string[]; // 3단계: 승인 없이 바로 쓸 수 있는 폴더(절대 경로). 비어 있으면 모든 쓰기가 승인함 (2026-11-04 사용자 결정: 비움)
-  trustRepo?: boolean; // 믿는 미션: 작업 리포 안 고치기·시험·코드 실행은 승인 없이. 커밋·push·삭제·DB·배포·리포 밖·인터넷 전송은 그대로 승인함 (stagePolicy approval 일 때만)
+  trustRepo?: boolean; // 믿는 미션: 작업 리포 안 고치기·시험·아는 명령·폴더 안 스크립트 파일 실행은 승인 없이(모르는 프로그램·명령 글 속 코드·설치는 승인함, 스크립트 파일 안 동작은 앱이 못 봄). 커밋·push·삭제·DB·배포·리포 밖·인터넷 전송은 그대로 승인함 (stagePolicy approval 일 때만)
   dbRead?: { tool: string; apps: string[]; appField?: string; commandField?: string }; // 믿는 미션에서 운영 DB 읽기 조회를 바로 하는 외부 연결 도구·앱 (2026-11-12 사용자 결정). 정해진 꼴의 psql 읽기만
   // rano.json 에 archived: true 인 미션은 loadConfig 가 config.missions 에서 뺀다(현황판·리더 없음). 조직 화면은 원본에서 읽는다.
 }

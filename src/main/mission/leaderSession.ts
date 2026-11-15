@@ -23,6 +23,7 @@ import {
 import { appendJsonl, buildSdkEnv, friendlyError, looksLikeMissingSession } from '../engine/ranoSession.js';
 import { LeaderGuard, SUBAGENT_TOOL } from './leaderPermissions.js';
 import { missionTmpDir } from './missionTmp.js';
+import { behindNotes } from './gitBehind.js';
 import { interruptedReport, taskTitle } from './taskText.js';
 import { PREVIEW_EXTS } from '../approvals/previewSafety.js';
 import { createLeaderMcpServer } from './leaderTools.js';
@@ -166,6 +167,8 @@ export class MissionLeader implements MissionLeaderApi {
       label: this.leaderLabel,
       approvals: deps.approvals,
       emitActivity: (text) => this.emitActivity(text),
+      // 같은 작업 폴더에서 다른 리더가 하고 있는 과제: 폴더 전체 git 명령을 경고 카드로 보낼 때 본다 (H4-A)
+      others: () => this.others().filter((t) => t.id !== this.currentTask?.id),
     });
   }
 
@@ -275,19 +278,22 @@ export class MissionLeader implements MissionLeaderApi {
     if (drafts) await mkdir(drafts, { recursive: true }).catch(() => undefined);
     const tmpDir = missionTmpDir(this.config, this.mission.id);
     const othersAtStart = this.others().filter((t) => t.id !== mt.id);
+    // 작업 폴더가 마지막으로 받아온 원격 기록보다 뒤처졌는지(인터넷 없이, 몇 초 안에) (S6-A)
+    const behind = await behindNotes(this.mission.targets).catch(() => [] as string[]);
     const appNote = [
       '',
       '---',
       '[앱 안내]',
       `- 이 과제의 시안 폴더: ${drafts} (작업 리포 밖, 승인 없이 쓸 수 있음). 안마다 비교용 시안(HTML 와이어프레임 등)이 필요하면 여기에 만들고, 결정 카드의 options[].preview 에 파일 이름을 넣으세요. [시안 열기]로 열 수 있는 형식: ${[...PREVIEW_EXTS].join(' ')} (실행 권한이 붙은 파일·폴더·바로가기로 밖을 가리키는 파일은 열리지 않음).`,
       ...(task.preSync
-        ? ['- 사용자가 직접 원격 최신 받아오기를 시켰어요. 이번 과제의 받아오기 명령(git fetch, git pull --ff-only, git merge --ff-only, git stash, git stash pop)은 승인 없이 돼요. 다른 명령을 섞지 말고 따로 실행하세요. 커밋·푸시는 그대로 승인함을 거쳐요.']
+        ? ['- 사용자가 직접 원격 최신 받아오기를 시켰어요. 이번 과제의 받아오기 명령(git fetch, git pull --ff-only, git merge --ff-only, git stash, git stash pop)은 승인 없이 돼요. 다른 명령을 섞지 말고 따로 실행하세요. 받아오기 옵션은 --ff-only·-q·-v·--prune·--tags·--no-tags·--no-rebase, 원격은 이름(origin 등)만 써요(그 밖이면 승인함). 같은 작업 폴더에서 다른 과제가 진행 중이면 보관·pull·merge 는 "다른 과제 진행 중" 경고 카드로 물어요. 커밋·푸시는 그대로 승인함을 거쳐요.']
         : []),
       ...(othersAtStart.length
         ? [
             `- 지금 같은 작업 폴더에서 다른 리더가 과제를 동시에 하고 있어요: ${othersAtStart.map((t) => `「${t.title}」`).join(', ')}. 그 과제가 고칠 만한 파일은 건드리지 말고, 겹치면 멈추고 보고하세요. 임시 폴더에 담는 파일 이름 앞에는 이 과제 번호 ${mt.id.slice(0, 8)} 를 붙이세요(예: ${mt.id.slice(0, 8)}-test.txt).`,
           ]
         : []),
+      ...behind.map((n) => `- ${n}`),
       `- 이 미션의 임시 폴더: ${tmpDir} (명령 결과 담기·읽기용, Bash 로만 승인 없이). 경로를 글자 그대로 적으세요(예: npm test > ${path.join(tmpDir, 'test.txt')} 2>&1). /tmp, $TMPDIR, mktemp 를 쓰면 승인함으로 가요.`,
       task.planFirst
         ? '- 이 과제는 "기획 먼저"예요. 안 2~3개와 권장안을 request_approval(kind: decision, planGate: true, items …)로 올려 사용자가 고르기 전에는 작업 폴더를 고칠 수 없어요(앱이 막음). 고른 뒤 그 안대로 구현하세요.'

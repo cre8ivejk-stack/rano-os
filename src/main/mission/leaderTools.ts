@@ -6,7 +6,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { LEADER_MCP_NAME, type ApprovalQueueApi, type BundleFile, type DecisionItem, type MissionConfig, type MissionTrackerApi } from '../../shared/types.js';
-import { fileChangeFor, fileFingerprint, RUN_PLAN_KINDS, scriptFilesIn, redactCommand, type CommandGrant, type LeaderGuard } from './leaderPermissions.js';
+import { fileChangeFor, fileFingerprint, grantInfoFor, RUN_PLAN_KINDS, redactCommand, type CommandGrant, type LeaderGuard } from './leaderPermissions.js';
 import { checkPreviewFile, PREVIEW_EXTS } from '../approvals/previewSafety.js';
 
 export const LEADER_APPROVAL_KINDS = ['teamPlan', 'decision', 'numbers', 'reverseDecision', 'estimate', 'external', 'other'] as const;
@@ -512,7 +512,7 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
     [
       '승인이 필요한 명령(스크립트 실행, 개발 서버 띄우기, 확인 명령 등)을 여러 번 돌려야 할 때, 돌릴 명령 목록을 한 번에 승인받는 도구입니다. 리더와 팀원 모두 씁니다.',
       '방법: ① 돌릴 스크립트를 먼저 시안 폴더나 미션 임시 폴더에 다 만든다(승인 없음). ② commands 에 실제로 실행할 명령을 글자 그대로 넣는다. ③ 승인되면 그 글자 그대로 Bash 로 실행한다.',
-      '승인 뒤에도 명령 글자가 한 글자라도 다르거나, 실행 위치가 다르거나, 명령이 쓰는 스크립트 파일 내용이 바뀌면 다시 묻습니다. 스크립트를 고쳐야 하면 목록을 다시 올리세요.',
+      '승인 뒤에도 명령 글자가 한 글자라도 다르거나, 실행 위치가 다르거나, 명령이 쓰는 스크립트 파일이나 그 스크립트 폴더의 옆 파일(2단계 아래까지의 .js·.ts·.py·.sh·.json 등. 200개·크기 상한을 넘는 것은 이름만)·package.json 이 바뀌거나 새로 생기면 다시 묻습니다. 스크립트를 고쳐야 하면 목록을 다시 올리세요. 결과 파일은 스크립트 폴더가 아닌 미션 임시 폴더에 .txt 로 담으세요.',
       '커밋·푸시·삭제·DB·배포·작업 폴더 파일 쓰기는 목록에 넣을 수 없어요(하나씩 승인). 원격 최신 받아오기(git fetch, git pull --ff-only, git merge --ff-only)와 작업 잠시 보관·되살리기(git stash, git stash pop)는 넣을 수 있어요. 이미 바로 되는 명령(읽기·확인)은 넣지 않아도 됩니다.',
       '모든 글은 비개발자도 읽을 수 있는 쉬운 한국어로 씁니다.',
     ].join('\n'),
@@ -561,10 +561,19 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
           problems.push(`${i + 1}. ${command} — 커밋·푸시·삭제·DB·배포·작업 폴더 쓰기는 목록에 넣을 수 없어요(원격 최신 받아오기 git pull --ff-only · 작업 잠시 보관 git stash · 되살리기 git stash pop 은 넣을 수 있어요). 따로 실행하면 하나씩 물어요`);
           continue;
         }
-        const files = scriptFilesIn(command, cwd).map((p) => ({ path: p, hash: fileFingerprint(p) }));
+        // 지문: 명령에 적힌 스크립트 + 그 폴더의 옆 파일·파일 목록·package.json (H3-A). 내용은 명령에 적힌 스크립트만 보여 준다
+        const { files, unbound } = grantInfoFor(command, cwd);
         grants.push({ command, cwd, files });
         lines.push(`${grants.length}. ${c.purpose.trim()}`);
-        const previews = files.map((f) => {
+        const related = files.filter((f) => f.related);
+        const relatedNote = related.length
+          ? [
+              `  함께 묶은 파일 ${related.filter((f) => !f.path.endsWith('/')).length}개(스크립트 옆 스크립트·설정 파일·package.json 등)와 폴더 목록 ${related.filter((f) => f.path.endsWith('/')).length}개: 승인 뒤 이 파일 내용이 바뀌거나, 그 폴더에 스크립트·설정 파일이 새로 생기거나 없어지면 다시 물어요`,
+              // 상한(200개·한 파일 1MB·모두 8MB)에 걸린 파일은 이름만 본다 — 카드에 사실대로 적는다 (검수 지적 H3)
+              ...(unbound > 0 ? [`  ${unbound}개는 내용까지 묶지 못함(파일 수·크기 상한): 이 파일들은 이름 목록만 봐서, 내용이 바뀌어도 다시 묻지 않아요`] : []),
+            ]
+          : [];
+        const previews = files.filter((f) => !f.related).map((f) => {
           if (f.hash === '-') return `  스크립트 ${show(f.path)}: 아직 없음(나중에 생기면 다시 물어요)`;
           const seenAt = shown.get(f.path);
           if (seenAt) return `  스크립트 ${show(f.path)}: ${seenAt}번과 같은 파일`;
@@ -582,7 +591,7 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
             .join('\n')}`;
         });
         details.push(
-          [`${grants.length}. 명령: ${redactCommand(command)}`, `  실행 위치: ${show(cwd)}`, `  판단: ${d.ask.title}`, ...previews].join('\n'),
+          [`${grants.length}. 명령: ${redactCommand(command)}`, `  실행 위치: ${show(cwd)}`, `  판단: ${d.ask.title}`, ...previews, ...relatedNote].join('\n'),
         );
       }
       if (problems.length) return text(`목록에 넣을 수 없는 명령이 있어 올리지 않았어요. 빼거나 따로 실행하세요:\n- ${problems.join('\n- ')}${skipped.length ? `\n참고: ${skipped.join(' / ')}` : ''}`, true);
@@ -602,7 +611,7 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
             what: lines.join('\n'),
             why: args.why,
             recommendation: args.recommendation,
-            detail: `승인하면 이번 과제 동안 아래 명령은 글자·실행 위치·스크립트 내용이 그대로일 때만 다시 묻지 않아요. 하나라도 바뀌면 다시 물어요.\n\n${details.join('\n\n')}`,
+            detail: `승인하면 이번 과제 동안 아래 명령은 글자·실행 위치, 명령에 적힌 스크립트와 함께 묶은 파일의 내용, 스크립트 폴더의 스크립트·설정 파일 이름 목록이 그대로일 때만 다시 묻지 않아요. 묶지 않은 파일(그 밖의 종류·먼 폴더·node_modules, 상한에 걸려 이름만 본 파일)이 바뀐 것은 알아채지 못해요.\n\n${details.join('\n\n')}`,
             tool: 'Bash',
           },
           signal,

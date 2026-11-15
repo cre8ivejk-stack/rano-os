@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import path from 'node:path';
 import { powerSaveBlocker, safeStorage } from 'electron';
 import type { ApprovalQueueApi, ApprovalRequest, MobileStatus, NewAttachment, RanoConfig, RanoUiEvent } from '../../shared/types.js';
-import { MobileReplyTracker, TypingGate } from './mobileRules.js';
+import { approvalPhoneText, MobileReplyTracker, TypingGate } from './mobileRules.js';
 
 // 시험할 때만 가짜 텔레그램 주소(이 맥 안)로 바꿀 수 있다. 평소에는 늘 텔레그램 공식 주소
 const API = process.env.RANO_TELEGRAM_TEST_API && /^http:\/\/127\.0\.0\.1:\d+$/.test(process.env.RANO_TELEGRAM_TEST_API) ? process.env.RANO_TELEGRAM_TEST_API : 'https://api.telegram.org';
@@ -345,14 +345,9 @@ export class TelegramBridge {
       const sent = this.sentApprovals.get(a.id);
       if (a.status === 'pending' && sent === undefined && !this.seenAtStart.has(a.id)) {
         this.sentApprovals.set(a.id, -1);
-        const lines = [`🔔 승인 요청 · ${a.who}`, a.title, '', `무엇을: ${a.what}`];
-        if (a.why) lines.push(`왜: ${a.why}`);
-        if (a.recommendation) lines.push(`권장: ${a.recommendation}`);
-        if (a.bundle?.length) lines.push('', `파일 ${a.bundle.length}개: ${a.bundle.map((f) => f.rel).join(', ')}`, '파일마다 고르려면 맥 승인함에서 해 주세요.');
-        if (a.decisionItems?.length) lines.push('', ...a.decisionItems.map((it) => `${it.id}. ${it.question} → 권장 ${it.recommended}안`), '다른 안을 고르려면 맥 승인함에서 해 주세요.');
-        if (a.change) lines.push('', '바뀌는 부분은 맥 승인함에서 색으로 볼 수 있어요.');
+        // 글에 명령(가린 판)·바뀌는 파일을 함께 적는다(mobileRules.ts approvalPhoneText). 버튼은 종류와 상관없이 그대로
         const okLabel = a.bundle?.length ? '모두 반영' : a.decisionItems?.length ? '권장안대로' : '승인';
-        void this.say(lines.join('\n'), { reply_markup: { inline_keyboard: [[{ text: `✅ ${okLabel}`, callback_data: `ok:${a.id}` }, { text: '❌ 반려', callback_data: `no:${a.id}` }]] } }).then((id) => {
+        void this.say(approvalPhoneText(a), { reply_markup: { inline_keyboard: [[{ text: `✅ ${okLabel}`, callback_data: `ok:${a.id}` }, { text: '❌ 반려', callback_data: `no:${a.id}` }]] } }).then((id) => {
           if (id) this.sentApprovals.set(a.id, id);
         });
       } else if (a.status !== 'pending' && sent !== undefined && sent > 0) {

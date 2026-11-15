@@ -25,7 +25,8 @@ import { TodoStore } from './todo/todoStore.js';
 import { createTodoMcpServer } from './todo/todoTools.js';
 import { createOrgAdmin } from './admin/orgAdmin.js';
 import { createOrgMcpServer } from './admin/ranoOrgTools.js';
-import { zoneText } from './admin/paths.js';
+import { today, zoneText } from './admin/paths.js';
+import { checkTrustAtStart, trustNoticeText } from './admin/trustLog.js';
 import { createSetup } from './setup.js';
 import { createAuth } from './engine/auth.js';
 import { checkForUpdate, repoSlug } from './engine/update.js';
@@ -507,6 +508,17 @@ async function boot() {
 
   // 화면이 뜬 뒤에 지난번 기다리던 과제를 이어 간다 (현황판·할 일에 바로 보이도록)
   dispatcher.resumePending();
+
+  // 설정 파일을 앱 밖에서 고쳐 새로 믿는 미션이 된 것이 있으면 결정로그에 남기고 라노에게 알린다 (trustLog.ts, T3-B)
+  try {
+    const t = checkTrustAtStart({ raw: config.raw, rootDir: config.rootDir, runsDir: config.runsDir, date: today() });
+    if (t.found.length) {
+      emit({ kind: 'activity', text: `앱 밖에서 믿는 미션이 됨: ${t.found.map((m) => m.name).join(', ')} (결정로그에 남김)`, at: new Date().toISOString() });
+      void rano.notify(trustNoticeText(t.found), 'direct').catch(() => undefined);
+    }
+  } catch (e) {
+    console.error('[trust] 믿는 미션 확인 실패:', e);
+  }
 }
 
 app.whenReady().then(boot);

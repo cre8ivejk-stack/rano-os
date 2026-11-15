@@ -17,6 +17,13 @@ const HOME = path.join(ROOT, 'home');
 for (const d of [path.join(TARGET, 'src'), path.join(TARGET, '.git'), OUTSIDE, HOME]) mkdirSync(d, { recursive: true });
 writeFileSync(path.join(TARGET, 'src', 'a.ts'), 'x');
 writeFileSync(path.join(TARGET, 'package.json'), '{}');
+// 2026-11-15 H1-A: npx 는 이미 설치된 도구(node_modules/.bin)만 바로 → 이 리포에는 tsx 가 설치돼 있다고 둔다
+mkdirSync(path.join(TARGET, 'node_modules', '.bin'), { recursive: true });
+writeFileSync(path.join(TARGET, 'node_modules', '.bin', 'tsx'), '');
+// 2026-11-15 검수 지적 H1: 해석기의 스크립트는 실제로 있는 파일일 때만 바로 → 시험에 쓰는 스크립트를 만들어 둔다
+for (const d of [path.join(TARGET, 'scripts'), path.join(TARGET, 'tools')]) mkdirSync(d, { recursive: true });
+writeFileSync(path.join(TARGET, 'scripts', 'check.mjs'), 'console.log(1)\n');
+writeFileSync(path.join(TARGET, 'tools', 'x.py'), 'print(1)\n');
 symlinkSync(OUTSIDE, path.join(TARGET, 'link-out'));
 
 const base: MissionConfig = {

@@ -1,5 +1,6 @@
 // Bash 명령 분류: 바로 허용 / 승인함(종류별) / 차단. 외부 패키지 없이 단순한 셸 문법만 해석한다.
 // 원칙: 여러 명령을 이어 쓰면 가장 엄격한 것으로 판단하고, 해석이 애매하면 승인함('command')으로 보낸다.
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import type { ApprovalKind } from '../../shared/types.js';
@@ -20,6 +21,8 @@ export interface BashContext {
   isDir?: (absPath: string) => boolean;
   // 폴더 아래(자기 자신 포함)에 바로가기가 있는지. cp -R 대상 폴더에 바로가기가 있으면 그것을 따라 밖을 덮어쓸 수 있어 승인함으로 보낸다
   hasLinksUnder?: (absPath: string) => boolean;
+  // git 폴더에 등록된 원격 이름(받아오기 판단용). 없으면 .git/config 를 직접 읽는다(gitRemotesAt)
+  gitRemotes?: (absDir: string) => string[];
 }
 
 export interface BashDecision {
@@ -35,6 +38,86 @@ export interface BashDecision {
   // ---- 제목·기록용 표시 (판단 결과 decision·kind 는 이것으로 바꾸지 않는다) ----
   risks?: BashRisk[]; // 위험 종류 표시: 프로그램 끄기·인터넷 전송·코드 실행·권한 바꾸기·공용 임시 폴더·지우기
   programs?: string[]; // 승인이 필요하다고 본 명령의 프로그램 이름(인자 없이, 나온 순서)
+  // ---- 믿는 미션·동시 작업 판단용 (2026-11-15) ----
+  runs?: BashRun[]; // 앱이 따로 분류하지 못한 프로그램 실행(해석기·스크립트·npm 류·모르는 프로그램). 믿는 미션에서 "아는 명령"인지 다시 본다
+  gitWide?: string[]; // 작업 폴더 전체를 바꿀 수 있는 git 명령(stash·checkout·switch·reset·restore·pull·rebase·merge·clean 등)
+}
+
+/** 판단이 필요한 프로그램 실행 하나 */
+export interface BashRun {
+  name: string; // 프로그램 이름(basename)
+  word: string; // 명령에 적힌 그대로(./scripts/x.sh, /usr/bin/node 처럼 경로가 붙었는지 보려고)
+  args: string[];
+  cwd: string; // 실행 위치(cd 반영)
+  viaXargs?: boolean; // xargs 로 감싸 인자를 입력에서 받는지
+}
+
+/** 작업 폴더 전체를 바꿀 수 있는 git 하위 명령 */
+export const GIT_WIDE = new Set(['stash', 'checkout', 'switch', 'reset', 'restore', 'pull', 'rebase', 'merge', 'clean', 'cherry-pick', 'revert', 'am', 'apply']);
+/** 받아오기(pull·merge·fetch)로 인정하는 옵션 (H2-B, 2026-11-15) */
+const SYNC_OPTS = new Set(['--ff-only', '-q', '--quiet', '-v', '--verbose', '--prune', '-p', '--tags', '--no-tags', '--no-rebase']);
+/** fetch 는 --ff-only 대신 모든 원격 받기(--all)도 */
+const FETCH_OPTS = new Set([...SYNC_OPTS, '--all', '-t']);
+/** 원격 이름(origin 등): 영문·숫자로 시작, 경로·주소 문자(/ : @ \) 없음 */
+const REMOTE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+/** 가지·커밋 이름(origin/main, feature/x, FETCH_HEAD, @{u}): 덮어쓰기(+)·로컬 갱신(:)·.. 없음 */
+const REF_NAME = /^(?:@\{(?:u|upstream)\}|[A-Za-z0-9][A-Za-z0-9._\/-]{0,199})$/;
+const refOk = (r: string) => REF_NAME.test(r) && !r.includes('..') && !r.endsWith('.lock') && !r.endsWith('/');
+
+/**
+ * git pull·merge·fetch 가 "받아오기"로 볼 수 있는 꼴인지: 허용 옵션만, 원격은 이름만, 가지는 이름만.
+ * remotes: 실제로 등록된 원격 이름(.git/config 의 [remote "이름"]). 원격 자리 낱말은 이 목록에 있을 때만 인정한다
+ * (등록 안 된 이름은 git 이 다른 저장소 경로로 읽을 수 있음). 모르면 origin 만
+ */
+export function syncGitArgs(sub: 'pull' | 'merge' | 'fetch', rest: string[], remotes: readonly string[] = ['origin']): boolean {
+  const opts = rest.filter((a) => a.startsWith('-'));
+  const words = rest.filter((a) => !a.startsWith('-'));
+  const remoteOk = (w: string) => REMOTE_NAME.test(w) && remotes.includes(w);
+  if (sub === 'fetch') {
+    if (!opts.every((o) => FETCH_OPTS.has(o))) return false;
+    if (words.length && !remoteOk(words[0])) return false;
+    return words.slice(1).every(refOk);
+  }
+  if (!opts.includes('--ff-only') || !opts.every((o) => SYNC_OPTS.has(o))) return false;
+  if (sub === 'pull') {
+    if (words.length && !remoteOk(words[0])) return false;
+    return words.slice(1).every(refOk);
+  }
+  return words.length <= 1 && words.every(refOk); // merge --ff-only <가지 하나>
+}
+
+/**
+ * 폴더(git 작업 폴더 또는 그 아래)에 등록된 원격 이름. .git 폴더(또는 worktree 의 .git 파일이 가리키는 곳·commondir)의 config 에서
+ * [remote "이름"] 만 읽는다. 찾지 못하거나 읽을 수 없으면 ['origin'] (검수 지적 H2, 2026-11-15)
+ */
+export function gitRemotesAt(dir: string): string[] {
+  try {
+    let cur = path.resolve(dir);
+    for (let i = 0; i < 40; i++) {
+      const dotGit = path.join(cur, '.git');
+      if (existsSync(dotGit)) {
+        let gitDir = dotGit;
+        if (statSync(dotGit).isFile()) {
+          const m = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, 'utf-8'));
+          if (!m) return ['origin'];
+          gitDir = path.resolve(cur, m[1].trim());
+          const common = path.join(gitDir, 'commondir');
+          if (existsSync(common)) gitDir = path.resolve(gitDir, readFileSync(common, 'utf-8').trim());
+        }
+        const text = readFileSync(path.join(gitDir, 'config'), 'utf-8');
+        const names: string[] = [];
+        const re = /^\s*\[\s*remote\s+"([^"\n]+)"\s*\]/gim;
+        for (let m = re.exec(text); m; m = re.exec(text)) if (!names.includes(m[1])) names.push(m[1]);
+        return names;
+      }
+      const up = path.dirname(cur);
+      if (up === cur) break;
+      cur = up;
+    }
+  } catch {
+    // 읽을 수 없음
+  }
+  return ['origin'];
 }
 
 /** 위험 종류 표시. kill 프로그램 끄기 · network 인터넷 전송 · code 코드 실행 · mode 권한 바꾸기 · tmp 공용 임시 폴더에 쓰기 · delete 지우기 */
@@ -720,7 +803,7 @@ const assignValue = (w: string): string => w.slice((ASSIGN_RE.exec(w)?.[0].lengt
 
 /** Bash 명령 하나(여러 개 이어 쓴 것 포함)를 분류한다. */
 export function classifyBash(command: string, ctx: BashContext): BashDecision {
-  const out: BashDecision = { decision: 'allow', reasons: [], blockedPaths: [], writePaths: [], linkSources: [], risks: [], programs: [] };
+  const out: BashDecision = { decision: 'allow', reasons: [], blockedPaths: [], writePaths: [], linkSources: [], risks: [], programs: [], runs: [], gitWide: [] };
   let level: BashKind | 'allow' = 'allow';
   let curName: string | undefined; // 지금 보는 명령의 프로그램 이름(제목용)
   /** 위험 종류 표시 더하기(같은 종류·프로그램이면 대상만 합친다) */
@@ -763,6 +846,8 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
     const rp = ctx.realPath(abs);
     return ctx.readRoots.some((r) => within(rp, r)) || realRoots.some((r) => within(rp, r));
   };
+  /** git 폴더에 등록된 원격 이름(받아오기 판단용) */
+  const remotesAt = (dir: string): string[] => (ctx.gitRemotes ?? gitRemotesAt)(dir);
   let nonRead = false; // 읽기만 하는 명령이 아닌 것이 섞였는지
   let otherBump = false;
   let syncBumps = 0; // 받아오기 git 명령 수
@@ -962,9 +1047,18 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
         bump('command', `앞에 설정값을 붙여 실행: ${[...new Set(preset.map((w) => assignParts(w).name))].join(', ')}`);
         for (const w of preset) scanInline(assignValue(w));
       }
+      let viaXargs = false; // 실행 기록(runs)에 남길 표시: 인자를 입력에서 받는 xargs 로 감쌌는지
+      // command -v 이름 · command -V 이름: 프로그램 위치만 보여 준다(실행 안 함). 판단은 평소처럼 승인함, 믿는 미션에서 읽기로 다시 본다
+      if (path.basename(words[0]) === 'command' && /^-[vV]$/.test(words[1] ?? '') && words.length >= 3 && words.slice(2).every((w) => /^[A-Za-z0-9._+-]+$/.test(w))) {
+        curName = 'command';
+        bump('command', `command ${words[1]} (프로그램 위치 보기)`);
+        out.runs!.push({ name: 'command', word: words[0], args: words.slice(1), cwd });
+        continue;
+      }
       if (WRAPPERS.has(path.basename(words[0]))) {
         const wrapper = path.basename(words[0]);
         if (wrapper === 'time' && words.length === 1) continue;
+        if (wrapper === 'xargs') viaXargs = true;
         words = words.slice(1);
         quoted = quoted.slice(1);
         flags = flags.slice(1);
@@ -990,7 +1084,8 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
         // xargs 로 지문·크기·종류만 보는 명령(find -exec 와 같은 기준)을 돌리는 것은 읽기로 본다
         const safeXargs = wrapper === 'xargs' && !argFile && words.length > 0 && FIND_SAFE_EXEC.has(path.basename(words[0]));
         if (wrapper !== 'time' && !safeXargs) bump('command', `${wrapper} 로 감싼 명령`);
-        else if (wrapPreset) bump('command', `${wrapper} 뒤에 설정값을 붙여 실행`);
+        // 설정값을 붙였으면 감싼 명령이어도 따로 남긴다(믿는 미션이 nohup·time 뒤 설정값도 묻도록, 검수 지적 6)
+        if (wrapPreset) bump('command', `${wrapper} 뒤에 설정값을 붙여 실행`);
         if (!words.length) continue;
       }
       // 맨 앞 낱말에 '=' 나 '[' 가 들어 있으면(`a[x]=/y/cat` 처럼 설정값으로 못 읽은 꼴) basename 으로 줄여 보지 않고 일반 명령으로.
@@ -1004,6 +1099,8 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
       const name = path.basename(words[0]);
       const args = words.slice(1);
       curName = name;
+      /** 따로 분류하지 못한 프로그램 실행을 남긴다(판단은 바꾸지 않음. 믿는 미션에서 다시 봄) */
+      const addRun = () => out.runs!.push({ name, word: words[0], args, cwd, ...(viaXargs ? { viaXargs: true } : {}) });
       if (seg.heredoc && name !== 'cat' && name !== 'tee') bump('command', `heredoc 본문을 ${name} 로 실행`);
       const argFlags = flags.slice(1);
       const isReadable = (p: string) => readableAbs(resolve(p));
@@ -1056,7 +1153,13 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
         }
         const sub = args[k] ?? '';
         const rest = args.slice(k + 1);
-        if (GIT_DELETE.has(sub)) {
+        // 작업 폴더 전체를 바꿀 수 있는 명령: 같은 폴더에서 다른 과제가 돌 때 경고 카드로 보내려고 표시만 한다 (H4-A)
+        if (GIT_WIDE.has(sub) && !(sub === 'stash' && ['list', 'show'].includes(rest[0] ?? '')) && !out.gitWide!.includes(sub)) out.gitWide!.push(sub);
+        // 태그 목록 보기(git tag · git tag -l 'v*')는 읽기 (S5-A). 만들기·지우기·옮기기는 아래 커밋 판단 그대로
+        const tagList = sub === 'tag' && (rest.length === 0 || (rest.some((a) => a === '-l' || a === '--list') && rest.every((a) => !a.startsWith('-') || /^(-l|--list|-n\d*|-i|--ignore-case|--sort=[\w:.-]+)$/.test(a))));
+        if (tagList) {
+          // 읽기: 아무것도 더하지 않는다
+        } else if (GIT_DELETE.has(sub)) {
           bump('delete', `git ${sub}`);
           risk('delete', 'git', sub === 'rm' ? nonOptions(rest).map((a) => path.resolve(gitCwd, expandHome(a))) : []);
         }
@@ -1065,10 +1168,10 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
           if (rest.some((a) => /^--(output|ext-diff|textconv)/.test(a))) bump('command', 'git stash show 의 쓰기·실행 옵션');
         } else if (GIT_COMMIT.has(sub)) {
           // 원격 최신 받아오기(fast-forward 만)·작업 잠시 보관/되살리기: 새 커밋·푸시가 없는 "받아오기" 일
-          const ffOnly = rest.includes('--ff-only') && !rest.some((a) => /^(--rebase|-r|--no-ff|--squash|--commit|-s|--strategy.*|-X|--autostash|--allow-unrelated-histories|--no-verify|--edit|-e)$/.test(a));
+          // pull·merge 는 허용한 옵션(--ff-only·-q·-v·--prune·--tags·--no-tags·--no-rebase)과 원격 이름·가지 이름만 (H2-B, 2026-11-15).
+          // 모르는 옵션(--upload-pack·--exec·-s 등)·경로·주소가 섞이면 받아오기로 보지 않고 평소 커밋 카드로
           const sync =
-            (sub === 'pull' && ffOnly) ||
-            (sub === 'merge' && ffOnly) ||
+            ((sub === 'pull' || sub === 'merge') && syncGitArgs(sub, rest, remotesAt(gitCwd))) ||
             (sub === 'stash' && (rest.length === 0 || ['push', 'save', 'pop', 'apply'].includes(rest[0] ?? '')) && !rest.some((a) => /^(-p|--patch)$/.test(a)));
           bump('commit', sync ? `git ${sub}${rest[0] && !rest[0].startsWith('-') ? ` ${rest[0]}` : ''} (받아오기)` : `git ${sub}`);
           if (sync) syncBumps++;
@@ -1087,7 +1190,7 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
               if (ctx.isBlocked(abs) || /(^|\/)\.env(\.|$)/.test(m[1])) out.blockedPaths.push(abs);
             }
           }
-        } else if (sub === 'fetch' && !rest.some((a) => /^--(upload-pack|exec)|^-[a-zA-Z]*u/.test(a))) {
+        } else if (sub === 'fetch' && syncGitArgs('fetch', rest, remotesAt(gitCwd))) {
           bump('command', 'git fetch (받아오기)');
           syncBumps++;
         } else bump('command', `git ${sub || '(하위 명령 없음)'}`);
@@ -1165,12 +1268,14 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
         else if (/^db(:|$)/.test(script)) bump('db', `${name} run ${script}`);
         else if (/deploy|release/.test(script)) bump('deploy', `${name} run ${script}`);
         else bump('command', `${name} ${args.slice(0, 2).join(' ')}`.trim());
+        addRun();
         continue;
       }
       if (name === 'docker' || name === 'podman') {
         if (['ps', 'images', 'version', 'info'].includes(args[0] ?? '') && !args.some((a) => /^--?(H|host|context|config)/.test(a))) continue; // 상태 보기
         if (['push', 'login'].includes(args[0] ?? '')) bump('deploy', `${name} ${args[0]}`);
         else bump('command', name);
+        addRun();
         continue;
       }
       if (DEPLOY_CMDS.has(name) || /\bdeploy\b/.test(lowerAll)) {
@@ -1179,6 +1284,7 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
       }
       if (name === 'perl') {
         bump('command', 'perl (코드 실행)');
+        addRun();
         continue;
       }
       if (name === 'sed') {
@@ -1434,6 +1540,7 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
         continue;
       }
       bump('command', `${name} (판단이 필요한 명령)`);
+      addRun();
     }
 
     // 바로 허용은 실행 폴더가 작업 대상 안일 때만

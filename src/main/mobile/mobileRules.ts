@@ -2,8 +2,40 @@
 // - 흘려 쓰는 답(live)·진행 줄은 보내지 않는다(알림이 여러 번 울림). 마지막 답만.
 // - 묶음에 휴대폰 말이 하나라도 있으면 그 답·오류는 휴대폰으로. 맥 말만이면 "라노 답 모두 받기" 설정을 따른다.
 // - 휴대폰 말이 답을 기다리는 동안(줄에 서 있을 때 포함) "입력 중" 표시를 이어 간다.
-import type { RanoUiEvent } from '../../shared/types.js';
+// - 승인 요청 글에는 명령(가린 판)과 바뀌는 파일을 함께 적는다(2026-11-15 사용자 결정 S2-B). 승인 버튼은 종류와 상관없이 그대로 둔다.
+import type { ApprovalRequest, RanoUiEvent } from '../../shared/types.js';
+import { carefulLabel, commandOf, filesOf } from '../approvals/approvalSafety.js';
 import { redactCommand } from '../mission/leaderPermissions.js';
+
+/** 휴대폰 승인 요청 글 한 통의 최대 글자 수(텔레그램 한도 4096 안쪽, 버튼이 붙는 한 통에 다 들어가게) */
+export const PHONE_APPROVAL_MAX = 3500;
+const PHONE_CMD_MAX = 600;
+const PHONE_FILES_MAX = 400;
+
+/**
+ * 휴대폰으로 보낼 승인 요청 글. 누가·제목·무엇을·왜·권장에 더해
+ * 커밋·지우기 등은 종류 경고 한 줄, 명령(앱이 가린 판을 한 번 더 가림)·바뀌는 파일을 적는다. 전체는 PHONE_APPROVAL_MAX 자 안.
+ */
+export function approvalPhoneText(
+  a: Pick<ApprovalRequest, 'who' | 'kind' | 'title' | 'what' | 'why' | 'recommendation' | 'detail' | 'filePath' | 'bundle' | 'decisionItems' | 'change'>,
+): string {
+  const lines = [`🔔 승인 요청 · ${a.who}`, a.title, ''];
+  const careful = carefulLabel(a.kind);
+  if (careful) lines.push(`⚠️ ${careful} 요청이에요. 아래 명령·파일을 확인하고 눌러 주세요.`);
+  lines.push(`무엇을: ${a.what}`);
+  // 명령·파일을 왜·권장보다 앞에 둔다(글이 길어 잘려도 무엇을 승인하는지는 남게)
+  const cmd = commandOf(a.detail, PHONE_CMD_MAX);
+  if (cmd) lines.push(`명령: ${redactCommand(cmd)}`);
+  const files = a.bundle?.length ? '' : filesOf(a, PHONE_FILES_MAX);
+  if (files) lines.push(`바뀌는 파일: ${redactCommand(files)}`);
+  if (a.why) lines.push(`왜: ${a.why}`);
+  if (a.recommendation) lines.push(`권장: ${a.recommendation}`);
+  if (a.bundle?.length) lines.push('', `파일 ${a.bundle.length}개: ${a.bundle.map((f) => f.rel).join(', ')}`, '파일마다 고르려면 맥 승인함에서 해 주세요.');
+  if (a.decisionItems?.length) lines.push('', ...a.decisionItems.map((it) => `${it.id}. ${it.question} → 권장 ${it.recommended}안`), '다른 안을 고르려면 맥 승인함에서 해 주세요.');
+  if (a.change) lines.push('', '바뀌는 부분은 맥 승인함에서 색으로 볼 수 있어요.');
+  const text = lines.join('\n');
+  return text.length > PHONE_APPROVAL_MAX ? `${text.slice(0, PHONE_APPROVAL_MAX - 30)}…\n(나머지는 맥 승인함에서 봐 주세요)` : text;
+}
 
 /** 휴대폰에 보낼 보고 카드 한 줄: 비밀처럼 보이는 글은 가린다 */
 export function reportCardText(e: { missionName: string; ok: boolean; firstLine: string }): string {

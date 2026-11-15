@@ -1,5 +1,6 @@
 // 조직 화면: 미션 추가·고치기 5단계 안내 (이름·목표 → 작업 폴더 → 권한 → 팀 → 확인).
 // 폴더 점검은 본체가 하고(이름·목록만 봄), 화면은 그 결과를 보여 주고 고르게만 한다.
+import { restartImpact } from './approvalSafety.js';
 import { el, zoneInfo } from './dom.js';
 import { SOURCE_LABEL, abilityText, button, checkbox, field, openModal, tildify, type Notice } from './orgCommon.js';
 
@@ -494,14 +495,20 @@ export class MissionWizard {
     };
     mk('readOnly', '읽기 전용 (권장)', '팀원은 파일을 읽고 보고만 해요. 아무것도 바꾸지 않아요.');
     mk('approval', '승인함을 거쳐 쓰기', '파일 하나를 바꿀 때마다 승인함에서 내 승인을 받은 뒤에만 바꿔요.');
-    mk('trusted', WRITE_TITLE.trusted, '작업 폴더 안에서 고치고 시험하는 일은 묻지 않고 바로 해요. 커밋·push·삭제·DB·배포·폴더 밖 쓰기는 승인함에서 물어요. 빨라요.');
+    mk('trusted', WRITE_TITLE.trusted, '작업 폴더 안 고치기·시험·스크립트 파일 실행은 묻지 않고 바로 해요. 그 밖(커밋·push·삭제·DB·배포·폴더 밖 쓰기·모르는 프로그램·설치)은 승인함에서 물어요. 스크립트 파일 안에서 하는 일은 앱이 못 봐요.');
     body.appendChild(group);
 
     if (this.writeMode !== 'readOnly') {
       const mode = this.writeMode;
       if (this.writeConfirmed) {
         body.appendChild(
-          el('p', 'org-ok', mode === 'trusted' ? '믿는 미션으로 허용했어요. 커밋·push·삭제·DB·배포·폴더 밖 쓰기는 승인함을 거쳐요.' : '쓰기를 허용했어요. 모든 쓰기·커밋·push·삭제는 승인함을 거쳐요.'),
+          el(
+            'p',
+            'org-ok',
+            mode === 'trusted'
+              ? '믿는 미션으로 허용했어요. 커밋·push·삭제·DB·배포·폴더 밖 쓰기·모르는 프로그램·설치는 승인함을 거쳐요. 스크립트 파일 안에서 하는 일은 앱이 못 봐요.'
+              : '쓰기를 허용했어요. 모든 쓰기·커밋·push·삭제는 승인함을 거쳐요.',
+          ),
         );
       } else {
         const again = button('확인 창 열기', 'btn');
@@ -514,30 +521,61 @@ export class MissionWizard {
 
   private async confirmWrite(mode: 'approval' | 'trusted'): Promise<void> {
     const t = this.target;
-    const lines =
-      mode === 'trusted'
-        ? [
-            '팀원이 작업 폴더 안 파일을 묻지 않고 바로 고치고, 시험·스크립트도 바로 돌려요.',
-            '커밋, push, 삭제, DB 바꾸기, 배포, 작업 폴더 밖 쓰기, 인터넷으로 보내기는 승인함을 거쳐요.',
-            '고친 내용은 커밋 전에 git 으로 되돌릴 수 있어요.',
-            '막아 둔 비밀 파일은 열 수 없어요.',
-          ]
-        : [
-            '팀원이 파일을 바꾸려면 파일 하나마다 승인함에서 승인을 받아야 해요.',
-            '커밋, push, 삭제도 모두 승인함을 거쳐요.',
-            '승인하지 않은 쓰기는 실행되지 않아요.',
-            '막아 둔 비밀 파일은 승인해도 열 수 없어요.',
-          ];
+    const lines = [
+      '팀원이 파일을 바꾸려면 파일 하나마다 승인함에서 승인을 받아야 해요.',
+      '커밋, push, 삭제도 모두 승인함을 거쳐요.',
+      '승인하지 않은 쓰기는 실행되지 않아요.',
+      '막아 둔 비밀 파일은 승인해도 열 수 없어요.',
+    ];
+    // 믿는 미션은 세 칸으로: 바로 하는 일 / 승인함에서 묻는 일 / 앱이 못 보는 일(빨간 칸)
+    const trustSections: { cls: string; title: string; items: string[] }[] = [
+      {
+        cls: 'org-trust-go',
+        title: '묻지 않고 바로 해요',
+        items: [
+          '작업 폴더 안 파일 고치기',
+          '시험·확인 명령, 작업 폴더 안 스크립트 파일 실행(npm run, node 파일 등)',
+          '개발 서버 다시 켜기, 이 맥 안 화면 주소 열어 보기, 원격 이력 받아 보기(git fetch)',
+        ],
+      },
+      {
+        cls: 'org-trust-ask',
+        title: '승인함에서 물어요',
+        items: [
+          '커밋, push, 삭제, DB 바꾸기, 배포',
+          '작업 폴더 밖 쓰기, 인터넷으로 보내기',
+          '앱이 모르는 프로그램, 명령에 글로 넣은 코드(node -e 등), 새 패키지 설치',
+        ],
+      },
+      {
+        cls: 'org-trust-blind',
+        title: '앱이 보지 못해요 (조심)',
+        items: [
+          '리더·팀원이 만든 스크립트 파일 안에서 하는 일 — 그 안에서 폴더 밖에 쓰거나 인터넷으로 보내거나 비밀 파일을 읽어도 앱이 알아채지 못해요.',
+          '되돌리기는 커밋 전 작업 폴더 안 파일만 git 으로 돼요.',
+        ],
+      },
+    ];
     const ok = await openModal({
       title: `${WRITE_TITLE[mode]}를 허용할까요?`,
       okText: '허용',
       okInitiallyEnabled: false,
       build: (body, setOk) => {
         body.appendChild(el('p', undefined, `작업 폴더: ${t ? t.display || tildify(t.path) : tildify(this.targetPath)}`));
-        const ul = el('ul', 'org-plain-list org-bullets');
-        for (const line of lines)
-          ul.appendChild(el('li', undefined, line));
-        body.appendChild(ul);
+        if (mode === 'trusted') {
+          for (const s of trustSections) {
+            const sec = el('div', `org-trust-sec ${s.cls}`);
+            sec.appendChild(el('strong', undefined, s.title));
+            const ul = el('ul');
+            for (const item of s.items) ul.appendChild(el('li', undefined, item));
+            sec.appendChild(ul);
+            body.appendChild(sec);
+          }
+        } else {
+          const ul = el('ul', 'org-plain-list org-bullets');
+          for (const line of lines) ul.appendChild(el('li', undefined, line));
+          body.appendChild(ul);
+        }
         if (t?.deploysOnPush) {
           const hint = t.deployHints.length ? ` (${t.deployHints.join(', ')})` : '';
           body.appendChild(el('p', 'org-deploy', `이 리포는 push 하면 배포될 수 있어요${hint}. push 승인은 배포 승인과 같아요.`));
@@ -695,13 +733,52 @@ export class MissionWizard {
   }
 }
 
+/** 다시 시작 확인 창: 지금 멈출 진행 중 과제와 사라질 승인 대기 수를 보여 주고 [다시 시작]을 눌러야 진행한다 */
+async function confirmRestart(): Promise<boolean> {
+  let impact: { running: string[]; pending: number; queued: number } | null = null;
+  try {
+    const [missions, approvals] = await Promise.all([window.rano.missionList(), window.rano.approvalsList()]);
+    impact = restartImpact(missions ?? [], approvals ?? []);
+  } catch {
+    impact = null; // 숫자를 못 읽어도 확인 창은 띄운다(모른다고 알림)
+  }
+  const busy = !impact || impact.running.length > 0 || impact.pending > 0;
+  return openModal({
+    title: '앱을 지금 다시 시작할까요?',
+    okText: '다시 시작',
+    danger: busy,
+    build: (body) => {
+      const ul = el('ul', 'org-plain-list org-bullets');
+      if (!impact) {
+        ul.appendChild(el('li', 'org-restart-warn', '진행 중 과제와 승인 대기를 확인하지 못했어요. 진행 중 과제는 멈추고 승인 대기는 사라져요.'));
+      } else {
+        const r = impact.running;
+        if (r.length) {
+          const names = r.slice(0, 3).map((x) => `「${x}」`).join(', ');
+          ul.appendChild(el('li', 'org-restart-warn', `진행 중 과제 ${r.length}건이 멈춰요: ${names}${r.length > 3 ? ` 외 ${r.length - 3}건` : ''}. 다시 맡기려면 라노에게 말해 주세요.`));
+        }
+        if (impact.pending) ul.appendChild(el('li', 'org-restart-warn', `승인 대기 ${impact.pending}건이 사라져요(리더가 다시 올려야 해요).`));
+        if (impact.queued) ul.appendChild(el('li', undefined, `줄 서 있던 과제 ${impact.queued}건은 다시 켠 뒤 이어서 해요.`));
+        if (!r.length && !impact.pending) ul.appendChild(el('li', undefined, '멈출 과제나 승인 대기가 없어요.'));
+      }
+      ul.appendChild(el('li', undefined, '이미 고친 파일은 그대로 남아요.'));
+      body.appendChild(ul);
+    },
+  });
+}
+
 /** [앱 다시 시작] 버튼과 안내 */
 export function restartBox(notice: Notice): HTMLElement {
   const box = el('div', 'org-restart');
-  box.appendChild(el('p', undefined, '다시 시작하면 현황판 사무실에 새 방이 생겨요. 기다리던 과제는 이어서 진행돼요.'));
+  box.appendChild(el('p', undefined, '다시 시작하면 현황판 사무실에 새 방이 생겨요. 진행 중인 과제는 멈추고, 기다리던 승인 카드는 사라져요. 일이 없을 때 눌러 주세요.'));
   const b = button('앱 다시 시작', 'btn btn-confirm');
   b.addEventListener('click', async () => {
+    if (b.disabled) return;
     b.disabled = true;
+    if (!(await confirmRestart())) {
+      b.disabled = false;
+      return;
+    }
     b.textContent = '다시 시작하는 중…';
     try {
       await window.rano.orgRestart();

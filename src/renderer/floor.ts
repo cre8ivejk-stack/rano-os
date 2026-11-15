@@ -1,7 +1,7 @@
 // 현황판의 사무실: 미션마다 방 하나. 일하는 방은 크게 맨 앞에, 쉬는 방은 작고 어둡게.
 // 방 안의 도트 사람들이 상태에 따라 움직이고(타자·돋보기·손 들기·졸기), 말풍선에 과제 제목과 걸린 시간이 보인다.
-// 승인을 기다리는 방에서는 그 자리에서 승인·반려할 수 있다.
-import { SIMPLE_APPROVALS } from './chatNow.js';
+// 승인을 기다리는 방에서는 일반 명령·폴더 밖 쓰기만 그 자리에서 승인·반려하고, 커밋·지우기 등은 빨간 표와 [열어서 정하기]로 승인함에서 본다.
+import { canQuickApprove, carefulTag, commandOf, filesOf } from './approvalSafety.js';
 import { el, formatTime, roleLabel } from './dom.js';
 
 type ActorKind = 'lead' | 'member' | 'rano' | 'cat';
@@ -366,13 +366,25 @@ export class FloorView {
     }
     room.appendChild(floor);
 
-    // 승인을 기다리는 방: 그 자리에서 승인·반려
+    // 승인을 기다리는 방: 일반 명령·폴더 밖 쓰기는 그 자리에서 승인·반려(명령 한 줄을 보임), 그 밖은 빨간 표 + [열어서 정하기]
     const a = mine[0];
     if (a) {
       const bar = el('div', 'fl-actbar');
       bar.addEventListener('click', (e) => e.stopPropagation());
-      bar.appendChild(el('span', 'fl-act-text', `${a.who}가 손을 들고 있어요: ${a.title}${mine.length > 1 ? ` (외 ${mine.length - 1}건)` : ''}`));
-      const simple = SIMPLE_APPROVALS.has(a.kind) && !a.decisionItems?.length && !a.bundle?.length;
+      const simple = canQuickApprove(a);
+      const say = el('span', 'fl-act-text');
+      say.appendChild(document.createTextNode(`${a.who}가 손을 들고 있어요: `));
+      const risk = carefulTag(a.kind);
+      if (risk) say.appendChild(el('span', 'now-tag now-tag-risk', risk));
+      say.appendChild(document.createTextNode(`${a.title}${mine.length > 1 ? ` (외 ${mine.length - 1}건)` : ''}`));
+      const cmd = simple ? commandOf(a.detail, 140) : '';
+      const file = simple && !cmd ? filesOf(a, 140) : '';
+      if (cmd || file) {
+        const line = el('span', 'now-cmd', cmd ? `명령: ${cmd}` : `파일: ${file}`);
+        line.title = cmd ? commandOf(a.detail, 2000) : filesOf(a, 2000);
+        say.appendChild(line);
+      }
+      bar.appendChild(say);
       if (simple) {
         const ok = el('button', 'now-btn now-btn-main', '승인');
         ok.type = 'button';

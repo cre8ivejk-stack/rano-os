@@ -29,7 +29,7 @@ import {
   type RanoConfig,
 } from '../../shared/types.js';
 import { isBlockedPath } from '../engine/permissions.js';
-import { classifyBash, type BashDecision, type BashKind, type BashRisk } from './bashRules.js';
+import { classifyBash, type BashDecision, type BashKind, type BashRisk, type BashRun } from './bashRules.js';
 import { CODE_MAP_FILE } from './leaderPrompt.js';
 import { fileKey } from '../approvals/approvalQueue.js';
 import { isConnectorReadTool } from '../connectors/readTools.js';
@@ -64,8 +64,135 @@ export function scriptFilesIn(command: string, cwd: string): string[] {
   return [...out];
 }
 
-/** 파일 지문(없으면 '-') */
+// ---- 실행 목록 지문 넓히기 (H3-A, 2026-11-15) ----
+// 명령에 적힌 스크립트만 묶으면, 그 스크립트가 불러 쓰는 옆 파일(같은 폴더의 모듈·설정)이 승인 뒤 바뀌어도 다시 묻지 않았다.
+// 스크립트가 있는 폴더 아래 2단계까지의 스크립트·설정 파일, 그 폴더의 파일 목록, npm 류·node 명령이면 package.json 도 함께 묶는다.
+// 느려지지 않게 파일 수·크기에 상한을 둔다(넘는 것은 묶지 않음)
+export const RELATED_MAX_FILES = 200;
+const RELATED_MAX_DEPTH = 2;
+const RELATED_MAX_FILE_BYTES = 1024 * 1024; // 한 파일 1MB 넘으면 묶지 않음
+const RELATED_MAX_TOTAL_BYTES = 8 * 1024 * 1024; // 모두 8MB 까지
+const RELATED_SKIP_DIRS = new Set(['node_modules', '.git', '.venv', 'venv', '__pycache__', '.next', '.cache']);
+/** npm 류·node 명령(실행 위치의 package.json 이 무엇을 실행할지 정함) */
+const PKG_RUNNERS = /(^|[\s;&|(])(npm|npx|pnpm|pnpx|yarn|bun|bunx|node|tsx|ts-node|deno)(?=\s|$)/;
+/** make 명령(실행 위치의 Makefile 이 무엇을 실행할지 정함) */
+const MAKE_RUNNER = /(^|[\s;&|(])(make|gmake)(?=\s|$)/;
+/** 폴더 목록 지문 표시(경로 끝의 /). 이 폴더에 묶을 파일이 새로 생기거나 없어지면 지문이 달라진다 */
+const DIR_MARK = path.sep;
+
+/**
+ * 폴더 아래(2단계까지)의 스크립트·설정 파일.
+ * names: 이름 전부(상한 없음, 크기를 재지 않는 가벼운 목록. 폴더 목록 지문에 쓴다 — 새 파일·없어진 파일은 몇 개든 알아챈다)
+ * files: 내용 지문까지 묶을 파일(이름순, 200개·한 파일 1MB·모두 8MB 상한까지)
+ * unbound: 상한에 걸려 내용까지 묶지 못한 파일 수(이름 목록에는 들어 있음)
+ */
+function relatedWalk(dir: string): { names: string[]; files: string[]; unbound: number } {
+  const names: string[] = [];
+  const files: string[] = [];
+  let unbound = 0;
+  let total = 0;
+  let level = [dir];
+  for (let depth = 0; depth <= RELATED_MAX_DEPTH && level.length; depth++) {
+    const next: string[] = [];
+    for (const d of level) {
+      let entries;
+      try {
+        entries = readdirSync(d, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      } catch {
+        continue;
+      }
+      for (const e of entries) {
+        const full = path.join(d, e.name);
+        if (e.isDirectory()) {
+          if (!RELATED_SKIP_DIRS.has(e.name)) next.push(full); // 바로가기 폴더는 따라가지 않는다(isDirectory 가 false)
+          continue;
+        }
+        if (!e.isFile() || !SCRIPT_EXT.test(e.name)) continue;
+        names.push(full);
+        if (files.length >= RELATED_MAX_FILES) {
+          unbound++;
+          continue;
+        }
+        let size = 0;
+        try {
+          size = statSync(full).size;
+        } catch {
+          unbound++;
+          continue;
+        }
+        if (size > RELATED_MAX_FILE_BYTES || total + size > RELATED_MAX_TOTAL_BYTES) {
+          unbound++;
+          continue;
+        }
+        total += size;
+        files.push(full);
+      }
+    }
+    level = next;
+  }
+  return { names, files, unbound };
+}
+
+/** 글롭이 든 경로(dist/main/x/y.test.js 의 *)는 글롭 앞의 고정된 폴더 */
+function fixedDir(abs: string): string {
+  const at = abs.search(/[*?[{]/);
+  if (at < 0) return path.dirname(abs);
+  const slash = abs.lastIndexOf(path.sep, at);
+  return slash <= 0 ? path.sep : abs.slice(0, slash);
+}
+
+/** 가장 가까운 package.json (실행 위치부터 위로). 없으면 실행 위치의 package.json(나중에 생기면 다시 묻도록) */
+function nearestPackageJson(cwd: string): string {
+  let cur = path.resolve(cwd);
+  for (let i = 0; i < 12; i++) {
+    const p = path.join(cur, 'package.json');
+    if (existsSync(p)) return p;
+    const up = path.dirname(cur);
+    if (up === cur) break;
+    cur = up;
+  }
+  return path.join(path.resolve(cwd), 'package.json');
+}
+
+/**
+ * 실행 목록 승인에 함께 묶을 파일(명령에 적힌 스크립트 말고). 폴더 목록 지문은 경로 끝에 / 를 붙여 넣는다.
+ * primary: scriptFilesIn 결과
+ */
+export function relatedFilesFor(command: string, cwd: string, primary: string[] = scriptFilesIn(command, cwd)): string[] {
+  return relatedInfoFor(command, cwd, primary).files;
+}
+
+/** relatedFilesFor 와 같고, 상한에 걸려 내용까지 묶지 못한 파일 수(unbound)도 함께. 이 파일들은 폴더 목록(이름)으로만 본다 */
+export function relatedInfoFor(command: string, cwd: string, primary: string[] = scriptFilesIn(command, cwd)): { files: string[]; unbound: number } {
+  const out = new Set<string>();
+  let unbound = 0;
+  // 맨 위 폴더(/ · /Users · 홈 폴더 자체)는 너무 넓어 훑지 않는다
+  const dirs = [...new Set(primary.map(fixedDir))].filter((d) => d !== homedir() && d.split(path.sep).filter(Boolean).length >= 3);
+  for (const d of dirs) {
+    out.add(d.endsWith(DIR_MARK) ? d : d + DIR_MARK);
+    const w = relatedWalk(d);
+    for (const f of w.files) if (!primary.includes(f)) out.add(f);
+    // 명령에 적힌 스크립트는 상한과 상관없이 내용을 따로 묶으므로 빼고 센다
+    const bound = new Set(w.files);
+    unbound += w.names.filter((f) => !bound.has(f) && !primary.includes(f)).length;
+  }
+  if (PKG_RUNNERS.test(command)) out.add(nearestPackageJson(cwd));
+  if (MAKE_RUNNER.test(command)) for (const n of ['GNUmakefile', 'makefile', 'Makefile']) out.add(path.join(path.resolve(cwd), n));
+  for (const p of primary) out.delete(p);
+  return { files: [...out], unbound };
+}
+
+/** 파일 지문(없으면 '-'). 경로 끝이 / 이면 그 폴더(2단계까지)의 스크립트·설정 파일 이름 전체 목록의 지문(상한 없음) */
 export function fileFingerprint(abs: string): string {
+  if (abs.endsWith(DIR_MARK) && abs.length > 1) {
+    const dir = abs.slice(0, -1);
+    try {
+      if (!statSync(dir).isDirectory()) return '-';
+    } catch {
+      return '-';
+    }
+    return `dir:${createHash('sha256').update(relatedWalk(dir).names.map((f) => path.relative(dir, f)).join('\n')).digest('hex')}`;
+  }
   try {
     return createHash('sha256').update(readFileSync(abs)).digest('hex');
   } catch {
@@ -76,7 +203,22 @@ export function fileFingerprint(abs: string): string {
 export interface CommandGrant {
   command: string; // 글자 그대로
   cwd: string; // 실행 위치
-  files: { path: string; hash: string }[]; // 묶어 둔 스크립트 지문
+  files: { path: string; hash: string; related?: boolean }[]; // 묶어 둔 스크립트 지문(related: 옆 파일·폴더 목록·package.json)
+}
+
+/** 실행 목록 승인에 묶을 지문 전체: 명령에 적힌 스크립트 + 옆 파일 (H3-A) */
+export function grantFilesFor(command: string, cwd: string): CommandGrant['files'] {
+  return grantInfoFor(command, cwd).files;
+}
+
+/** grantFilesFor 와 같고, 상한에 걸려 내용까지 묶지 못한 옆 파일 수(unbound)도 함께. 승인 카드에 사실대로 적는다 */
+export function grantInfoFor(command: string, cwd: string): { files: CommandGrant['files']; unbound: number } {
+  const primary = scriptFilesIn(command, cwd);
+  const rel = relatedInfoFor(command, cwd, primary);
+  return {
+    files: [...primary.map((p) => ({ path: p, hash: fileFingerprint(p) })), ...rel.files.map((p) => ({ path: p, hash: fileFingerprint(p), related: true }))],
+    unbound: rel.unbound,
+  };
 }
 
 /** Grep 에 glob 이 없을 때 강제로 넣는 제외 패턴(.env, .env.local 등 이름이 .env 로 시작하는 파일) */
@@ -314,11 +456,32 @@ export function sensitiveLabel(p: string): string {
 }
 
 /** 경로 하나를 읽기 기준으로 검사한다. 통과하면 null. */
-function checkReadPath(config: RanoConfig, mission: MissionConfig, raw: string, cwd: string): (LeaderDecision & { blocked?: string }) | null {
+/**
+ * 읽기만 하는 과제가 바로 읽을 수 있는 앱 기록 (S5-A, 2026-11-15).
+ * 이 미션의 기록(runs/missions/<미션>/ 의 outputs·queue·state)과, 모든 미션이 같은 구역일 때만 앱 전체 기록(권한·승인함·사용량·사건).
+ * 앱 전체 기록에는 다른 미션의 명령·파일 미리보기가 들어 있어, 다른 구역(회사↔개인) 미션이 있으면 넣지 않는다.
+ * 비밀(runs/secrets)·대화 기록(conversation.json)·다른 미션 기록은 넣지 않는다. 파일 하나하나만 넣는다(폴더 통째 아님)
+ */
+export const APP_LOG_FILES = ['permissions.jsonl', 'approvals.json', 'usage.jsonl', 'events.jsonl'];
+/** 모든 미션의 구역: 켜진 미션(config.missions) + rano.json 원본의 미션 전부(보관 포함). 원본의 구역 읽기는 config.ts 와 같게(personal 이 아니면 work) */
+export function allMissionZones(config: RanoConfig): string[] {
+  const raw = (config.raw as { missions?: unknown } | null | undefined)?.missions;
+  const fromRaw = Array.isArray(raw) ? raw.filter((m) => m && typeof m === 'object').map((m) => ((m as { zone?: unknown }).zone === 'personal' ? 'personal' : 'work')) : [];
+  return [...(config.missions ?? []).map((m) => m.zone), ...fromRaw];
+}
+export const MISSION_LOG_FILES = ['outputs.json', 'queue.json', 'state.json'];
+export function appLogRoots(config: RanoConfig, mission: MissionConfig): string[] {
+  const own = MISSION_LOG_FILES.map((f) => path.join(config.runsDir, 'missions', mission.id, f));
+  // 보관한 미션(archived)도 앱 전체 기록에 그 미션의 명령·파일이 남아 있으므로 함께 본다(config.missions 는 보관 미션을 뺀 목록)
+  const oneZone = allMissionZones(config).every((z) => z === mission.zone);
+  return oneZone ? [...APP_LOG_FILES.map((f) => path.join(config.runsDir, f)), ...own] : own;
+}
+
+function checkReadPath(config: RanoConfig, mission: MissionConfig, raw: string, cwd: string, extraRoots: string[] = []): (LeaderDecision & { blocked?: string }) | null {
   const resolved = absPath(raw, cwd);
   const hit = blockedHit(config, resolved);
   if (hit) return { allow: false, reason: `차단 목록에 걸림: ${hit}`, message: MSG_BLOCKED, blocked: hit };
-  const roots = [...allowedRoots(mission), path.join(config.runsDir, 'drafts', mission.id), path.join(config.rootDir, 'skills'), missionTmpDir(config, mission.id)]; // 시안 폴더·스킬 보관함·이 미션 임시 폴더도 읽기 허용
+  const roots = [...allowedRoots(mission), path.join(config.runsDir, 'drafts', mission.id), path.join(config.rootDir, 'skills'), missionTmpDir(config, mission.id), ...extraRoots]; // 시안 폴더·스킬 보관함·이 미션 임시 폴더도 읽기 허용
   for (const c of new Set([resolved, real(resolved)])) {
     if (!inAny(c, roots)) return { allow: false, reason: `작업 폴더 밖: ${c}`, message: MSG_OUTSIDE };
   }
@@ -365,12 +528,13 @@ export function decideLeaderTool(
   cwd: string = mission.targets[0] ?? mission.home,
   isSubagent = false,
   memberModels?: Record<string, 'opus' | 'sonnet'>,
+  extraReadRoots: string[] = [], // 읽기만 과제의 앱 기록 파일(appLogRoots)
 ): LeaderDecision & { blocked?: string } {
   if (READ_TOOLS.has(toolName)) {
     const paths = readToolPaths(toolName, input, cwd);
     if (!paths) return { allow: false, reason: 'Read 경로 없음', message: '읽을 파일 위치가 비어 있어요.' };
     for (const p of paths) {
-      const bad = checkReadPath(config, mission, p, cwd);
+      const bad = checkReadPath(config, mission, p, cwd, extraReadRoots);
       if (bad) return bad;
     }
     // 검색 조건 자체가 비밀 파일을 겨누면(.env*, id_rsa 등) 결과를 거르기 전에 막는다. '!' 로 시작하는 제외 조건은 괜찮다.
@@ -414,6 +578,7 @@ export interface ApprovalAsk {
   syncOnly?: boolean; // Bash 명령의 기록 바꾸기가 원격 최신 받아오기·보관/되살리기뿐인지
   netHosts?: string[]; // Bash 명령이 curl 로 여는 사이트(호스트). 승인되면 이 과제 동안 같은 사이트 읽기(GET)는 다시 묻지 않는다
   logTarget?: string; // Bash 기록용: 프로그램 끄기·지우기·인터넷 전송의 대상(끌 이름·지울 경로·보낼 호스트). 비밀 가림
+  gitWide?: string[]; // Bash 명령에 든 작업 폴더 전체를 바꾸는 git 명령(stash·pull·checkout 등). 다른 과제가 돌 때 경고 카드로 (H4-A)
 }
 
 export interface StageDecision {
@@ -697,7 +862,7 @@ export function decideConnectorTool(
 
 // ------------------------------------------------------------------
 // 믿는 미션 (2026-11-10 사용자 결정)
-// 작업 리포 안 고치기·시험·코드 실행은 승인 없이. 커밋·push·삭제·DB·배포·리포 밖·인터넷 전송·프로그램 끄기·권한 바꾸기는 그대로 승인함
+// 작업 리포 안 고치기·시험·아는 명령·폴더 안 스크립트 파일 실행은 승인 없이(모르는 프로그램·명령 글 속 코드·설치는 묻기). 커밋·push·삭제·DB·배포·리포 밖·인터넷 전송·프로그램 끄기·권한 바꾸기는 그대로 승인함
 // ------------------------------------------------------------------
 
 /** 믿는 미션이라도 승인함으로 보내는 판단 근거(리포 밖, 비밀, git 바꾸기, 관리자 권한, 경로를 알 수 없음, 실행 환경 바꾸기 등) */
@@ -748,20 +913,415 @@ function trustedRisk(r: { kind: string; program: string; targets: string[] }, co
 /** 믿는 미션에서 넘어갈 수 있는 판단 근거: 원격 최신 이력 받기(git fetch. 작업 파일은 안 바뀜), 개발 서버 끄기·이 맥 안 주소 확인 */
 const TRUST_OK_REASON = /^(git fetch \(받아오기\)|pkill \(판단이 필요한 명령\)|curl \(판단이 필요한 명령\))$/;
 
-export function trustedBash(
+// ---- 믿는 미션의 "아는 명령"만 바로 (H1-A, 2026-11-15 사용자 결정) ----
+// 믿는 미션이라도 ① 앱이 모르는 프로그램 ② 명령 글에 코드를 넣어 돌리기(node -e, python -c, sh -c, osascript, 파이프로 셸에 넘기기)
+// ③ 인터넷에서 받아 설치·실행(npm install, npx 새 패키지, pip install, brew)은 승인함으로.
+// 작업 폴더·시안·임시 폴더 안의 스크립트 파일 실행(node scripts/x.js, npm run 이름, make)과 시험·확인 명령은 그대로 바로.
+
+/** 믿는 미션에서 바로 하는 아는 프로그램(빌드·시험·검사 도구, 셸 기본 명령). 앱이 따로 분류하는 명령(git·cat·rm 등)은 여기 없어도 된다 */
+const TRUST_KNOWN_PROGRAMS = new Set([
+  'make', 'gmake', 'cmake', 'ninja', 'tsc', 'eslint', 'prettier', 'vitest', 'jest', 'mocha', 'esbuild', 'vite', 'next', 'nuxt', 'astro', 'webpack', 'rollup',
+  'turbo', 'nx', 'electron', 'electron-builder', 'playwright', 'cargo', 'rustc', 'go', 'gcc', 'g++', 'clang', 'clang++', 'cc', 'swiftc', 'xcodebuild', 'gradle',
+  'mvn', 'pytest', 'mypy', 'ruff', 'black', 'flake8', 'pylint', 'pyright',
+  'set', 'wait', 'exit', 'false', ':', 'seq', 'expr', 'yes', 'tput', 'clear', 'nproc', 'whoami', 'id', 'hostname', 'sw_vers', 'arch', 'getconf',
+  // 위험 표시로 따로 판단하는 것(개발 서버 끄기 pkill -f, 이 맥 안 주소 curl): trustedRisk 가 본다
+  'pkill', 'curl',
+]);
+/** 아는 프로그램이라도 이 하위 명령은 설치·받기라 승인함으로 */
+const TRUST_INSTALL_SUBS: Record<string, Set<string>> = {
+  cargo: new Set(['install', 'add', 'login', 'publish']),
+  go: new Set(['install', 'get']),
+  playwright: new Set(['install', 'install-deps']),
+};
+/** 해석기: 글로 넘긴 코드 옵션(inline)·값을 따로 받는 옵션(value). 스크립트 파일이 없으면(입력으로 받은 코드) 승인함으로 */
+interface InterpSpec {
+  inline: RegExp;
+  value?: RegExp; // 값을 따로 받는 긴 옵션(--require x · --require=x 둘 다)
+  scriptFlag?: string; // 이 옵션 뒤가 스크립트 파일(php -f)
+  noScriptOk?: (args: string[]) => boolean; // 스크립트 없이 돌아도 되는 꼴(node --test)
+  // ---- 짧은 옵션 묶음(-Bc, -we, -Ic)을 글자 하나씩 본다 (검수 지적 H1, 2026-11-15) ----
+  code?: string; // 이 글자가 묶음 안에 있으면 글로 넘긴 코드(python -c, ruby -e)
+  valueChars?: string; // 이 글자 뒤(묶음의 나머지, 없으면 다음 낱말)가 값(python -m 모듈, node -r 모듈)
+  attached?: string; // 이 글자 뒤 묶음의 나머지가 그 옵션의 값(perl -i.bak, ruby -0777). 다음 낱말은 안 먹는다
+  askChars?: string; // 이 글자가 있으면 묻기(ruby·perl -S: PATH 에서 찾은 스크립트 실행)
+}
+/** 옵션 값이 코드·주소인지(data: · file: · http: 처럼 '글자:' 로 시작). 윈도 드라이브(C:\)는 아님 */
+const codeLike = (v: string): boolean => /^[A-Za-z][A-Za-z0-9+.-]*:/.test(v) && !/^[A-Za-z]:[\\/]/.test(v);
+/** 값이 코드·주소가 아닌 옵션(시험 이름 찾기 글·제목) */
+const PLAIN_VALUE_OPTS = new Set(['--test-name-pattern', '--test-skip-pattern', '--title', '--inspect-port', '--test-reporter-destination']);
+const NODE_SPEC: InterpSpec = {
+  inline: /^(-e|--eval|-p|--print|-i|--interactive|-pe|-ep)$|^--(eval|print)=/,
+  value: /^(-r|--require|--import|--loader|--experimental-loader|-C|--conditions|--input-type|--env-file|--title|--inspect-port|--test-reporter|--test-reporter-destination|--watch-path|--test-name-pattern|--test-skip-pattern|--test-concurrency|--test-timeout)$/,
+  noScriptOk: (a) => a.includes('--test'),
+  code: 'epi',
+  valueChars: 'rC',
+};
+const SHELL_SPEC: InterpSpec = { inline: /^-[a-zA-Z]*[cis][a-zA-Z]*$/, value: /^[-+][oO]$/, code: 'cis', valueChars: 'oO' };
+const INTERP: Record<string, InterpSpec> = {
+  node: NODE_SPEC,
+  nodejs: NODE_SPEC,
+  tsx: NODE_SPEC,
+  'ts-node': NODE_SPEC,
+  sh: SHELL_SPEC,
+  bash: SHELL_SPEC,
+  zsh: SHELL_SPEC,
+  dash: SHELL_SPEC,
+  ksh: SHELL_SPEC,
+  fish: { inline: /^(-c|--command|-i|--interactive)$|^--command=/, code: 'ci' },
+  python: { inline: /^-c|^-i$/, value: /^-[WX]$/, code: 'ci', valueChars: 'mWX' },
+  ruby: { inline: /^-e|^--eval/, value: /^-[rICEF]$/, code: 'e', valueChars: 'rICEF', attached: '0ixKTW', askChars: 'S' },
+  perl: { inline: /^-[a-zA-Z]*[eE]/, value: /^-[IMm]$/, code: 'eE', valueChars: 'IMm', attached: '0CdDilxF', askChars: 'S' },
+  php: { inline: /^-[raRBEF]$/, value: /^-[cdz]$/, scriptFlag: '-f', code: 'raRBEF', valueChars: 'cdz' },
+  lua: { inline: /^-[ei]$/, value: /^-l$/, code: 'ei', valueChars: 'l' },
+  Rscript: { inline: /^(-e|--expr)/, code: 'e' },
+  expect: { inline: /^-[ci]$/, code: 'ci' },
+  tclsh: { inline: /^$/ },
+  swift: { inline: /^-e$/, noScriptOk: (a) => ['build', 'test', 'run', 'package'].includes(a[0] ?? ''), code: 'e' },
+};
+/** 이름에 맞는 해석기 규칙(python3.12 · ruby3 포함). Object 기본 이름(constructor 등)에는 맞지 않게 */
+function interpSpec(name: string): InterpSpec | undefined {
+  if (Object.prototype.hasOwnProperty.call(INTERP, name)) return INTERP[name];
+  if (/^python\d+(\.\d+)?$/.test(name)) return INTERP.python;
+  if (/^ruby\d/.test(name)) return INTERP.ruby;
+  return undefined;
+}
+/** python -m 으로 바로 돌려도 되는 모듈(시험·검사) */
+const PY_MODULES_OK = new Set(['pytest', 'unittest', 'mypy', 'ruff', 'black', 'flake8', 'pylint', 'pyflakes', 'py_compile', 'compileall', 'doctest', 'json.tool', 'tabnanny']);
+/** 늘 승인함: 글로 넘긴 코드를 그대로 실행하거나 다른 앱을 조종 */
+const TRUST_ALWAYS_ASK = new Set(['eval', 'osascript', 'pipx', 'brew', 'pip', 'pip3', 'gem', 'uv', 'poetry', 'conda']);
+/** npm 류에서 바로 되는 하위 명령(패키지 스크립트 실행·목록 보기) */
+const NPM_OK_SUBS = new Set(['run', 'run-script', 'test', 't', 'start', 'ls', 'list', 'why', 'explain', 'help']);
+/** pnpm·yarn 에서 설치·설정·받기 하위 명령(그 밖의 낱말은 패키지 스크립트 이름으로 본다) */
+const PM_RISKY_SUBS = new Set([
+  'add', 'install', 'i', 'ci', 'up', 'update', 'upgrade', 'remove', 'rm', 'uninstall', 'link', 'unlink', 'dlx', 'global', 'config', 'set', 'plugin', 'npm',
+  'policies', 'import', 'unplug', 'patch', 'patch-commit', 'version', 'init', 'create', 'cache', 'dedupe', 'rebuild', 'setup', 'env', 'self-update', 'store',
+  'fetch', 'prune', 'publish', 'pm', 'x',
+]);
+/** npm 류 옵션 중 다른 폴더·전역·설정을 쓰게 하는 것 */
+const PM_RISKY_OPTS = /^(--prefix|-C|--dir|--cwd|-g|--global|--location|--userconfig|--globalconfig|--script-shell|--node-options|--registry)(=|$)/;
+
+/** 실행 위치·스크립트가 작업 폴더·시안·임시 폴더 안인지(원래·실제 경로 모두) */
+function insideRoots(abs: string, roots: string[]): boolean {
+  return roots.some((r) => insideBoth(abs, r));
+}
+
+/** 경로가 아니라 코드·파일 주소로 읽히는 인자 머리(data:text/javascript,… · file:///… · javascript:…) */
+const CODE_URL = /^(data|file|javascript|blob|jar|vbscript):/i;
+/** 인터넷 주소 머리(http:// 등). curl 말고 다른 프로그램에 넘기면 받아 실행할 수 있어 묻는다 */
+const NET_URL = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+/**
+ * 경로처럼 보이는 인자(/·~·.. 로 시작하거나 / 가 든 것)가 모두 읽기·쓰기 허용 폴더 안인지. 밖이면 쉬운 말 이유.
+ * --옵션=값 · 이름=값(php -d auto_prepend_file=…, make X=…) 은 = 뒤 값도 본다.
+ * data: · file: 같은 코드·파일 주소는 경로가 아니라 코드로 보고 묻는다. 인터넷 주소는 curl(위험 표시로 따로 판단)만 넘어간다
+ */
+function outsidePathArg(args: string[], cwd: string, allowed: string[], program = ''): string | null {
+  for (const a of args) {
+    const vals: string[] = [];
+    if (a.startsWith('-')) {
+      const eq = a.indexOf('=');
+      if (eq < 0) continue;
+      vals.push(a.slice(eq + 1));
+    } else {
+      vals.push(a);
+      const eq = a.indexOf('=');
+      if (eq > 0 && /^[A-Za-z_.][A-Za-z0-9_.-]*$/.test(a.slice(0, eq))) vals.push(a.slice(eq + 1));
+    }
+    for (const v of vals) {
+      if (!v || v.startsWith('@') || v === '/dev/null') continue;
+      if (CODE_URL.test(v)) return `코드·파일 주소를 인자로 넘김: ${clip(v, 40)}`;
+      if (NET_URL.test(v)) {
+        // curl 은 위험 표시(trustedRisk)로 따로 판단, 이 맥 안 주소(개발 서버 화면 확인 등)는 경로가 아니라 넘어간다
+        if (program === 'curl' || TRUST_LOCAL_HOST.test(/^[a-z][a-z0-9+.-]*:\/\/(?:[^@\/\s]*@)?(\[[^\]]*\]|[^\/:\s?#]+)/i.exec(v)?.[1] ?? '')) continue;
+        return `인터넷 주소를 인자로 넘김: ${clip(v, 60)}`;
+      }
+      if (!(v.startsWith('/') || v.startsWith('~') || v.includes('/') || v === '..')) continue;
+      const abs = path.resolve(cwd, expandHome(v));
+      if (!insideRoots(abs, allowed)) return `작업 폴더 밖 경로를 넘김: ${displayPath(abs)}`;
+    }
+  }
+  return null;
+}
+
+/** 이름으로 따로 보는 프로그램인지(해석기·npm 류·감싸는 명령·아는 프로그램). 경로를 붙여 불러도 이 검사를 그대로 한다 */
+function namedRunRule(name: string): boolean {
+  return (
+    !!interpSpec(name) ||
+    TRUST_ALWAYS_ASK.has(name) ||
+    TRUST_KNOWN_PROGRAMS.has(name) ||
+    ['source', '.', 'timeout', 'gtimeout', 'npx', 'pnpx', 'bunx', 'npm', 'pnpm', 'yarn', 'bun', 'deno', 'command', 'ps'].includes(name)
+  );
+}
+
+/** ps 가 환경 변수까지 보이는지(맥 ps -e · BSD 꼴 e · -E). 값을 받는 옵션(-o 형식 · -p 번호 · -U 사용자 등) 뒤 낱말은 건너뛴다 */
+function psShowsEnv(args: string[]): boolean {
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k];
+    if (!/^-?[A-Za-z]+$/.test(a)) continue;
+    // 맥 ps 에서 -e 는 "모든 프로세스"(-A), 환경 변수가 보이는 것은 대시 없는 e 와 -E
+    if (a.startsWith('-') ? /E/.test(a) : /[eE]/.test(a)) return true;
+    if (/^-[A-Za-z]*[oOpUuGgt]$/.test(a)) k++;
+  }
+  return false;
+}
+
+/** 실제로 있는 보통 파일인지(바로가기는 따라간 곳 기준) */
+function isRegularFile(abs: string): boolean {
+  try {
+    return statSync(abs).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** 지금 폴더부터 위로(허용 폴더 안에서만) node_modules/.bin/<이름> 이 있는지: 이미 설치된 도구인지 */
+function localBin(bin: string, cwd: string, roots: string[]): boolean {
+  if (!/^[A-Za-z0-9._@-][A-Za-z0-9._\/@-]*$/.test(bin)) return false;
+  const name = bin.startsWith('@') ? bin.split('/')[1] ?? '' : bin.split('@')[0];
+  if (!name || name.includes('/')) return false;
+  let cur = path.resolve(cwd);
+  for (let i = 0; i < 12 && insideRoots(cur, roots); i++) {
+    if (existsSync(path.join(cur, 'node_modules', '.bin', name))) return true;
+    const up = path.dirname(cur);
+    if (up === cur) break;
+    cur = up;
+  }
+  return false;
+}
+
+/**
+ * 믿는 미션에서 이 프로그램 실행을 바로 해도 되는지. 괜찮으면 null, 아니면 쉬운 말 이유.
+ * roots: 작업 폴더 + 시안·임시 폴더(스크립트·실행 위치가 있어도 되는 곳), allowed: roots + 읽기 허용 폴더(경로 인자가 가리켜도 되는 곳)
+ * localTool: npx·pnpm exec 로 이미 설치된 도구를 부른 것(모르는 이름이어도 설치된 개발 도구로 본다)
+ */
+export function trustedRunProblem(run: BashRun, roots: string[], allowed: string[] = roots, depth = 0, localTool = false): string | null {
+  if (depth > 3) return '명령을 너무 여러 겹 감쌈';
+  const { name, args, cwd } = run;
+  const outside = () => outsidePathArg(args, cwd, allowed, name);
+  // 경로를 붙여 부른 프로그램(./scripts/x.sh, tools/run): 작업 폴더·시안·임시 폴더 안의 스크립트 파일이면 실행, 밖이면 묻는다.
+  // 이름이 해석기·npm 류·아는 프로그램이면(.venv/bin/python, node_modules/.bin/tsx) 아래에서 이름으로 같은 검사(코드 옵션 등)를 한 번 더 한다
+  if (run.word.includes('/')) {
+    if (!insideRoots(path.resolve(cwd, expandHome(run.word)), roots)) return `작업 폴더 밖 프로그램 실행: ${displayPath(path.resolve(cwd, expandHome(run.word)))}`;
+    if (run.viaXargs) return 'xargs 로 받은 인자로 스크립트 실행';
+    if (!namedRunRule(name)) return outside();
+  }
+  // 읽기만 하는 아는 명령: 프로그램 위치 보기(command -v 이름), 프로세스 목록(ps. 환경 변수까지 보이는 e·E 옵션만 묻기)
+  if (name === 'command') return /^-[vV]$/.test(args[0] ?? '') && args.length >= 2 ? null : 'command 로 감싼 명령';
+  if (name === 'ps') return psShowsEnv(args) ? 'ps 로 환경 변수 보기(비밀이 보일 수 있음)' : null;
+  if (TRUST_ALWAYS_ASK.has(name)) return name === 'eval' || name === 'osascript' ? `명령 글에 코드를 넣어 실행(${name})` : `설치 도구(${name})`;
+  // 감싸는 명령: timeout 60 npm test → 안쪽 명령으로 판단
+  if (name === 'timeout' || name === 'gtimeout') {
+    let k = 0;
+    while (k < args.length && args[k].startsWith('-')) k += /^-(s|k)$|^--(signal|kill-after)$/.test(args[k]) ? 2 : 1;
+    const inner = args.slice(k + 1);
+    if (!inner.length) return null;
+    return trustedRunProblem({ ...run, name: path.basename(inner[0]), word: inner[0], args: inner.slice(1) }, roots, allowed, depth + 1);
+  }
+  // 이미 설치된 도구를 부르는 npx·pnpx·bunx·pnpm exec·yarn exec·npm exec
+  const npxLike = (rest: string[], who: string): string | null => {
+    let k = 0;
+    for (; k < rest.length && rest[k].startsWith('-'); k++) {
+      if (/^(-y|--yes|-p|--package|-c|--call|--shell)(=|$)/.test(rest[k])) return `${who} 로 설치되지 않은 패키지를 받아 실행하거나 글로 넘긴 명령 실행`;
+      if (rest[k] === '--') {
+        k++;
+        break;
+      }
+    }
+    const pkg = rest[k];
+    if (!pkg) return `${who} 로 실행할 것이 없음`;
+    if (pkg.includes('/') && !pkg.startsWith('@')) return trustedRunProblem({ ...run, name: path.basename(pkg), word: pkg, args: rest.slice(k + 1) }, roots, allowed, depth + 1);
+    if (run.viaXargs) return `xargs 로 받은 인자로 ${who} 실행`;
+    // 이름@버전(tsx@4 · @scope/x@1): 설치된 것과 버전이 다르면 인터넷에서 받아 실행한다
+    if ((pkg.startsWith('@') ? pkg.indexOf('@', 1) : pkg.indexOf('@')) > 0) return `${who} 로 버전을 붙인 패키지를 인터넷에서 받아 실행할 수 있음: ${pkg}`;
+    if (!localBin(pkg, cwd, roots)) return `${who} 로 설치되지 않은 패키지를 인터넷에서 받아 실행: ${pkg}`;
+    const bin = pkg.startsWith('@') ? pkg.split('/')[1] ?? pkg : pkg.split('@')[0];
+    return trustedRunProblem({ ...run, name: bin, word: bin, args: rest.slice(k + 1) }, roots, allowed, depth + 1, true);
+  };
+  if (name === 'npx' || name === 'pnpx' || name === 'bunx') return npxLike(args, name);
+  if (name === 'npm' || name === 'pnpm' || name === 'yarn' || name === 'bun') {
+    if (args.some((a) => PM_RISKY_OPTS.test(a))) return `${name} 에 다른 폴더·전역·설정을 쓰는 옵션`;
+    if (name === 'bun' && args.some((a) => /^(-e|--eval|-p|--print)(=|$)/.test(a))) return '명령 글에 코드를 넣어 실행(bun -e)';
+    const words = args.filter((a) => !a.startsWith('-'));
+    const sub = words[0] ?? '';
+    if (name === 'npm') {
+      if (sub === 'exec' || sub === 'x') return npxLike(args.slice(args.indexOf(sub) + 1), 'npm exec');
+      if (!NPM_OK_SUBS.has(sub)) return sub ? `npm ${sub} (설치·설정·바꾸기일 수 있음)` : 'npm 하위 명령 없음';
+      return outside();
+    }
+    if (!sub) return name === 'yarn' ? 'yarn (패키지 설치)' : `${name} 하위 명령 없음`;
+    if (sub === 'exec' || (name === 'bun' && sub === 'x')) return npxLike(args.slice(args.indexOf(sub) + 1), `${name} ${sub}`);
+    if (PM_RISKY_SUBS.has(sub)) return `${name} ${sub} (설치·설정·받기일 수 있음)`;
+    const target = sub === 'run' || sub === 'run-script' ? words[1] ?? '' : sub;
+    // bun <파일> · bun run <파일>: 스크립트 파일이면 위치와 실제로 있는 파일인지 본다
+    if (name === 'bun' && target && /\.[cm]?[jt]sx?$/.test(target)) {
+      const f = path.resolve(cwd, expandHome(target));
+      if (!insideRoots(f, roots)) return `작업 폴더 밖 스크립트 실행: ${target}`;
+      if (!isRegularFile(f)) return `스크립트 파일이 없음: ${target}`;
+    }
+    // yarn node -e … · pnpm tsx -e … · yarn run tsx …: 스크립트 이름이 아니라 해석기·설치된 도구를 부르는 꼴은 그 프로그램으로 다시 본다
+    if (target) {
+      const after = args.slice(args.indexOf(target) + 1);
+      if (interpSpec(target) || target === 'deno') return trustedRunProblem({ ...run, name: target, word: target, args: after }, roots, allowed, depth + 1);
+      if (localBin(target, cwd, roots)) return trustedRunProblem({ ...run, name: target, word: target, args: after }, roots, allowed, depth + 1, true);
+    }
+    return outside();
+  }
+  if (name === 'deno') {
+    const sub = args[0] ?? '';
+    if (['eval', 'repl', ''].includes(sub)) return '명령 글에 코드를 넣어 실행(deno)';
+    if (!['run', 'test', 'check', 'lint', 'fmt', 'task', 'bench'].includes(sub)) return `deno ${sub} (설치·받기일 수 있음)`;
+    if (sub === 'run') {
+      const script = args.slice(1).find((a) => !a.startsWith('-'));
+      if (!script || script === '-') return '입력으로 받은 코드를 실행(deno run)';
+      if (/^[a-z]+:/i.test(script)) return `인터넷 주소의 코드를 받아 실행(deno run ${script})`;
+      const f = path.resolve(cwd, expandHome(script));
+      if (!insideRoots(f, roots)) return `작업 폴더 밖 스크립트 실행: ${script}`;
+      if (!isRegularFile(f)) return `스크립트 파일이 없음: ${script}`;
+    }
+    return outside();
+  }
+  // 해석기: 스크립트 파일이 작업 폴더·시안·임시 폴더 안에 실제로 있어야 하고, 글로 넘긴 코드·입력으로 받은 코드는 묻는다
+  const spec = interpSpec(name);
+  if (spec || name === 'source' || name === '.') {
+    if (run.viaXargs) return `xargs 로 받은 인자로 코드 실행(${name})`;
+    const codeMsg = (x: string) => `명령 글에 코드를 넣어 실행(${name} ${x.slice(0, 12)})`;
+    const valueMsg = (x: string, v: string) => `명령 글에 코드·주소를 넣어 실행(${name} ${x.slice(0, 12)} ${clip(v, 40)})`;
+    /** python -m 모듈: 시험·검사 모듈만 */
+    const pyModule = (mod: string) =>
+      !PY_MODULES_OK.has(mod) ? (mod === 'pip' || mod === 'ensurepip' ? `설치 도구(${name} -m ${mod})` : `${name} -m ${mod || '(모듈 없음)'} (앱이 모르는 모듈)`) : outside();
+    let k = 0;
+    if (spec) {
+      if ((name === 'tsx' && args[0] === 'watch') || (name === 'swift' && spec.noScriptOk?.(args))) k = 1;
+      for (; k < args.length; k++) {
+        const x = args[k];
+        if (x === '--') {
+          k++;
+          break;
+        }
+        if (!x.startsWith('-') || x === '-') break;
+        if (spec.inline.test(x)) return codeMsg(x);
+        if (spec.scriptFlag && x === spec.scriptFlag) continue;
+        // 짧은 옵션 묶음(-Bc · -Ic · -we · -m · -r): 글자 하나씩. 코드 글자가 있으면 묻고, 값 글자면 값(나머지 또는 다음 낱말)을 본다
+        const cluster = /^-([A-Za-z0-9]+)$/.exec(x)?.[1];
+        if (cluster && (spec.code || spec.valueChars || spec.askChars)) {
+          let valueChar = '';
+          let value = '';
+          for (let j = 0; j < cluster.length; j++) {
+            const ch = cluster[j];
+            if (spec.code?.includes(ch)) return codeMsg(x);
+            if (spec.askChars?.includes(ch)) return `${name} -${ch} (PATH 에서 찾은 스크립트 실행)`;
+            if (spec.valueChars?.includes(ch)) {
+              valueChar = ch;
+              value = cluster.slice(j + 1);
+              if (!value) value = args[++k] ?? '';
+              break;
+            }
+            if (spec.attached?.includes(ch)) break;
+          }
+          if (valueChar === 'm' && spec === INTERP.python) return pyModule(value);
+          if (valueChar && codeLike(value)) return valueMsg(x, value);
+          continue;
+        }
+        // 긴 옵션: --require x · --require=x
+        const eq = x.indexOf('=');
+        const key = eq < 0 ? x : x.slice(0, eq);
+        if (spec.value?.test(key)) {
+          const value = eq < 0 ? args[++k] ?? '' : x.slice(eq + 1);
+          if (!PLAIN_VALUE_OPTS.has(key) && codeLike(value)) return valueMsg(key, value);
+        }
+      }
+    }
+    const script = args[k];
+    if (!script || script === '-') return spec?.noScriptOk?.(args) ? outside() : `입력으로 받은 코드를 실행(${name})`;
+    const scriptAbs = path.resolve(cwd, expandHome(script));
+    if (!insideRoots(scriptAbs, roots)) return `작업 폴더 밖 스크립트 실행: ${displayPath(scriptAbs)}`;
+    // 스크립트 자리 낱말은 실제로 있는 보통 파일만(없는 이름은 해석기에 따라 코드·PATH 의 프로그램으로 읽힐 수 있음).
+    // node --test·swift build 처럼 스크립트 없이 도는 꼴은 낱말이 시험 파일 글롭·하위 명령이라 위치만 본다
+    if (!spec?.noScriptOk?.(args) && !isRegularFile(scriptAbs)) return `스크립트 파일이 없음(있는 파일만 바로 실행): ${clip(script, 60)}`;
+    return outside();
+  }
+  if (TRUST_KNOWN_PROGRAMS.has(name) || localTool) {
+    const subs = Object.prototype.hasOwnProperty.call(TRUST_INSTALL_SUBS, name) ? TRUST_INSTALL_SUBS[name] : undefined;
+    const sub = args.find((a) => !a.startsWith('-'));
+    if (subs && sub && subs.has(sub)) return `${name} ${sub} (설치·받기)`;
+    // go run 모듈@버전: 인터넷에서 받아 실행
+    if (name === 'go' && sub === 'run' && args.some((a) => !a.startsWith('-') && a.includes('@'))) return `go run 으로 버전을 붙인 원격 모듈을 받아 실행: ${clip(args.find((a) => !a.startsWith('-') && a.includes('@')) ?? '', 60)}`;
+    // make --eval '규칙' · make -E '규칙': 명령 글에 규칙(셸 명령)을 넣어 실행
+    if ((name === 'make' || name === 'gmake') && args.some((a) => /^--eval(=|$)/.test(a) || /^-[A-Za-z]*E/.test(a))) return `명령 글에 코드를 넣어 실행(${name} --eval)`;
+    // make 이름=값: Makefile 설정값(CC·SHELL 등)을 덮어써 다른 명령을 돌릴 수 있어 값과 상관없이 묻는다
+    if (name === 'make' || name === 'gmake') {
+      const over = args.find((a) => !a.startsWith('-') && a.includes('='));
+      if (over) return `${name} 설정값 덮어쓰기(다른 명령을 돌릴 수 있음): ${clip(over, 60)}`;
+    }
+    // go -exec · -toolexec · -vettool (=값 꼴 포함): 빌드·시험·검사 중에 다른 프로그램을 돌린다
+    if (name === 'go') {
+      const ex = args.find((a) => /^--?(exec|toolexec|vettool)(=|$)/.test(a));
+      if (ex) return `go ${ex.replace(/=.*$/, '')} 로 다른 프로그램 실행`;
+      // go env -w/-u: 사용자 전체 go 설정(작업 폴더 밖)을 영구로 바꿔 뒤의 go test 등에 -toolexec 같은 값을 심을 수 있다
+      if (sub === 'env' && args.some((a) => /^--?[wu]$/.test(a))) return 'go env 로 사용자 전체 go 설정 바꾸기';
+      if (sub === 'clean' && args.some((a) => /^--?modcache$/.test(a))) return 'go clean -modcache (작업 폴더 밖 모듈 저장소 지우기)';
+    }
+    // make -f - : 명령 글(입력)로 넘긴 규칙을 실행 — --eval 과 같은 종류
+    if ((name === 'make' || name === 'gmake') && args.some((a, k) => /^--(file|makefile)=-$/.test(a) || /^-[A-Za-z]*f-$/.test(a) || ((/^-[A-Za-z]*f$/.test(a) || a === '--file' || a === '--makefile') && args[k + 1] === '-'))) return `명령 글에 규칙을 넣어 실행(${name} -f -)`;
+    // cmake -E(명령 대신 실행)·-D(컴파일러 등 설정 덮어쓰기), cargo --config(runner·wrapper 바꾸기), nx exec(넘긴 명령 실행)
+    if (name === 'cmake' && args.some((a) => a === '-E' || a.startsWith('-D'))) return 'cmake -E·-D 로 다른 명령을 돌릴 수 있음';
+    if (name === 'cargo' && args.some((a) => /^--config(=|$)/.test(a))) return 'cargo --config 로 실행 도구를 바꿀 수 있음';
+    if (name === 'nx' && sub === 'exec') return 'nx exec 로 넘긴 명령 실행';
+    return outside();
+  }
+  return `앱이 모르는 프로그램: ${name}`;
+}
+
+/** 믿는 미션이라도 승인함으로 보내는 판단 근거 중 "명령 글에 코드를 넣어 돌리기"에 해당하는 것(sed e·awk system·find -exec·heredoc 속 명령 치환 등) */
+const TRUST_INLINE_REASON = /^(sed|awk) \(쓰기·실행이 섞였을 수 있음\)$|^find 로 다른 명령 실행|^명령 이름에 '=' 또는 '\['|^heredoc 본문에 변수·명령 치환|^heredoc 끝 표시가 없음/;
+
+/**
+ * 감싸는 명령(env·nice·exec·command) 판단 근거. 안쪽 명령이 확인 명령이면 실행 기록(runs)이 남지 않아 따로 본다.
+ * nohup 은 끊김 신호만 막아 개발 서버 다시 켜기(nohup npm run dev &)에 쓰므로 뺀다. 다만 nohup·time 뒤에 설정값을 붙이면 묻는다
+ */
+const TRUST_WRAP_REASON = /^(env|nice|exec|command) 로 감싼 명령$|^(env|nice|nohup|exec|command|time) 뒤에 설정값을 붙여 실행$/;
+
+/** 믿는 미션에서 이 명령을 바로 하지 않는 이유. 바로 해도 되면 null */
+export function trustedBashProblem(
   mission: MissionConfig,
   kind: BashKind,
-  b: Pick<BashDecision, 'reasons' | 'writePaths' | 'risks' | 'linkSources' | 'modeChange'>,
+  b: Pick<BashDecision, 'reasons' | 'writePaths' | 'risks' | 'linkSources' | 'modeChange' | 'runs'>,
   scratch: string[] = [],
   command = '',
   okHosts?: ReadonlySet<string>,
+  readRoots: string[] = [],
+): string | null {
+  if (kind !== 'write' && kind !== 'command') return '커밋·삭제·DB·배포·작업 폴더 밖 쓰기'; // 그대로 승인함
+  if (b.modeChange || (b.linkSources ?? []).length) return '권한 바꾸기·바로가기 만들기';
+  const r1 = (b.risks ?? []).find((r) => TRUST_ASK_RISKS.has(r.kind) && !trustedRisk(r, command, okHosts));
+  if (r1) return r1.kind === 'network' ? '인터넷으로 보내기·받기' : r1.kind === 'kill' ? '프로그램 끄기' : r1.kind === 'delete' ? '지우기' : '권한 바꾸기';
+  const r2 = b.reasons.find((r) => TRUST_ASK_REASON.test(r) && !TRUST_OK_REASON.test(r));
+  if (r2) return r2;
+  if (b.reasons.some((r) => /^(pkill|curl) \(판단이 필요한 명령\)$/.test(r)) && !(b.risks ?? []).length) return '프로그램 끄기·인터넷 대상을 알 수 없음';
+  const r3 = b.reasons.find((r) => TRUST_INLINE_REASON.test(r));
+  if (r3) return `명령 글에 코드를 넣어 실행: ${r3}`;
+  // env·nice·exec·command 로 감싼 명령: 설정값(NODE_OPTIONS 등)·실행 방식을 바꿔 안쪽 명령 판단을 비켜 갈 수 있어 묻는다 (command -v 는 따로 읽기로 봄)
+  const r4 = b.reasons.find((r) => TRUST_WRAP_REASON.test(r));
+  if (r4) return `감싸는 명령으로 실행 방식을 바꿀 수 있음: ${r4}`;
+  const roots = [...mission.targets.map((t) => path.resolve(t)), ...scratch];
+  for (const run of b.runs ?? []) {
+    const p = trustedRunProblem(run, roots, [...roots, ...readRoots]);
+    if (p) return p;
+  }
+  if (!b.writePaths.every((p) => trustedRepoPath(mission, p) || scratch.some((s) => insideBoth(p, s)))) return '작업 폴더 밖 쓰기';
+  return null;
+}
+
+export function trustedBash(
+  mission: MissionConfig,
+  kind: BashKind,
+  b: Pick<BashDecision, 'reasons' | 'writePaths' | 'risks' | 'linkSources' | 'modeChange' | 'runs'>,
+  scratch: string[] = [],
+  command = '',
+  okHosts?: ReadonlySet<string>,
+  readRoots: string[] = [],
 ): boolean {
-  if (kind !== 'write' && kind !== 'command') return false; // 커밋·삭제·DB·배포·리포 밖 쓰기는 그대로
-  if (b.modeChange || (b.linkSources ?? []).length) return false;
-  if ((b.risks ?? []).some((r) => TRUST_ASK_RISKS.has(r.kind) && !trustedRisk(r, command, okHosts))) return false;
-  if (b.reasons.some((r) => TRUST_ASK_REASON.test(r) && !TRUST_OK_REASON.test(r))) return false;
-  if (b.reasons.some((r) => /^(pkill|curl) \(판단이 필요한 명령\)$/.test(r)) && !(b.risks ?? []).length) return false;
-  return b.writePaths.every((p) => trustedRepoPath(mission, p) || scratch.some((s) => insideBoth(p, s)));
+  return trustedBashProblem(mission, kind, b, scratch, command, okHosts, readRoots) === null;
 }
 
 /** 판단용으로만 {a,b} 꼴을 펼친다(따옴표·$ 가 없는 단순 낱말 묶음). 실제 실행하는 명령은 그대로 */
@@ -791,14 +1351,16 @@ export function decideApprovalStage(
   toolName: string,
   input: Record<string, unknown>,
   cwd: string,
-  actor: { isSubagent: boolean; teamApproved: boolean; draftsDir?: string; planBlocked?: boolean; memberModels?: Record<string, 'opus' | 'sonnet'>; trustRepo?: boolean; netHosts?: ReadonlySet<string> },
+  actor: { isSubagent: boolean; teamApproved: boolean; draftsDir?: string; planBlocked?: boolean; memberModels?: Record<string, 'opus' | 'sonnet'>; trustRepo?: boolean; netHosts?: ReadonlySet<string>; appLogs?: boolean },
   mcpServer?: { name: string; source: string },
 ): StageDecision {
   // 믿는 미션 규칙은 미션이 믿는 미션이고, 기획 결정 전·읽기만 하는 과제가 아닐 때만(부르는 쪽이 actor.trustRepo 로 알려 줌)
   const trust = !!(actor.trustRepo && mission.trustRepo && !actor.planBlocked);
+  // 읽기만 하는 과제: 정해 둔 앱 기록 파일도 바로 읽기(S5-A). 비밀·대화 기록은 넣지 않는다
+  const logRoots = actor.appLogs ? appLogRoots(config, mission) : [];
   // 읽기·검색: 2단계와 같음
   if (READ_TOOLS.has(toolName)) {
-    const d = decideLeaderTool(config, mission, toolName, input, cwd, actor.isSubagent);
+    const d = decideLeaderTool(config, mission, toolName, input, cwd, actor.isSubagent, undefined, logRoots);
     return { type: d.allow ? 'allow' : 'deny', reason: d.reason, message: d.message, updatedInput: d.updatedInput, blocked: d.blocked };
   }
 
@@ -882,7 +1444,7 @@ export function decideApprovalStage(
   if (toolName === 'Bash') {
     const command = typeof input.command === 'string' ? input.command : '';
     const tmpDir = missionTmpDir(config, mission.id);
-    const roots = [...allowedRoots(mission), path.join(config.runsDir, 'drafts', mission.id), path.join(config.rootDir, 'skills'), tmpDir]; // 시안 폴더·스킬 보관함·이 미션 임시 폴더도 읽기 허용(/tmp 는 아님)
+    const roots = [...allowedRoots(mission), path.join(config.runsDir, 'drafts', mission.id), path.join(config.rootDir, 'skills'), tmpDir, ...logRoots]; // 시안 폴더·스킬 보관함·이 미션 임시 폴더도 읽기 허용(/tmp 는 아님). 읽기만 과제는 정한 앱 기록 파일도
     const b = classifyBash(command, {
       cwd,
       targets: mission.targets.map((t) => path.resolve(t)),
@@ -923,6 +1485,7 @@ export function decideApprovalStage(
       (!!actor.draftsDir && insideBoth(p, actor.draftsDir)) || insideBoth(p, tmpDir) || ((p === codeMap || p === `${codeMap}.tmp`) && real(path.dirname(p)) === real(path.dirname(codeMap)) && (!existsSync(p) || real(p) === path.join(real(path.dirname(codeMap)), path.basename(p))));
     if ((kind === 'write' || kind === 'outsideWrite') && b.fileOpsOnly === true && !b.modeChange && !(b.linkSources ?? []).length && b.writePaths.length > 0 && b.writePaths.every(ownSpot))
       return { type: 'allow', reason: `시안·임시 폴더·코드 지도에 쓰기(${kind}): ${b.writePaths.map(displayPath).join(', ')}` };
+    let trustNote = '';
     if (trust) {
       // 믿는 미션: 이 미션 임시 폴더·이 과제 시안 폴더도 작업 폴더처럼 보고 다시 판단한다(결과 담기·시안 코드 실행)
       const scratch = [tmpDir, ...(actor.draftsDir ? [actor.draftsDir] : [])];
@@ -939,8 +1502,10 @@ export function decideApprovalStage(
         hasLinksUnder,
       });
       if (bt.decision === 'allow') return { type: 'allow', reason: `믿는 미션, 읽기·확인 명령: ${bt.reasons.join('; ')}` };
-      if (bt.decision === 'ask' && trustedBash(mission, bt.kind ?? 'command', bt, scratch, judged, actor.netHosts))
+      const why = bt.decision === 'ask' ? trustedBashProblem(mission, bt.kind ?? 'command', bt, scratch, judged, actor.netHosts, roots) : null;
+      if (bt.decision === 'ask' && why === null)
         return { type: 'allow', reason: `믿는 미션, 작업 폴더 안 명령(${bt.kind ?? 'command'}): ${bt.reasons.join('; ')}` };
+      if (why) trustNote = `\n믿는 미션이지만 묻는 이유: ${redactCommand(why)}`;
     }
     const files = b.writePaths.length ? `\n바뀔 수 있는 파일: ${b.writePaths.map(displayPath).join(', ')}${realPathNote(mission, b.writePaths)}` : '';
     const modeNote = b.modeChange ? '\n주의: 파일 권한(실행 권한 등)을 바꾸는 명령이에요. 시안 폴더 안이라도 확인을 받아요' : '';
@@ -952,12 +1517,13 @@ export function decideApprovalStage(
         kind,
         title: bashTitle(mission, kind, b),
         what: BASH_WHAT[kind](mission),
-        detail: `명령: ${redactCommand(command)}\n실행 위치: ${displayPath(cwd)}${files}${modeNote}${linkNote}\n판단 근거: ${redactCommand(b.reasons.join('; '))}`,
+        detail: `명령: ${redactCommand(command)}\n실행 위치: ${displayPath(cwd)}${files}${modeNote}${linkNote}\n판단 근거: ${redactCommand(b.reasons.join('; '))}${trustNote}`,
         filePath: b.writePaths.length === 1 ? b.writePaths[0] : undefined,
         bash: true,
         paths: b.writePaths,
         fileOpsOnly: !!b.fileOpsOnly,
         ...(b.syncOnly ? { syncOnly: true } : {}),
+        ...(b.gitWide?.length ? { gitWide: [...b.gitWide] } : {}),
         ...(bashLogTarget(b) ? { logTarget: bashLogTarget(b) } : {}),
         ...(curlHosts(b).length ? { netHosts: curlHosts(b) } : {}),
       },
@@ -1047,7 +1613,12 @@ export interface LeaderGuardDeps {
   label?: string;
   /** 리더 대화 패널에 한 줄 보여 주기 (missionId 를 붙여 emit) */
   emitActivity?: (text: string) => void;
+  /** 같은 작업 폴더에서 지금 다른 리더가 하고 있는 과제(이 리더 것 빼고). 폴더 전체 git 명령을 경고 카드로 보낼 때 본다 (H4-A) */
+  others?: () => { id: string; title: string }[];
 }
+
+/** 다른 과제가 진행 중일 때 폴더 전체 git 명령 카드에 붙이는 경고 */
+export const OTHER_TASK_TITLE = '다른 과제 진행 중';
 
 /**
  * 리포 리더 한 명의 권한 상태(현재 과제, 팀 구성안 승인 여부, 에이전트별 마지막 말)를 들고
@@ -1092,6 +1663,15 @@ export class LeaderGuard {
 
   currentTask() {
     return this.task;
+  }
+
+  /** 같은 작업 폴더에서 지금 다른 리더가 하고 있는 과제(이 과제 빼고) */
+  otherTasks(): { id: string; title: string }[] {
+    try {
+      return (this.deps.others?.() ?? []).filter((t) => t && t.id !== this.task?.id);
+    } catch {
+      return [];
+    }
   }
 
   /** 묶음 승인으로 반영할 파일 위치가 괜찮은지. 문제가 있으면 쉬운 말로 */
@@ -1349,21 +1929,49 @@ export class LeaderGuard {
       toolName,
       input,
       cwd,
-      { isSubagent: isSub, teamApproved: this.isTeamApproved(), draftsDir: this.draftsDir(), planBlocked: this.planBlocked(), memberModels: this.memberModels(), trustRepo: !this.isReadOnlyTask(), netHosts: this.task ? this.netGrants.get(this.task.id) : undefined },
+      {
+        isSubagent: isSub,
+        teamApproved: this.isTeamApproved(),
+        draftsDir: this.draftsDir(),
+        planBlocked: this.planBlocked(),
+        memberModels: this.memberModels(),
+        trustRepo: !this.isReadOnlyTask(),
+        netHosts: this.task ? this.netGrants.get(this.task.id) : undefined,
+        appLogs: this.isReadOnlyTask(), // 읽기만 과제: 정한 앱 기록 파일 바로 읽기 (S5-A)
+      },
       mcpServer,
     );
     // 기획 결정 전에는 작업 폴더를 바꾸는 명령(커밋·삭제·쓰기 명령 등)도 승인함에 올리지 않고 막는다
     if (d.type === 'ask' && this.planBlocked() && d.ask?.kind !== 'decision' && d.ask?.kind !== 'teamPlan') {
       return { type: 'deny', reason: `기획 결정 전 ${d.ask?.kind ?? '변경'}`, message: MSG_PLAN };
     }
-    // 읽고 정리만 하기로 한 과제(팀 구성안 자동 승인): 바꾸는 일은 승인함에 올리지 않고 막는다. 판단이 필요한 일반 명령만 평소처럼 승인함으로
+    // 읽고 정리만 하기로 한 과제(팀 구성안 자동 승인): 바꾸는 일은 승인함에 올리지 않고 막는다. 판단이 필요한 일반 명령만 평소처럼 승인함으로.
+    // 기록·안내에 원래 판단 근거를 붙인다(무엇 때문에 막혔는지 보고에 적을 수 있게, S5-A)
     if (d.type === 'ask' && this.isReadOnlyTask() && d.ask?.kind !== 'command') {
-      return { type: 'deny', reason: `읽기만 하는 과제에서 ${d.ask?.kind ?? '변경'}`, message: MSG_READ_TASK };
+      return { type: 'deny', reason: `읽기만 하는 과제에서 ${d.ask?.kind ?? '변경'}: ${redactCommand(d.reason)}`, message: `${MSG_READ_TASK} (막힌 이유: ${clip(redactCommand(d.ask?.title ?? d.reason), 120)})` };
     }
     // 리더가 확인 카드(deletePaths)로 미리 승인받은 위치만 지우는 명령은 다시 묻지 않는다
     if (d.type === 'ask' && d.ask?.kind === 'delete' && d.ask.bash && d.ask.fileOpsOnly && d.ask.paths?.length) {
       const g = this.deleteGranted(d.ask.paths);
       if (g) return { type: 'allow', reason: `리더 확인 승인으로 미리 허락된 삭제: ${g.map(displayPath).join(', ')}` };
+    }
+    // 같은 작업 폴더에서 다른 과제가 진행 중이면, 폴더 전체를 바꾸는 git 명령(stash·pull·checkout·reset 등)은
+    // 받아오기 지시(preSync)·실행 목록 승인이 있어도 바로 하지 않고 경고 카드로 (H4-A, 2026-11-15)
+    if (d.type === 'ask' && d.ask?.bash && d.ask.gitWide?.length) {
+      const others = this.otherTasks();
+      if (others.length) {
+        const names = others.map((t) => `「${clip(t.title, 40)}」`).join(', ');
+        return {
+          ...d,
+          reason: `${d.reason}; ${OTHER_TASK_TITLE}이라 바로 허용하지 않음`,
+          ask: {
+            ...d.ask,
+            title: `${OTHER_TASK_TITLE}: ${d.ask.title}`,
+            // 경고는 자세히 글 끝에 붙인다: 승인함 앞면·대화 "지금" 줄·휴대폰 글이 맨 앞 "명령: …" 줄을 읽기 때문(검수 지적 H4)
+            detail: `${d.ask.detail ? `${d.ask.detail}\n\n` : ''}주의: 같은 작업 폴더에서 다른 과제 ${names} 가 진행 중이에요. 이 명령(git ${d.ask.gitWide.join('·')})은 폴더 전체를 바꿔서, 그 과제가 고치던 파일까지 보관되거나 되돌려질 수 있어요. 그 과제가 끝난 뒤에 하는 게 안전해요.`,
+          },
+        };
+      }
     }
     // 사용자가 직접 받아오기를 시킨 과제: 받아오기만 하는 명령은 승인 없이(지시가 곧 승인). 다른 명령이 섞이면 평소대로
     if (d.type === 'ask' && d.ask?.bash && d.ask.syncOnly && this.task?.preSync) {
