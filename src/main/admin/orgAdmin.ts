@@ -21,7 +21,7 @@ import { inspectFolder, type InspectContext } from './folderInspect.js';
 import { cell, exists, isInside, readRaw, resolveIn, shrinkHome, today, writeRaw, zoneRoot, zoneText } from './paths.js';
 import { savePoolRole, scanRoles } from './rolePool.js';
 import { OUTPUTS_HEADER } from '../approvals/outputs.js';
-import { appendDecisionLog, noteTrustChange, WRITE_LABEL, writeModeDecision } from './trustLog.js';
+import { appendDecisionLog, noteTrustChange, trustDetail, WRITE_LABEL, writeModeDecision } from './trustLog.js';
 
 export interface OrgAdminDeps {
   config: RanoConfig;
@@ -346,7 +346,7 @@ export function createOrgAdmin(deps: OrgAdminDeps): OrgAdminApi {
       // 앱에서 허용한 믿는 미션은 다음에 켤 때 "앱 밖에서 바뀜"으로 보지 않게 목록에 올려 둔다(trustLog.ts)
       if (draft.writeMode === 'trusted') {
         try {
-          noteTrustChange(config.runsDir, id, true);
+          noteTrustChange(config.runsDir, id, true, trustDetail(rawMissions(nextRaw).find((x) => x?.id === id)));
         } catch {
           // 목록을 못 맞추면 다음에 켤 때 한 번 더 기록·알림될 뿐이다
         }
@@ -425,9 +425,10 @@ export function createOrgAdmin(deps: OrgAdminDeps): OrgAdminApi {
         return { ok: false, message: '설정 파일(rano.json)을 저장하지 못했어요. 잠시 뒤 다시 해 주세요' };
       }
       changed.add(id);
-      if (before.writeMode !== draft.writeMode && (before.writeMode === 'trusted' || draft.writeMode === 'trusted')) {
+      // 믿는 미션이면 쓰기 방식이 그대로여도 맞춰 둔다(앱에서 작업 폴더를 바꾼 것을 "앱 밖에서 바뀜"으로 보지 않게)
+      if (before.writeMode === 'trusted' || draft.writeMode === 'trusted') {
         try {
-          noteTrustChange(config.runsDir, id, draft.writeMode === 'trusted');
+          noteTrustChange(config.runsDir, id, draft.writeMode === 'trusted', trustDetail(m));
         } catch {
           // 목록을 못 맞추면 다음에 켤 때 한 번 더 기록·알림될 뿐이다
         }

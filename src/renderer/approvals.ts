@@ -246,7 +246,7 @@ export class ApprovalsView {
     head.appendChild(el('span', 'appr-group-mission', this.missionName(first.missionId) ?? first.missionId));
     if (title) head.appendChild(el('span', 'appr-group-task', title));
     head.appendChild(el('span', 'appr-group-count', `${list.length}건`));
-    const batch = list.filter((a) => BATCH_KINDS.has(a.kind) && !a.decisionItems?.length && !a.bundle?.length && !this.submitting.has(a.id));
+    const batch = list.filter((a) => BATCH_KINDS.has(a.kind) && !a.decisionItems?.length && !a.bundle?.length && !a.change && !this.submitting.has(a.id));
     if (batch.length >= 2) {
       head.appendChild(el('span', 'fl-sp'));
       if (this.batchConfirm === key) {

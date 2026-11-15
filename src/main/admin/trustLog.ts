@@ -27,6 +27,13 @@ export interface TrustedMission {
   id: string;
   name: string;
   home: string; // rano.json 에 적힌 그대로(상대 경로·~ 가능)
+  detail: string; // 믿는 범위(작업 폴더·DB 읽기 설정)를 한 줄로. 앱 밖에서 바뀌었는지 비교한다
+}
+
+/** 믿는 범위를 정하는 설정(작업 폴더 targets · 운영 DB 읽기 dbRead)을 비교용 한 줄로 (0.9.10) */
+export function trustDetail(m: unknown): string {
+  const x = (m ?? {}) as { targets?: unknown; dbRead?: unknown };
+  return JSON.stringify([Array.isArray(x.targets) ? x.targets : [], x.dbRead ?? null]);
 }
 
 /** rano.json 원본에서 믿는 미션 목록(보관한 미션 포함: 보관했다 다시 꺼내도 새로 믿게 된 것으로 보지 않게) */
@@ -36,7 +43,7 @@ export function trustedFromRaw(raw: unknown): TrustedMission[] {
   const out: TrustedMission[] = [];
   for (const m of list) {
     if (!isTrustedRaw(m) || typeof m.id !== 'string' || !m.id) continue;
-    out.push({ id: m.id, name: typeof m.name === 'string' && m.name ? m.name : m.id, home: typeof m.home === 'string' ? m.home : '' });
+    out.push({ id: m.id, name: typeof m.name === 'string' && m.name ? m.name : m.id, home: typeof m.home === 'string' ? m.home : '', detail: trustDetail(m) });
   }
   return out;
 }
@@ -58,11 +65,24 @@ export function readTrustState(runsDir: string): string[] | null {
   }
 }
 
-export function writeTrustState(runsDir: string, ids: readonly string[]): void {
+/** 지난번 믿는 미션마다의 범위(작업 폴더·DB 읽기). 0.9.9 까지의 파일에는 없다(빈 목록) */
+export function readTrustDetail(runsDir: string): Record<string, string> {
+  try {
+    const d = JSON.parse(readFileSync(path.join(runsDir, TRUST_STATE_FILE), 'utf-8'))?.detail;
+    const out: Record<string, string> = {};
+    if (d && typeof d === 'object') for (const [k, v] of Object.entries(d)) if (typeof v === 'string') out[k] = v;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function writeTrustState(runsDir: string, ids: readonly string[], detail: Readonly<Record<string, string>> = {}): void {
   mkdirSync(runsDir, { recursive: true });
   const file = path.join(runsDir, TRUST_STATE_FILE);
   const tmp = `${file}.${process.pid}.tmp`;
-  const body = { version: 1, updatedAt: new Date().toISOString(), trusted: [...new Set(ids)].sort() };
+  const list = [...new Set(ids)].sort();
+  const body = { version: 2, updatedAt: new Date().toISOString(), trusted: list, detail: Object.fromEntries(list.filter((id) => typeof detail[id] === 'string').map((id) => [id, detail[id]])) };
   writeFileSync(tmp, JSON.stringify(body, null, 2) + '\n', 'utf-8');
   renameSync(tmp, file);
 }
@@ -71,13 +91,20 @@ export function writeTrustState(runsDir: string, ids: readonly string[]): void {
  * 조직 화면(앱)이 믿는 미션을 켜거나 끈 뒤 부른다: 목록 파일을 맞춰 두어 다음에 켤 때 "앱 밖에서 바뀜"으로 보지 않게 한다.
  * 목록 파일이 아직 없으면(앱이 켜질 때 만들기 전) 건드리지 않는다.
  */
-export function noteTrustChange(runsDir: string, missionId: string, trusted: boolean): void {
+export function noteTrustChange(runsDir: string, missionId: string, trusted: boolean, detail?: string): void {
   const prev = readTrustState(runsDir);
   if (!prev) return;
   const next = new Set(prev);
-  if (trusted) next.add(missionId);
-  else next.delete(missionId);
-  writeTrustState(runsDir, [...next]);
+  const det = { ...readTrustDetail(runsDir) };
+  if (trusted) {
+    next.add(missionId);
+    if (detail !== undefined) det[missionId] = detail;
+    else delete det[missionId]; // 범위를 모르면 다음에 켤 때의 값으로 다시 맞춘다
+  } else {
+    next.delete(missionId);
+    delete det[missionId];
+  }
+  writeTrustState(runsDir, [...next], det);
 }
 
 /** 조직 화면에서 쓰기 방식을 바꿨을 때 결정로그에 남길 글(날짜·"- " 빼고). 같으면 null */
@@ -100,31 +127,44 @@ export function appendDecisionLog(home: string, date: string, text: string): voi
   writeFileSync(log, `${cur}${sep}- ${date} ${text}\n`, 'utf-8');
 }
 
+export const OUTSIDE_SCOPE_NOTE = '앱 밖에서 설정 파일(rano.json)이 바뀌어 믿는 미션의 작업 폴더·운영 DB 읽기 설정이 달라짐 — 앱이 켜질 때 찾음, 조직 화면에서 바꾼 기록 없음';
 export const OUTSIDE_TRUST_NOTE = '앱 밖에서 설정 파일(rano.json)이 바뀌어 믿는 미션(작업 폴더 안 고치기는 묻지 않기)이 됨 — 앱이 켜질 때 찾음, 조직 화면에서 허용한 기록 없음';
 
 /**
  * 앱이 켜질 때 한 번: 새로 믿는 미션이 된 것을 찾아 결정로그에 남기고, 지금 목록을 저장한다. 찾은 미션을 돌려준다.
  * 실패해도 앱 시작을 막지 않도록 부르는 쪽에서 감싼다.
  */
-export function checkTrustAtStart(opts: { raw: unknown; rootDir: string; runsDir: string; date: string }): { found: TrustedMission[]; first: boolean; logFailed: string[] } {
+export function checkTrustAtStart(opts: { raw: unknown; rootDir: string; runsDir: string; date: string }): { found: TrustedMission[]; changed: TrustedMission[]; first: boolean; logFailed: string[] } {
   const now = trustedFromRaw(opts.raw);
   const prev = readTrustState(opts.runsDir);
+  const prevDetail = readTrustDetail(opts.runsDir);
   const found = findNewlyTrusted(prev, now);
+  // 이미 믿는 미션인데 작업 폴더·DB 읽기 설정이 앱 밖에서 바뀐 것(지난번 값이 적혀 있을 때만 비교)
+  const had = new Set(prev ?? []);
+  const changed = now.filter((m) => had.has(m.id) && typeof prevDetail[m.id] === 'string' && prevDetail[m.id] !== m.detail);
   const logFailed: string[] = [];
-  for (const m of found) {
-    try {
-      if (!m.home) throw new Error('no home');
-      appendDecisionLog(resolveIn(opts.rootDir, m.home), opts.date, OUTSIDE_TRUST_NOTE);
-    } catch {
-      logFailed.push(m.id);
+  for (const [list, note] of [[found, OUTSIDE_TRUST_NOTE], [changed, OUTSIDE_SCOPE_NOTE]] as const) {
+    for (const m of list) {
+      try {
+        if (!m.home) throw new Error('no home');
+        appendDecisionLog(resolveIn(opts.rootDir, m.home), opts.date, note);
+      } catch {
+        logFailed.push(m.id);
+      }
     }
   }
-  writeTrustState(opts.runsDir, now.map((m) => m.id));
-  return { found, first: prev === null, logFailed };
+  writeTrustState(opts.runsDir, now.map((m) => m.id), Object.fromEntries(now.map((m) => [m.id, m.detail])));
+  return { found, changed, first: prev === null, logFailed };
 }
 
 /** 라노에게 보낼 알림 한 줄 */
-export function trustNoticeText(found: readonly TrustedMission[]): string {
+export function trustNoticeText(found: readonly TrustedMission[], changed: readonly TrustedMission[] = []): string {
   const names = found.map((m) => `「${m.name}」`).join(', ');
+  if (changed.length) {
+    const cn = changed.map((m) => `「${m.name}」`).join(', ');
+    const scope = `[앱 알림] 앱이 켜질 때 보니 설정 파일(rano.json)이 앱 밖에서 바뀌어 믿는 미션 ${cn}의 작업 폴더나 운영 DB 읽기 설정이 달라졌어요(묻지 않고 하는 범위가 바뀜). 그 미션 결정로그에 남겼어요. 사용자에게 한 줄로 알리고, 의도한 변경이 아니면 조직 화면에서 확인하라고 안내해 주세요.`;
+    if (!found.length) return scope;
+    return `${scope}\n${trustNoticeText(found)}`;
+  }
   return `[앱 알림] 앱이 켜질 때 보니 설정 파일(rano.json)이 앱 밖에서 바뀌어 ${names}이(가) 믿는 미션(작업 폴더 안 고치기·시험은 묻지 않음)이 됐어요. 조직 화면에서 허용한 기록이 없어 그 미션 결정로그에 남겼어요. 사용자에게 한 줄로 알리고, 의도한 변경이 아니면 조직 화면에서 쓰기 방식을 바꾸라고 안내해 주세요.`;
 }

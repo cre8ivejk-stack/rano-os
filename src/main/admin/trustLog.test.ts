@@ -12,6 +12,7 @@ import {
   checkTrustAtStart,
   findNewlyTrusted,
   noteTrustChange,
+  trustDetail,
   OUTSIDE_TRUST_NOTE,
   readTrustState,
   TRUST_STATE_FILE,
@@ -138,7 +139,7 @@ test('결정로그 한 줄 더하기: 없으면 머리를 만들고, 끝 줄바�
 });
 
 test('라노 알림 글: [앱 알림] 으로 시작하고 미션 이름이 들어감', () => {
-  const t = trustNoticeText([{ id: 'a', name: '홈페이지', home: '' }, { id: 'b', name: '앱', home: '' }]);
+  const t = trustNoticeText([{ id: 'a', name: '홈페이지', home: '', detail: '' }, { id: 'b', name: '앱', home: '', detail: '' }]);
   assert.match(t, /^\[앱 알림\] /);
   assert.match(t, /「홈페이지」, 「앱」/);
   assert.match(t, /rano\.json/);
@@ -149,11 +150,30 @@ test('조직 화면·앱 시작 코드가 기록을 부른다', () => {
   const org = src('main/admin/orgAdmin.ts');
   assert.match(org, /writeModeDecision\(before\.writeMode, draft\.writeMode\)/);
   assert.match(org, /appendDecisionLog\(before\.home, today\(\), decision\)/);
-  assert.match(org, /noteTrustChange\(config\.runsDir, id, true\)/);
-  assert.match(org, /noteTrustChange\(config\.runsDir, id, draft\.writeMode === 'trusted'\)/);
+  assert.match(org, /noteTrustChange\(config\.runsDir, id, true, trustDetail\(/);
+  assert.match(org, /noteTrustChange\(config\.runsDir, id, draft\.writeMode === 'trusted', trustDetail\(m\)\)/);
   // 예전처럼 "읽기만 → 승인함" 일 때만 남기는 조건은 없다
   assert.ok(!org.includes("before.writeMode === 'readOnly' && draft.writeMode === 'approval'"));
   const main = src('main/main.ts');
   assert.match(main, /checkTrustAtStart\(\{ raw: config\.raw, rootDir: config\.rootDir, runsDir: config\.runsDir, date: today\(\) \}\)/);
-  assert.match(main, /rano\.notify\(trustNoticeText\(t\.found\), 'direct'\)/);
+  assert.match(main, /rano\.notify\(trustNoticeText\(t\.found, t\.changed\), 'direct'\)/);
+});
+
+test('0.9.10: 믿는 미션의 작업 폴더·DB 읽기 설정이 앱 밖에서 바뀌면 알아챈다(앱에서 바꾼 것은 아님)', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'rano-trust-scope-'));
+  const runs = path.join(root, 'runs');
+  const mk = (targets: string[], extra: object = {}) => ({ missions: [{ id: 'a', name: '가', home: 'missions/a', stagePolicy: 'approval', trustRepo: true, targets, ...extra }] });
+  const at = (raw: unknown) => checkTrustAtStart({ raw, rootDir: root, runsDir: runs, date: '2026-11-16' });
+  assert.equal(at(mk(['~/x'])).changed.length, 0); // 처음
+  assert.equal(at(mk(['~/x'])).changed.length, 0); // 그대로
+  const c = at(mk(['~/y']));
+  assert.deepEqual(c.changed.map((m) => m.id), ['a']);
+  assert.match(readFileSync(path.join(root, 'missions/a/memory/결정로그.md'), 'utf-8'), /작업 폴더·운영 DB 읽기 설정이 달라짐/);
+  assert.equal(at(mk(['~/y'])).changed.length, 0); // 한 번만
+  assert.equal(at(mk(['~/y'], { dbRead: { tool: 't', apps: ['p'] } })).changed.length, 1);
+  // 앱(조직 화면)에서 바꾼 것은 목록을 맞춰 두어 알리지 않는다
+  const next = mk(['~/z'], { dbRead: { tool: 't', apps: ['p'] } });
+  noteTrustChange(runs, 'a', true, trustDetail(next.missions[0]));
+  assert.equal(at(next).changed.length, 0);
+  assert.match(trustNoticeText([], c.changed), /작업 폴더나 운영 DB 읽기 설정/);
 });

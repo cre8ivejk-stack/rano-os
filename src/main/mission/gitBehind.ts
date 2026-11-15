@@ -14,7 +14,7 @@ export interface BehindInfo {
 }
 
 /** 한 번에 기다리는 시간(밀리초). 과제 시작이 늦어지지 않게 짧게 */
-export const BEHIND_TIMEOUT_MS = 3000;
+export const BEHIND_TIMEOUT_MS = 1200;
 
 function git(dir: string, args: string[], timeoutMs = BEHIND_TIMEOUT_MS): Promise<string | null> {
   return new Promise((resolve) => {
@@ -79,7 +79,7 @@ export async function behindNotes(targets: string[], timeoutMs = BEHIND_TIMEOUT_
   );
   let timer: NodeJS.Timeout | undefined;
   const limit = new Promise<string[]>((resolve) => {
-    timer = setTimeout(() => resolve([]), timeoutMs + 1000);
+    timer = setTimeout(() => resolve([]), timeoutMs + 300);
   });
   try {
     return await Promise.race([work, limit]);

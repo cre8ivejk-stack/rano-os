@@ -325,11 +325,14 @@ test('재검수 남은 꼴: go env -w·make -f -·cmake -E/-D·cargo --config·n
   for (const c of ['go env GOPATH', 'go clean', 'cmake --build build', 'cargo test', 'cargo build --release', 'nx build app']) assert.equal(stage(trusted, c).type, 'allow', c);
 });
 
-test('검수 6: ps 는 환경 변수까지 보이는 옵션만, export·nice·env 는 그대로 승인함', () => {
+test('검수 6: ps 는 환경 변수까지 보이는 옵션만, export·nice·env 옵션은 그대로 승인함 (env 이름=값 은 이름=값 과 같게, 0.9.10)', () => {
   // 맥 ps -e 는 모든 프로세스(-A)라 바로
   for (const c of ['ps -ef', 'ps -A']) assert.equal(stage(trusted, c).type, 'allow', c);
-  for (const c of ['ps eww', 'ps -E', 'export X=1', 'nice npm test', 'env X=1 npm test', 'env NODE_OPTIONS=--require=./x.js npm test', 'nohup NODE_OPTIONS=x npm run build', 'command -p ls -la /']) assert.equal(stage(trusted, c).type, 'ask', c);
+  for (const c of ['ps eww', 'ps -E', 'export X=1', 'nice npm test', 'env -i npm test', 'env -u X npm test', 'env npm_config_script_shell=/tmp/x npm test', 'npm_config_script_shell=/tmp/x npm test', 'env NODE_OPTIONS=--require=./x.js npm test', 'nohup NODE_OPTIONS=x npm run build', 'command -p ls -la /']) assert.equal(stage(trusted, c).type, 'ask', c);
+  // env 이름=값 명령 은 이름=값 명령 과 같은 판단
+  for (const c of ['env X=1 npm test', 'X=1 npm test']) assert.equal(stage(trusted, c).type, 'allow', c);
   // 보통 미션은 command -v·ps 도 그대로 승인함(판단은 바뀌지 않음)
+  assert.equal(stage(base, 'env X=1 npm test').type, 'ask');
   for (const c of ['command -v node', 'ps aux']) assert.equal(stage(base, c).type, 'ask', c);
 });
 
@@ -581,4 +584,74 @@ test('S5-A 읽기만 과제의 거절에 막힌 이유를 붙이고, git tag 목
   assert.match(lines.at(-1)?.reason ?? '', /git commit/);
   for (const c of ['git tag', 'git tag -l', "git tag -l 'v*'", 'git tag --list --sort=-v:refname']) assert.equal(classifyBash(c, ctx).decision, 'allow', c);
   for (const c of ['git tag v1', 'git tag -d v1', 'git tag -l -d v1', 'git tag -a v1 -m x']) assert.equal(classifyBash(c, ctx).kind, 'commit', c);
+});
+
+// ---------------- 0.9.10: Fable 검토에서 찾은 빈틈 ----------------
+test('0.9.10: 설치된 도구에 명령을 글로 넘기기·명령을 대신 돌려 주는 도구는 승인함', () => {
+  for (const b of ['concurrently', 'nodemon', 'cross-env', 'mytool', 'tsc']) writeFileSync(path.join(TARGET, 'node_modules', '.bin', b), '');
+  for (const c of [
+    "npx concurrently 'git push origin main'",
+    "npx concurrently 'rm -rf src'",
+    'npx concurrently "npm run a" "npm run b"',
+    "npx nodemon --exec 'sh -c id'",
+    'npx cross-env X=1 npm test',
+    "npx mytool 'echo hi; id'",
+    'npx mytool --exec id',
+    "pnpm concurrently 'git push'",
+    "electron -e 'x'",
+    'electron -r ./x.js .',
+    'mvn exec:exec -Dexec.executable=curl',
+    'gcc src/a.c -o/tmp/evil',
+    'tsc -p. --outDir ../../evil',
+  ]) {
+    const d = stage(trusted, c);
+    assert.equal(d.type, 'ask', c);
+  }
+  for (const c of ['npx tsc --noEmit', 'npx mytool build --watch', 'npx mytool "src/**/*.ts"', 'electron .']) assert.equal(stage(trusted, c).type, 'allow', c);
+});
+
+test('0.9.10: pnpm·yarn 은 옵션·workspace 를 끼워도 설치·글 속 코드를 묻는다', () => {
+  for (const c of [
+    'pnpm --filter foo add lodash',
+    'pnpm --filter foo exec sh -c id',
+    'pnpm -F foo install',
+    'pnpm --unknown-opt run add',
+    'yarn workspace foo add lodash',
+    'yarn workspace foo node -e 1',
+    'yarn workspaces foreach -A exec sh -c id',
+    'yarn workspaces focus',
+  ]) assert.equal(stage(trusted, c).type, 'ask', c);
+  for (const c of ['pnpm --filter foo run build', 'pnpm -r test', 'pnpm --filter=foo build', 'yarn workspace foo build', 'yarn workspaces foreach -A run build', 'yarn build', 'pnpm test']) assert.equal(stage(trusted, c).type, 'allow', c);
+});
+
+test('0.9.10: 잘못 묻던 명령은 바로 (버전 보기·venv·php -S·perl -M모듈·git fetch --depth)', () => {
+  writeFileSync(path.join(TARGET, 'scripts', 'x.pl'), 'print 1\n');
+  for (const c of ['python3 --version', 'python3 -V', 'bash --version', 'python3 -m venv .venv', 'php -S localhost:8000', 'perl -MFile::Temp scripts/x.pl', 'perl -MData::Dumper=Dumper scripts/x.pl', 'git fetch --depth=1 origin', 'git fetch --unshallow'])
+    assert.equal(stage(trusted, c).type, 'allow', c);
+  // 뜻이 다른 꼴은 그대로 묻는다
+  for (const c of ['python3 -v', "perl '-Mstrict;system(1)' scripts/x.pl", 'perl -MFile::Temp -e 1', 'python3 -m http.server', 'git fetch --depth=1 /tmp/other']) assert.equal(stage(trusted, c).type, 'ask', c);
+});
+
+test('0.9.10: 실행 목록은 옆에 결과 파일(.json)이 생겨도, 리포 맨 위 스크립트에서 src 를 고쳐도 풀리지 않는다', () => {
+  const ok = (g: { path: string; hash: string }[]) => g.every((f) => fileFingerprint(f.path) === f.hash);
+  const g1 = grantFilesFor('node scripts/run.mjs', TARGET);
+  writeFileSync(path.join(TARGET, 'scripts', 'result-0910.json'), '{}');
+  assert.ok(ok(g1), '옆에 새 .json 결과 파일');
+  writeFileSync(path.join(TARGET, 'scripts', 'new-0910.mjs'), 'x');
+  assert.ok(!ok(g1), '옆에 새 스크립트 파일은 다시 묻는다');
+  rmSync(path.join(TARGET, 'scripts', 'new-0910.mjs'));
+  writeFileSync(path.join(TARGET, 'root-0910.mjs'), 'x');
+  const g2 = grantFilesFor('node root-0910.mjs', TARGET);
+  assert.ok(!g2.some((f) => f.path.includes(`${path.sep}src${path.sep}`)), '리포 맨 위 스크립트는 아래 폴더를 묶지 않는다');
+  writeFileSync(path.join(TARGET, 'src', 'edit-0910.ts'), 'y');
+  assert.ok(ok(g2), 'src 를 고쳐도 그대로');
+  writeFileSync(path.join(TARGET, 'root-0910.mjs'), 'changed');
+  assert.ok(!ok(g2), '스크립트 내용이 바뀌면 다시 묻는다');
+});
+
+test('0.9.10: 파일을 콕 집은 되돌리기는 폴더 전체 git 명령이 아니다', () => {
+  const wide = (c: string) => classifyBash(c, ctx).gitWide ?? [];
+  assert.deepEqual(wide('git restore src/a.ts'), []);
+  assert.deepEqual(wide('git checkout -- src/a.ts'), []);
+  for (const c of ['git restore .', 'git restore --source=HEAD~1 src/a.ts', 'git checkout main', 'git checkout -- .', "git restore 'src/*'", 'git stash']) assert.ok(wide(c).length > 0, c);
 });

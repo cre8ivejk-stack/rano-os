@@ -374,7 +374,7 @@ export class FloorView {
       const simple = canQuickApprove(a);
       const say = el('span', 'fl-act-text');
       say.appendChild(document.createTextNode(`${a.who}가 손을 들고 있어요: `));
-      const risk = carefulTag(a.kind);
+      const risk = carefulTag(a.kind, a);
       if (risk) say.appendChild(el('span', 'now-tag now-tag-risk', risk));
       say.appendChild(document.createTextNode(`${a.title}${mine.length > 1 ? ` (외 ${mine.length - 1}건)` : ''}`));
       const cmd = simple ? commandOf(a.detail, 140) : '';

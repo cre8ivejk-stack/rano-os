@@ -46,6 +46,8 @@ export const PROPOSE_COMMANDS_TOOL = `${LEADER_TOOL_PREFIX}propose_commands`;
 export const RUN_PLAN_KINDS = new Set(['command', 'outsideWrite']);
 /** 실행 목록 승인에서 내용까지 묶어 둘 스크립트 파일 */
 const SCRIPT_EXT = /\.(m?js|cjs|ts|mts|cts|tsx|jsx|py|sh|bash|zsh|rb|pl|php|sql|json|ya?ml|toml)$/i;
+/** 자료·설정 파일(.json·.yaml·.toml): 내용은 묶지만 폴더 목록 지문에는 넣지 않는다 — 스크립트가 옆에 결과 파일(result.json 등)을 새로 써도 승인이 풀리지 않게 (0.9.10) */
+const DATA_EXT = /\.(json|ya?ml|toml)$/i;
 
 /** 명령에 들어 있는 스크립트 파일(있는 보통 파일)의 절대 경로. 내용이 바뀌면 다시 묻도록 지문을 묶는다 */
 export function scriptFilesIn(command: string, cwd: string): string[] {
@@ -86,13 +88,15 @@ const DIR_MARK = path.sep;
  * files: 내용 지문까지 묶을 파일(이름순, 200개·한 파일 1MB·모두 8MB 상한까지)
  * unbound: 상한에 걸려 내용까지 묶지 못한 파일 수(이름 목록에는 들어 있음)
  */
-function relatedWalk(dir: string): { names: string[]; files: string[]; unbound: number } {
+function relatedWalk(dir: string): { names: string[]; files: string[]; over: string[] } {
   const names: string[] = [];
   const files: string[] = [];
-  let unbound = 0;
+  const over: string[] = []; // 상한에 걸려 내용까지 묶지 못한 파일
   let total = 0;
   let level = [dir];
-  for (let depth = 0; depth <= RELATED_MAX_DEPTH && level.length; depth++) {
+  // 리포 맨 위 폴더(.git 이 있는 곳)는 그 폴더에 바로 있는 파일만 본다: 두 단계 아래까지 묶으면 리더가 src 파일 하나만 고쳐도 승인이 풀린다 (0.9.10)
+  const maxDepth = existsSync(path.join(dir, '.git')) ? 0 : RELATED_MAX_DEPTH;
+  for (let depth = 0; depth <= maxDepth && level.length; depth++) {
     const next: string[] = [];
     for (const d of level) {
       let entries;
@@ -108,20 +112,20 @@ function relatedWalk(dir: string): { names: string[]; files: string[]; unbound: 
           continue;
         }
         if (!e.isFile() || !SCRIPT_EXT.test(e.name)) continue;
-        names.push(full);
+        if (!DATA_EXT.test(e.name)) names.push(full);
         if (files.length >= RELATED_MAX_FILES) {
-          unbound++;
+          over.push(full);
           continue;
         }
         let size = 0;
         try {
           size = statSync(full).size;
         } catch {
-          unbound++;
+          over.push(full);
           continue;
         }
         if (size > RELATED_MAX_FILE_BYTES || total + size > RELATED_MAX_TOTAL_BYTES) {
-          unbound++;
+          over.push(full);
           continue;
         }
         total += size;
@@ -130,7 +134,7 @@ function relatedWalk(dir: string): { names: string[]; files: string[]; unbound: 
     }
     level = next;
   }
-  return { names, files, unbound };
+  return { names, files, over };
 }
 
 /** 글롭이 든 경로(dist/main/x/y.test.js 의 *)는 글롭 앞의 고정된 폴더 */
@@ -173,8 +177,7 @@ export function relatedInfoFor(command: string, cwd: string, primary: string[] =
     const w = relatedWalk(d);
     for (const f of w.files) if (!primary.includes(f)) out.add(f);
     // 명령에 적힌 스크립트는 상한과 상관없이 내용을 따로 묶으므로 빼고 센다
-    const bound = new Set(w.files);
-    unbound += w.names.filter((f) => !bound.has(f) && !primary.includes(f)).length;
+    unbound += w.over.filter((f) => !primary.includes(f)).length;
   }
   if (PKG_RUNNERS.test(command)) out.add(nearestPackageJson(cwd));
   if (MAKE_RUNNER.test(command)) for (const n of ['GNUmakefile', 'makefile', 'Makefile']) out.add(path.join(path.resolve(cwd), n));
@@ -866,7 +869,7 @@ export function decideConnectorTool(
 // ------------------------------------------------------------------
 
 /** 믿는 미션이라도 승인함으로 보내는 판단 근거(리포 밖, 비밀, git 바꾸기, 관리자 권한, 경로를 알 수 없음, 실행 환경 바꾸기 등) */
-const TRUST_ASK_REASON = /밖|비밀|차단|git|sudo|권한|바로가기|알 수 없|해석하지|너무 깊|압축|\bPATH\b|GIT_|NODE_OPTIONS|LD_|DYLD_|BASH_ENV|\bENV\b|IFS/;
+const TRUST_ASK_REASON = /밖|비밀|차단|git|sudo|권한|바로가기|알 수 없|해석하지|너무 깊|압축|\bPATH\b|GIT_|NODE_OPTIONS|LD_|DYLD_|BASH_ENV|\bENV\b|IFS|npm_config|NPM_CONFIG|PYTHONSTARTUP|PYTHONPATH|RUBYOPT|RUBYLIB|PERL5|\bSHELL\b|\bEDITOR\b|\bPAGER\b|\bCC\b|\bCXX\b|RUSTC|CARGO_|GOFLAGS/;
 /** 믿는 미션이라도 승인함으로 보내는 위험 표시 */
 const TRUST_ASK_RISKS = new Set(['kill', 'network', 'mode', 'delete']);
 /** 리포 안이라도 승인함으로 보내는 곳: git 내부(.git: 훅·설정), 에이전트 설정(.claude) */
@@ -970,8 +973,8 @@ const INTERP: Record<string, InterpSpec> = {
   fish: { inline: /^(-c|--command|-i|--interactive)$|^--command=/, code: 'ci' },
   python: { inline: /^-c|^-i$/, value: /^-[WX]$/, code: 'ci', valueChars: 'mWX' },
   ruby: { inline: /^-e|^--eval/, value: /^-[rICEF]$/, code: 'e', valueChars: 'rICEF', attached: '0ixKTW', askChars: 'S' },
-  perl: { inline: /^-[a-zA-Z]*[eE]/, value: /^-[IMm]$/, code: 'eE', valueChars: 'IMm', attached: '0CdDilxF', askChars: 'S' },
-  php: { inline: /^-[raRBEF]$/, value: /^-[cdz]$/, scriptFlag: '-f', code: 'raRBEF', valueChars: 'cdz' },
+  perl: { inline: /^-[eE]/, value: /^-[IMm]$/, code: 'eE', valueChars: 'IMm', attached: '0CdDilxF', askChars: 'S' },
+  php: { inline: /^-[raRBEF]$/, value: /^-[cdzSt]$/, scriptFlag: '-f', noScriptOk: (a) => a.includes('-S'), code: 'raRBEF', valueChars: 'cdzSt' },
   lua: { inline: /^-[ei]$/, value: /^-l$/, code: 'ei', valueChars: 'l' },
   Rscript: { inline: /^(-e|--expr)/, code: 'e' },
   expect: { inline: /^-[ci]$/, code: 'ci' },
@@ -986,9 +989,28 @@ function interpSpec(name: string): InterpSpec | undefined {
   return undefined;
 }
 /** python -m 으로 바로 돌려도 되는 모듈(시험·검사) */
-const PY_MODULES_OK = new Set(['pytest', 'unittest', 'mypy', 'ruff', 'black', 'flake8', 'pylint', 'pyflakes', 'py_compile', 'compileall', 'doctest', 'json.tool', 'tabnanny']);
+const PY_MODULES_OK = new Set(['venv', 'pytest', 'unittest', 'mypy', 'ruff', 'black', 'flake8', 'pylint', 'pyflakes', 'py_compile', 'compileall', 'doctest', 'json.tool', 'tabnanny']);
 /** 늘 승인함: 글로 넘긴 코드를 그대로 실행하거나 다른 앱을 조종 */
 const TRUST_ALWAYS_ASK = new Set(['eval', 'osascript', 'pipx', 'brew', 'pip', 'pip3', 'gem', 'uv', 'poetry', 'conda']);
+/** 넘겨받은 글을 명령으로 돌려 주는 도구(설치돼 있어도 묻는다): 안쪽 명령(push·rm·curl)을 앱이 보지 못한다 (0.9.10) */
+const TRUST_RUNNER_TOOLS = new Set([
+  'concurrently', 'conc', 'nodemon', 'cross-env', 'cross-env-shell', 'dotenv', 'dotenv-cli', 'env-cmd', 'npm-run-all', 'npm-run-all2', 'run-s', 'run-p', 'wait-on',
+  'start-server-and-test', 'server-test', 'start-test', 'onchange', 'chokidar', 'watch', 'zx', 'shx', 'execa', 'pm2', 'forever', 'husky', 'lint-staged', 'lerna', 'wireit',
+  'if-env', 'run-script-os', 'cross-var', 'npx', 'node-gyp',
+]);
+/** 설치된 도구에 넘긴 인자가 명령 글처럼 보이는지: 빈칸·셸 기호가 든 낱말(따옴표로 묶어 넘긴 명령), 명령을 받는 옵션 */
+function looksLikeCommandArg(args: string[]): string | null {
+  for (const a of args) {
+    if (/^(--exec|--command|--cmd|--shell|--on-success|--on-failure|--onSuccess|--onFailure|--onFirstSuccess|-x)(=|$)/.test(a)) return a.replace(/=.*$/, '');
+    if (/[\s;&|`$<>]/.test(a)) return clip(a, 40);
+  }
+  return null;
+}
+/** pnpm·yarn·bun 에서 하위 명령 앞에 올 수 있는 값 없는 옵션(이 밖의 옵션이 앞에 오면 하위 명령을 잘못 읽을 수 있어 묻는다) */
+const PM_FLAGS = new Set(['-r', '--recursive', '-s', '--silent', '--parallel', '--stream', '--if-present', '--aggregate-output', '--no-bail', '--bail', '-A', '--all', '-p', '-t', '--topological', '-v', '--verbose', '-i', '--interlaced', '-R', '-W', '--worktree', '-w', '--workspace-root', '--color', '--no-color']);
+/** 값을 따로 받는 옵션(--filter 이름 · -F 이름) */
+const PM_VALUE_OPTS = new Set(['--filter', '-F', '--filter-prod', '--include', '--exclude', '--from', '--since', '-j', '--jobs', '--workspace-concurrency', '--reporter', '--loglevel']);
+
 /** npm 류에서 바로 되는 하위 명령(패키지 스크립트 실행·목록 보기) */
 const NPM_OK_SUBS = new Set(['run', 'run-script', 'test', 't', 'start', 'ls', 'list', 'why', 'explain', 'help']);
 /** pnpm·yarn 에서 설치·설정·받기 하위 명령(그 밖의 낱말은 패키지 스크립트 이름으로 본다) */
@@ -1020,8 +1042,12 @@ function outsidePathArg(args: string[], cwd: string, allowed: string[], program 
     const vals: string[] = [];
     if (a.startsWith('-')) {
       const eq = a.indexOf('=');
-      if (eq < 0) continue;
-      vals.push(a.slice(eq + 1));
+      if (eq < 0) {
+        // 짧은 옵션에 붙여 쓴 경로(-o/tmp/x · -I../밖 · -C~/x)도 본다
+        const att = /^-[A-Za-z]((?:\/|~|\.\.?\/).*)$/.exec(a)?.[1];
+        if (att) vals.push(att);
+        else continue;
+      } else vals.push(a.slice(eq + 1));
     } else {
       vals.push(a);
       const eq = a.indexOf('=');
@@ -1141,8 +1167,30 @@ export function trustedRunProblem(run: BashRun, roots: string[], allowed: string
   if (name === 'npm' || name === 'pnpm' || name === 'yarn' || name === 'bun') {
     if (args.some((a) => PM_RISKY_OPTS.test(a))) return `${name} 에 다른 폴더·전역·설정을 쓰는 옵션`;
     if (name === 'bun' && args.some((a) => /^(-e|--eval|-p|--print)(=|$)/.test(a))) return '명령 글에 코드를 넣어 실행(bun -e)';
-    const words = args.filter((a) => !a.startsWith('-'));
-    const sub = words[0] ?? '';
+    let words = args.filter((a) => !a.startsWith('-'));
+    let sub = words[0] ?? '';
+    if (name !== 'npm') {
+      // 하위 명령 앞 옵션: 값 없는 아는 옵션과 값을 받는 옵션(--filter 이름)만. 모르는 옵션이 앞에 오면 그 값이 하위 명령으로 읽힐 수 있어 묻는다 (0.9.10)
+      let k = 0;
+      for (; k < args.length && args[k].startsWith('-'); k++) {
+        const key = args[k].replace(/=.*$/, '');
+        if (PM_VALUE_OPTS.has(key)) {
+          if (!args[k].includes('=')) k++;
+        } else if (!PM_FLAGS.has(key)) return `${name} 하위 명령 앞에 앱이 모르는 옵션: ${clip(args[k], 30)}`;
+      }
+      const tail = args.slice(k);
+      // 하위 명령 뒤의 옵션 값도 낱말에서 뺀다(pnpm run --filter 이름 build)
+      words = tail.filter((a, j) => !a.startsWith('-') && !(j > 0 && PM_VALUE_OPTS.has(tail[j - 1])));
+      sub = words[0] ?? '';
+      // yarn workspace 이름 명령… · yarn workspaces foreach 명령…: 안쪽 명령으로 다시 본다
+      if (name === 'yarn' && (sub === 'workspace' || sub === 'workspaces')) {
+        const at = args.indexOf(sub);
+        const inner = sub === 'workspace' ? args.slice(args.indexOf(words[1] ?? '', at + 1) + 1) : args.slice(at + 2);
+        if (sub === 'workspaces' && words[1] !== 'foreach') return words[1] === 'list' ? null : `yarn workspaces ${words[1] ?? ''} (앱이 모르는 하위 명령)`;
+        if (sub === 'workspace' && !words[1]) return 'yarn workspace 이름 없음';
+        return trustedRunProblem({ ...run, args: inner }, roots, allowed, depth + 1);
+      }
+    }
     if (name === 'npm') {
       if (sub === 'exec' || sub === 'x') return npxLike(args.slice(args.indexOf(sub) + 1), 'npm exec');
       if (!NPM_OK_SUBS.has(sub)) return sub ? `npm ${sub} (설치·설정·바꾸기일 수 있음)` : 'npm 하위 명령 없음';
@@ -1189,6 +1237,8 @@ export function trustedRunProblem(run: BashRun, roots: string[], allowed: string
     /** python -m 모듈: 시험·검사 모듈만 */
     const pyModule = (mod: string) =>
       !PY_MODULES_OK.has(mod) ? (mod === 'pip' || mod === 'ensurepip' ? `설치 도구(${name} -m ${mod})` : `${name} -m ${mod || '(모듈 없음)'} (앱이 모르는 모듈)`) : outside();
+    // 버전·도움말만 보기(python3 --version · bash --version): 코드를 실행하지 않는다. -v 는 해석기마다 뜻이 달라 넣지 않는다
+    if (spec && args.length === 1 && /^(--version|-V|--help)$/.test(args[0])) return null;
     let k = 0;
     if (spec) {
       if ((name === 'tsx' && args[0] === 'watch') || (name === 'swift' && spec.noScriptOk?.(args))) k = 1;
@@ -1201,6 +1251,12 @@ export function trustedRunProblem(run: BashRun, roots: string[], allowed: string
         if (!x.startsWith('-') || x === '-') break;
         if (spec.inline.test(x)) return codeMsg(x);
         if (spec.scriptFlag && x === spec.scriptFlag) continue;
+        // perl -M모듈 · -m모듈: 모듈 이름(과 =불러올 이름)만. 그 밖의 글자(; 공백 괄호 등)는 코드로 읽힌다(-M'strict;system(…)')
+        if (spec === INTERP.perl && /^-[Mm]/.test(x)) {
+          const mod = x.length > 2 ? x.slice(2) : args[++k] ?? '';
+          if (!/^-?[A-Za-z_][A-Za-z0-9_:]*(=[A-Za-z0-9_:,]+)?$/.test(mod)) return codeMsg(x);
+          continue;
+        }
         // 짧은 옵션 묶음(-Bc · -Ic · -we · -m · -r): 글자 하나씩. 코드 글자가 있으면 묻고, 값 글자면 값(나머지 또는 다음 낱말)을 본다
         const cluster = /^-([A-Za-z0-9]+)$/.exec(x)?.[1];
         if (cluster && (spec.code || spec.valueChars || spec.askChars)) {
@@ -1219,7 +1275,7 @@ export function trustedRunProblem(run: BashRun, roots: string[], allowed: string
             if (spec.attached?.includes(ch)) break;
           }
           if (valueChar === 'm' && spec === INTERP.python) return pyModule(value);
-          if (valueChar && codeLike(value)) return valueMsg(x, value);
+          if (valueChar && codeLike(value) && !(spec === INTERP.php && valueChar === 'S')) return valueMsg(x, value); // php -S localhost:8000 은 주소가 아니라 듣는 자리
           continue;
         }
         // 긴 옵션: --require x · --require=x
@@ -1241,6 +1297,16 @@ export function trustedRunProblem(run: BashRun, roots: string[], allowed: string
     return outside();
   }
   if (TRUST_KNOWN_PROGRAMS.has(name) || localTool) {
+    // 설치된 도구(npx 이름 · pnpm 이름)라도 넘긴 글을 명령으로 돌려 주는 도구, 명령 글처럼 보이는 인자는 묻는다 (0.9.10)
+    if (localTool && !TRUST_KNOWN_PROGRAMS.has(name)) {
+      if (TRUST_RUNNER_TOOLS.has(name)) return `넘긴 명령을 대신 돌려 주는 도구(${name}): 안쪽 명령을 앱이 보지 못함`;
+      const c = looksLikeCommandArg(args);
+      if (c) return `설치된 도구(${name})에 명령 글처럼 보이는 인자를 넘김: ${c}`;
+    }
+    // electron -e 코드 · -r 모듈 · -i: node 와 같은 글 속 코드
+    if (name === 'electron' && args.some((a) => /^(-e|--eval|-p|--print|-i|--interactive|-r|--require)(=|$)/.test(a))) return '명령 글에 코드를 넣어 실행(electron)';
+    // mvn exec:exec · -Dexec.executable=프로그램: 다른 프로그램 실행
+    if ((name === 'mvn' || name === 'gradle') && args.some((a) => /^exec:|^-Dexec\.|^--init-script|^-I$/.test(a))) return `${name} 로 다른 프로그램 실행(exec)`;
     const subs = Object.prototype.hasOwnProperty.call(TRUST_INSTALL_SUBS, name) ? TRUST_INSTALL_SUBS[name] : undefined;
     const sub = args.find((a) => !a.startsWith('-'));
     if (subs && sub && subs.has(sub)) return `${name} ${sub} (설치·받기)`;

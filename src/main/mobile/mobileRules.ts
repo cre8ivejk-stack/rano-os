@@ -20,7 +20,7 @@ export function approvalPhoneText(
   a: Pick<ApprovalRequest, 'who' | 'kind' | 'title' | 'what' | 'why' | 'recommendation' | 'detail' | 'filePath' | 'bundle' | 'decisionItems' | 'change'>,
 ): string {
   const lines = [`🔔 승인 요청 · ${a.who}`, a.title, ''];
-  const careful = carefulLabel(a.kind);
+  const careful = carefulLabel(a.kind) || (a.kind === 'outsideWrite' && a.change ? '폴더 밖 파일 쓰기' : '');
   if (careful) lines.push(`⚠️ ${careful} 요청이에요. 아래 명령·파일을 확인하고 눌러 주세요.`);
   lines.push(`무엇을: ${a.what}`);
   // 명령·파일을 왜·권장보다 앞에 둔다(글이 길어 잘려도 무엇을 승인하는지는 남게)

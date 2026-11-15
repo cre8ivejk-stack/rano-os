@@ -43,6 +43,11 @@ export class MissionLeaderPool implements MissionLeaderApi {
     return false;
   }
 
+  /** 지금 진행 중인 과제 전부(다른 미션이 같은 작업 폴더를 쓸 때 경고용) */
+  tasks(): MissionTask[] {
+    return this.slots.map((l) => l.current?.() ?? null).filter((t): t is MissionTask => !!t);
+  }
+
   /** 지금 일하는 리더 수 */
   working(): number {
     return this.slots.filter((l) => l.busy()).length;

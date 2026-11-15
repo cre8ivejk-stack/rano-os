@@ -23,11 +23,12 @@ export interface ApprovalLike {
   filePath?: string;
   decisionItems?: readonly unknown[];
   bundle?: readonly unknown[];
+  change?: unknown; // 바뀌는 내용(파일 쓰기 도구의 전·후). 있으면 내용을 봐야 하는 카드
 }
 
-/** 그 자리에서 [승인]을 보여도 되는지: 바로 승인 종류이고 고를 것(결정 항목·묶음 파일)이 없을 때만 */
+/** 그 자리에서 [승인]을 보여도 되는지: 바로 승인 종류이고 고를 것(결정 항목·묶음 파일)·봐야 할 바뀌는 내용(폴더 밖 파일을 도구로 쓰기)이 없을 때만 */
 export function canQuickApprove(a: ApprovalLike): boolean {
-  return QUICK_APPROVE_KINDS.includes(a.kind) && !a.decisionItems?.length && !a.bundle?.length;
+  return QUICK_APPROVE_KINDS.includes(a.kind) && !a.decisionItems?.length && !a.bundle?.length && !a.change;
 }
 
 /** 조심할 종류의 이름(커밋·지우기 등). 아니면 '' */
@@ -35,9 +36,9 @@ export function carefulLabel(kind: string): string {
   return Object.prototype.hasOwnProperty.call(CAREFUL_KIND_LABEL, kind) ? CAREFUL_KIND_LABEL[kind] : '';
 }
 
-/** 빨간 표 글자: "커밋 · 승인함에서 확인". 조심할 종류가 아니면 '' */
-export function carefulTag(kind: string): string {
-  const label = carefulLabel(kind);
+/** 빨간 표 글자: "커밋 · 승인함에서 확인". 조심할 종류가 아니면 ''. 폴더 밖 파일 쓰기(바뀌는 내용이 있는 카드)도 빨간 표 */
+export function carefulTag(kind: string, a?: ApprovalLike): string {
+  const label = carefulLabel(kind) || (a && kind === 'outsideWrite' && a.change ? '폴더 밖 파일 쓰기' : '');
   return label ? `${label} · 승인함에서 확인` : '';
 }
 

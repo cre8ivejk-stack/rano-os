@@ -57,7 +57,9 @@ export const GIT_WIDE = new Set(['stash', 'checkout', 'switch', 'reset', 'restor
 /** 받아오기(pull·merge·fetch)로 인정하는 옵션 (H2-B, 2026-11-15) */
 const SYNC_OPTS = new Set(['--ff-only', '-q', '--quiet', '-v', '--verbose', '--prune', '-p', '--tags', '--no-tags', '--no-rebase']);
 /** fetch 는 --ff-only 대신 모든 원격 받기(--all)도 */
-const FETCH_OPTS = new Set([...SYNC_OPTS, '--all', '-t']);
+const FETCH_OPTS = new Set([...SYNC_OPTS, '--all', '-t', '--unshallow']);
+/** fetch 의 받는 깊이(--depth=숫자 · --deepen=숫자) */
+const FETCH_DEPTH = /^--(depth|deepen)=\d+$/;
 /** 원격 이름(origin 등): 영문·숫자로 시작, 경로·주소 문자(/ : @ \) 없음 */
 const REMOTE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 /** 가지·커밋 이름(origin/main, feature/x, FETCH_HEAD, @{u}): 덮어쓰기(+)·로컬 갱신(:)·.. 없음 */
@@ -74,7 +76,7 @@ export function syncGitArgs(sub: 'pull' | 'merge' | 'fetch', rest: string[], rem
   const words = rest.filter((a) => !a.startsWith('-'));
   const remoteOk = (w: string) => REMOTE_NAME.test(w) && remotes.includes(w);
   if (sub === 'fetch') {
-    if (!opts.every((o) => FETCH_OPTS.has(o))) return false;
+    if (!opts.every((o) => FETCH_OPTS.has(o) || FETCH_DEPTH.test(o))) return false;
     if (words.length && !remoteOk(words[0])) return false;
     return words.slice(1).every(refOk);
   }
@@ -1064,6 +1066,8 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
         flags = flags.slice(1);
         let argFile = false; // xargs -a 파일: 파일 내용이 인자가 되어 오류 문구로 드러날 수 있다
         let wrapPreset = false;
+        let wrapOpts = 0; // 감싸는 명령의 옵션 수(env -i · env -u 이름)
+        const wrapNames: string[] = [];
         while (words.length && (words[0].startsWith('-') || isAssign(words[0]))) {
           const opt = words[0];
           words.shift();
@@ -1071,8 +1075,9 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
           flags.shift();
           if (isAssign(opt)) {
             wrapPreset = true; // env FOO=bar 명령 · time FOO=bar 명령
+            wrapNames.push(assignParts(opt).name);
             scanInline(assignValue(opt));
-          }
+          } else wrapOpts++;
           if (wrapper !== 'xargs') continue;
           if (/^-a|^--arg-file/.test(opt)) argFile = true;
           if (XARGS_VALUE_OPT.test(opt) && words.length) {
@@ -1083,9 +1088,14 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
         }
         // xargs 로 지문·크기·종류만 보는 명령(find -exec 와 같은 기준)을 돌리는 것은 읽기로 본다
         const safeXargs = wrapper === 'xargs' && !argFile && words.length > 0 && FIND_SAFE_EXEC.has(path.basename(words[0]));
-        if (wrapper !== 'time' && !safeXargs) bump('command', `${wrapper} 로 감싼 명령`);
-        // 설정값을 붙였으면 감싼 명령이어도 따로 남긴다(믿는 미션이 nohup·time 뒤 설정값도 묻도록, 검수 지적 6)
-        if (wrapPreset) bump('command', `${wrapper} 뒤에 설정값을 붙여 실행`);
+        // env 이름=값 명령(옵션 없이): `이름=값 명령` 과 같은 일이라 같은 근거로 남긴다 — 믿는 미션이 설정값 이름으로 똑같이 판단하도록 (0.9.10)
+        const envAsPreset = wrapper === 'env' && wrapPreset && wrapOpts === 0 && words.length > 0;
+        if (envAsPreset) bump('command', `앞에 설정값을 붙여 실행: ${[...new Set(wrapNames)].join(', ')}`);
+        else {
+          if (wrapper !== 'time' && !safeXargs) bump('command', `${wrapper} 로 감싼 명령`);
+          // 설정값을 붙였으면 감싼 명령이어도 따로 남긴다(믿는 미션이 nohup·time 뒤 설정값도 묻도록, 검수 지적 6)
+          if (wrapPreset) bump('command', `${wrapper} 뒤에 설정값을 붙여 실행`);
+        }
         if (!words.length) continue;
       }
       // 맨 앞 낱말에 '=' 나 '[' 가 들어 있으면(`a[x]=/y/cat` 처럼 설정값으로 못 읽은 꼴) basename 으로 줄여 보지 않고 일반 명령으로.
@@ -1154,7 +1164,10 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
         const sub = args[k] ?? '';
         const rest = args.slice(k + 1);
         // 작업 폴더 전체를 바꿀 수 있는 명령: 같은 폴더에서 다른 과제가 돌 때 경고 카드로 보내려고 표시만 한다 (H4-A)
-        if (GIT_WIDE.has(sub) && !(sub === 'stash' && ['list', 'show'].includes(rest[0] ?? '')) && !out.gitWide!.includes(sub)) out.gitWide!.push(sub);
+        // 파일을 콕 집은 되돌리기(git restore 파일 · git checkout -- 파일)는 폴더 전체가 아니라 그 파일만 바꾼다(. 이나 글롭·옵션이 섞이면 폴더 전체로 본다)
+        const named = (list: string[]) => list.length > 0 && list.every((a) => !a.startsWith('-') && !a.startsWith(':') && a !== '.' && !/[*?[]/.test(a) && !a.endsWith('/'));
+        const narrow = (sub === 'restore' && named(rest)) || (sub === 'checkout' && rest[0] === '--' && named(rest.slice(1)));
+        if (GIT_WIDE.has(sub) && !narrow && !(sub === 'stash' && ['list', 'show'].includes(rest[0] ?? '')) && !out.gitWide!.includes(sub)) out.gitWide!.push(sub);
         // 태그 목록 보기(git tag · git tag -l 'v*')는 읽기 (S5-A). 만들기·지우기·옮기기는 아래 커밋 판단 그대로
         const tagList = sub === 'tag' && (rest.length === 0 || (rest.some((a) => a === '-l' || a === '--list') && rest.every((a) => !a.startsWith('-') || /^(-l|--list|-n\d*|-i|--ignore-case|--sort=[\w:.-]+)$/.test(a))));
         if (tagList) {

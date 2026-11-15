@@ -84,7 +84,7 @@ export class ChatNow {
       row.dataset.approval = a.id;
       const text = el('div', 'now-text');
       text.appendChild(el('span', 'now-tag now-tag-wait', '승인 대기'));
-      const risk = carefulTag(a.kind);
+      const risk = carefulTag(a.kind, a);
       if (risk) text.appendChild(el('span', 'now-tag now-tag-risk', risk));
       text.appendChild(el('span', 'now-title', a.title));
       const what = [a.who, a.what].filter(Boolean).join(' · ');

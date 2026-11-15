@@ -112,13 +112,24 @@ async function boot() {
   // 미션: 미션마다 현황 기록기 하나, 리포 리더 하나
   const leaders = new Map<string, MissionLeaderApi>();
   const leaderStores = new Map<string, ConversationStore>();
+  const pools: { mission: (typeof config.missions)[number]; pool: MissionLeaderPool }[] = [];
+  /** 두 미션의 작업 폴더가 같거나 한쪽이 다른 쪽 안인지 */
+  const foldersOverlap = (a: string[], b: string[]) =>
+    a.some((x) => b.some((y) => {
+      const p = path.resolve(x);
+      const q = path.resolve(y);
+      return p === q || p.startsWith(q + path.sep) || q.startsWith(p + path.sep);
+    }));
   for (const mission of config.missions) {
     const tracker = new MissionTracker(config, mission, emit);
     const leaderStore = new ConversationStore(config, path.join(config.runsDir, 'missions', mission.id, 'conversation.json'));
     trackers.set(mission.id, tracker);
     leaderStores.set(mission.id, leaderStore);
     // 같은 미션 동시 작업: 과제가 겹치면 리더를 한 명 더 붙인다(같은 작업 폴더, 개수 제한 없음)
-    const leader = new MissionLeaderPool((slot, others) => new MissionLeader({ config, mission, tracker, store: leaderStore, emit, approvals, outputs, slot, others }));
+    // 다른 미션이 같은(또는 겹치는) 작업 폴더를 쓰면 그 미션의 진행 중 과제도 "다른 과제"로 본다(폴더 전체 git 명령 경고)
+    const sameFolder = () => pools.filter((p) => p.mission.id !== mission.id && foldersOverlap(p.mission.targets, mission.targets)).flatMap((p) => p.pool.tasks());
+    const leader = new MissionLeaderPool((slot, others) => new MissionLeader({ config, mission, tracker, store: leaderStore, emit, approvals, outputs, slot, others: () => [...others(), ...sameFolder()] }));
+    pools.push({ mission, pool: leader });
     leaders.set(mission.id, leader);
     leadersForQuit.push(leader);
   }
@@ -512,9 +523,13 @@ async function boot() {
   // 설정 파일을 앱 밖에서 고쳐 새로 믿는 미션이 된 것이 있으면 결정로그에 남기고 라노에게 알린다 (trustLog.ts, T3-B)
   try {
     const t = checkTrustAtStart({ raw: config.raw, rootDir: config.rootDir, runsDir: config.runsDir, date: today() });
-    if (t.found.length) {
-      emit({ kind: 'activity', text: `앱 밖에서 믿는 미션이 됨: ${t.found.map((m) => m.name).join(', ')} (결정로그에 남김)`, at: new Date().toISOString() });
-      void rano.notify(trustNoticeText(t.found), 'direct').catch(() => undefined);
+    if (t.found.length || t.changed.length) {
+      const parts = [
+        ...(t.found.length ? [`앱 밖에서 믿는 미션이 됨: ${t.found.map((m) => m.name).join(', ')}`] : []),
+        ...(t.changed.length ? [`앱 밖에서 믿는 미션의 작업 폴더·DB 읽기 설정이 바뀜: ${t.changed.map((m) => m.name).join(', ')}`] : []),
+      ];
+      emit({ kind: 'activity', text: `${parts.join(' / ')} (결정로그에 남김)`, at: new Date().toISOString() });
+      void rano.notify(trustNoticeText(t.found, t.changed), 'direct').catch(() => undefined);
     }
   } catch (e) {
     console.error('[trust] 믿는 미션 확인 실패:', e);

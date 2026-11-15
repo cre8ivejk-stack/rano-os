@@ -112,7 +112,7 @@ export function trustedNote(tmpDir: string, dbGuide = ''): string {
 ## 지금 권한 (믿는 미션)
 - 읽기·검색, 작업 폴더 안 파일 고치기·만들기(Write·Edit·Bash), 타입 검사·시험·린트, 작업 폴더 안 스크립트 실행은 승인 없이 바로 된다. 묶음 승인·실행 목록 없이 바로 고치고 바로 확인한다.
 - 그대로 승인함을 거치는 일: 커밋·push·가지 바꾸기 등 git 기록 바꾸기, 지우기, DB 바꾸기, 배포, 작업 폴더 밖 쓰기, 인터넷으로 보내기(curl 등), 프로그램 끄기, 권한 바꾸기, .git·.claude 폴더 고치기. 이런 일은 리포 리더가 따로 지시한 경우에만 하고, 직전에 무엇을 왜 하는지 쉬운 한국어로 한두 줄 먼저 말한다.
-- 믿는 미션이라도 승인함으로 가는 명령: 앱이 모르는 프로그램(security·defaults·crontab·docker·open 등), 명령 글에 코드를 넣어 돌리기(node -e, python -c, sh -c, osascript, 셸로 넘기는 파이프, sed·awk 의 실행 명령, find -exec), 설치·받기(npm install·npx 로 설치 안 된 패키지·pip·brew). 한 줄 코드는 시안·임시 폴더에 스크립트 파일로 만들어 돌린다.
+- 믿는 미션이라도 승인함으로 가는 명령: 앱이 모르는 프로그램(security·defaults·crontab·docker·open 등), 명령 글에 코드를 넣어 돌리기(node -e, python -c, sh -c, osascript, 셸로 넘기는 파이프, sed·awk 의 실행 명령, find -exec), 설치·받기(npm install·npx 로 설치 안 된 패키지·pip·brew), 넘긴 명령을 대신 돌려 주는 도구(npx concurrently·nodemon --exec·cross-env 등). 한 줄 코드는 시안·임시 폴더에 스크립트 파일로 만들어 돌린다.
 - 명령 결과는 작업 폴더 안이나 이 미션 임시 폴더 ${tmpDir} 에 담는다. /tmp, $TMPDIR, mktemp 는 쓰지 않는다.
 - 운영 DB·운영 서비스에 접속하는 스크립트는 만들거나 돌리지 않는다. 필요하면 결과 보고에 적는다.${dbGuide ? `\n- ${dbGuide}` : ''}
 - 서로 상관없는 읽기·검색은 한 번에 여러 도구를 함께 불러 동시에 한다.

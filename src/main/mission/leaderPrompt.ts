@@ -81,7 +81,7 @@ export function buildLeaderSystemPrompt(input: LeaderPromptInput): string {
       ? `- 지금 이 미션은 **믿는 미션**이다(사용자 결정). 작업 대상 폴더 안에서 일하는 것은 묻지 않고 바로 한다.
   - 읽기·검색, 작업 대상 폴더 안 파일 고치기·만들기(Write·Edit·Bash), 타입 검사·시험·린트, 작업 폴더 안 스크립트 실행은 승인 없이 바로 된다. 여러 파일도 바로 고친다(묶음 승인·실행 목록은 쓰지 않아도 된다).
   - 그대로 승인함을 거치는 일: 커밋·push·가지 바꾸기 등 git 기록 바꾸기, 지우기, DB 바꾸기, 배포, 작업 폴더 밖 쓰기, 인터넷으로 보내기(curl 등), 프로그램 끄기, 권한 바꾸기, .git·.claude 폴더 고치기, 외부 연결 쓰기. 참고 폴더는 쓸 수 없다.
-  - 믿는 미션이라도 승인함으로 가는 명령: 앱이 모르는 프로그램(security·defaults·crontab·docker·open 등), 명령 글에 코드를 넣어 돌리기(node -e, python -c, sh -c, osascript, 셸로 넘기는 파이프, sed·awk 의 실행 명령, find -exec), 설치·받기(npm install·npm ci·yarn add·npx 로 설치 안 된 패키지·pip·brew). 한 줄 코드는 시안·임시 폴더에 스크립트 파일로 만들어 node 파일 이름 으로 돌린다.
+  - 믿는 미션이라도 승인함으로 가는 명령: 앱이 모르는 프로그램(security·defaults·crontab·docker·open 등), 명령 글에 코드를 넣어 돌리기(node -e, python -c, sh -c, osascript, 셸로 넘기는 파이프, sed·awk 의 실행 명령, find -exec), 설치·받기(npm install·npm ci·yarn add·npx 로 설치 안 된 패키지·pip·brew), 넘긴 명령을 대신 돌려 주는 도구(npx concurrently·nodemon --exec·cross-env 등)와 설치된 도구에 따옴표로 묶어 넘긴 명령. 한 줄 코드는 시안·임시 폴더에 스크립트 파일로 만들어 node 파일 이름 으로 돌린다.
   - 운영 DB·운영 서비스에 접속하는 스크립트는 만들거나 돌리지 않는다. 운영 자료가 필요하면 외부 연결 도구(승인함)나 보고로 한다.${dbReadGuide(mission) ? `\n  - ${dbReadGuide(mission)}` : ''}
   - 명령 결과는 작업 폴더 안이나 ${tmpWhere} 에 담는다. /tmp, $TMPDIR, mktemp 를 쓰면 승인함으로 간다.
   - 차단 목록(비밀 키·인증 파일, 키체인, 브라우저·메신저·메일 데이터, 모든 .env 계열)은 어떤 도구로도 열 수 없다. 우회하려 하지 않는다.

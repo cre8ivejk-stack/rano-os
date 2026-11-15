@@ -60,7 +60,7 @@ test('대화 "지금" 줄·현황판 방 띠는 이 규칙으로 [승인]을 정
     const s = src(f);
     assert.match(s, /from '\.\/approvalSafety\.js'/, f);
     assert.match(s, /const simple = canQuickApprove\(a\);/, f);
-    assert.match(s, /carefulTag\(a\.kind\)/, f);
+    assert.match(s, /carefulTag\(a\.kind, a\)/, f);
     assert.match(s, /commandOf\(a\.detail/, f);
     assert.ok(!s.includes('SIMPLE_APPROVALS'), f);
     // [승인] 단추는 simple 일 때만 만든다
@@ -124,4 +124,12 @@ test('믿는 미션 확인 창: 세 칸이고 틀린 두 문장이 없다', () =
   for (const t of ['묻지 않고 바로 해요', '승인함에서 물어요', '앱이 보지 못해요 (조심)', 'org-trust-blind']) assert.ok(s.includes(t), t);
   assert.ok(!s.includes("'커밋, push, 삭제, DB 바꾸기, 배포, 작업 폴더 밖 쓰기, 인터넷으로 보내기는 승인함을 거쳐요.'"));
   assert.ok(!s.includes("'막아 둔 비밀 파일은 열 수 없어요.'"));
+});
+
+test('0.9.10: 폴더 밖 파일을 도구로 쓰는 카드(바뀌는 내용 있음)는 바로 승인하지 않고 빨간 표', () => {
+  assert.equal(canQuickApprove({ kind: 'outsideWrite', change: { before: '', after: 'x' } }), false);
+  assert.equal(canQuickApprove({ kind: 'outsideWrite' }), true);
+  assert.match(carefulTag('outsideWrite', { kind: 'outsideWrite', change: {} }), /폴더 밖 파일 쓰기/);
+  assert.equal(carefulTag('outsideWrite', { kind: 'outsideWrite' }), '');
+  assert.match(src('renderer/approvals.ts'), /!a\.bundle\?\.length && !a\.change && /);
 });
