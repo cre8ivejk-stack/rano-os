@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { defaultRootDir, loadConfig } from './config.js';
+import { defaultRootDir, loadConfig, modelKindOf } from './config.js';
 import { defaultsDir, ensureDataHome } from './dataHome.js';
 import { randomUUID } from 'node:crypto';
 import { IPC, type ChatMessage, type NewAttachment, type MissionConfig, type MissionLeaderApi, type MissionTrackerApi, type RanoUiEvent } from '../shared/types.js';
@@ -482,6 +482,7 @@ async function boot() {
   });
   ipcMain.handle(IPC.settingsSaveProfile, (_e, p: any) => setup.saveProfile(p ?? {}).catch(() => ({ ok: false, message: '저장하지 못했어요' })));
   ipcMain.handle(IPC.settingsSaveZones, (_e, z: any) => setup.saveZones({ work: String(z?.work ?? ''), personal: String(z?.personal ?? '') }).catch(() => ({ ok: false, message: '저장하지 못했어요', needsRestart: false })));
+  ipcMain.handle(IPC.settingsSaveModels, (_e, m: any) => setup.saveModels({ rano: m?.rano, repoLeader: m?.repoLeader }).catch(() => ({ ok: false, message: '저장하지 못했어요' })));
   ipcMain.handle(IPC.openDataFolder, async () => {
     await shell.openPath(config.rootDir);
   });
@@ -509,7 +510,8 @@ async function boot() {
     const roleLabels: Record<string, string> = {};
     if (raw.roleLabels && typeof raw.roleLabels === 'object')
       for (const [k, v] of Object.entries(raw.roleLabels as Record<string, unknown>)) if (typeof v === 'string' && v.trim()) roleLabels[k] = v.trim().slice(0, 30);
-    return { roleLabels, zones: zoneText(config), version: app.getVersion() };
+    const model = (id: string) => ({ kind: modelKindOf(id), id });
+    return { roleLabels, zones: zoneText(config), version: app.getVersion(), models: { rano: model(config.models.rano), repoLeader: model(config.models.repoLeader) } };
   });
   ipcMain.handle(IPC.orgRestart, () => {
     // 기다리던 과제는 대기열 기록으로 다음 실행 때 이어 간다 (before-quit 에서 정리)

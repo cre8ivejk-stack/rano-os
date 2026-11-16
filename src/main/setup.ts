@@ -5,7 +5,7 @@ import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import type { MemoryServiceApi, RanoConfig, SetupInput, SetupStatus, Zone } from '../shared/types.js';
-import { expandHome } from './config.js';
+import { expandHome, modelIdFor } from './config.js';
 import { isBlockedPath } from './engine/permissions.js';
 import { isInside, readRaw, realOr, shrinkHome, writeRaw, zoneText } from './admin/paths.js';
 
@@ -38,6 +38,7 @@ export interface SetupApi {
   saveZones(zones: Record<Zone, string>): Promise<{ ok: boolean; message: string; needsRestart: boolean }>;
   checkFolder(zone: Zone, p: string): { ok: boolean; path: string; display: string; exists: boolean; problem?: string };
   save(input: SetupInput): Promise<{ ok: boolean; message: string; needsRestart: boolean }>;
+  saveModels(choice: { rano?: unknown; repoLeader?: unknown }): Promise<{ ok: boolean; message: string }>;
 }
 
 export function createSetup(config: RanoConfig, memory: MemoryServiceApi): SetupApi {
@@ -192,5 +193,25 @@ export function createSetup(config: RanoConfig, memory: MemoryServiceApi): Setup
     return { ok: true, message: '구역 폴더를 바꿨어요. 앱을 다시 시작하면 반영돼요', needsRestart: true };
   };
 
-  return { status, checkFolder, save, saveProfile, saveZones };
+  /** 설정 화면에서 라노·리더 모델 바꾸기: rano.json models 에 저장하고, 켜진 앱의 설정에도 바로 넣는다.
+   *  라노는 다음 차례부터, 리더는 새로 시작하는 과제부터 쓴다(진행 중인 과제는 시작할 때 모델 그대로, leaderSession.ts) */
+  const saveModels = async (choice: { rano?: unknown; repoLeader?: unknown }) => {
+    const pick = (v: unknown, cur: string) => (v === 'keep' ? cur : modelIdFor(v, cur));
+    const next = { rano: pick(choice?.rano, config.models.rano), repoLeader: pick(choice?.repoLeader, config.models.repoLeader) };
+    if (!next.rano || !next.repoLeader) return { ok: false, message: '고를 수 없는 모델이에요' };
+    if (next.rano === config.models.rano && next.repoLeader === config.models.repoLeader) return { ok: true, message: '바뀐 모델이 없어요' };
+    try {
+      const raw = await readRaw(config.rootDir);
+      const old = raw.models && typeof raw.models === 'object' ? raw.models : {};
+      raw.models = { ...old, rano: next.rano, repoLeader: next.repoLeader, member: old.member ?? config.models.member };
+      await writeRaw(config.rootDir, raw);
+    } catch {
+      return { ok: false, message: '설정 파일을 저장하지 못했어요. 잠시 뒤 다시 해 주세요' };
+    }
+    config.models.rano = next.rano;
+    config.models.repoLeader = next.repoLeader;
+    return { ok: true, message: '저장했어요. 라노는 다음 말부터, 리더는 새로 시작하는 과제부터 이 모델을 써요. 지금 진행 중인 과제는 원래 모델로 끝까지 해요' };
+  };
+
+  return { status, checkFolder, save, saveProfile, saveZones, saveModels };
 }

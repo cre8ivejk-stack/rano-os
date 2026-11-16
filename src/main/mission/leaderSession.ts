@@ -322,11 +322,13 @@ export class MissionLeader implements MissionLeaderApi {
     let report = '';
     try {
       // 과제마다 새 대화로 시작한다(저장된 리더 대화 번호로 이어 쓰지 않음). 과제 안 이어가기 실패 재시도 규칙은 runTaskAttempts 에 그대로
-      let result = await runTaskAttempts((resume) => this.attempt(prompt, resume), undefined, looksLikeMissingSession);
+      // 모델은 과제를 시작할 때 정한다(설정 화면에서 바꿔도 진행 중인 과제는 끝까지 같은 모델)
+      const model = this.config.models.repoLeader;
+      let result = await runTaskAttempts((resume) => this.attempt(prompt, resume, model), undefined, looksLikeMissingSession);
       // 단계 한도에 걸렸으면 실패로 끝내지 않고 같은 대화를 이어서 마무리하게 한다
       for (let n = 0; n < MAX_CONTINUES && !this.closed && !this.stopReq && result.sessionId && /max_turns/.test(result.errorText ?? ''); n++) {
         this.safe(() => this.tracker.activity('앱', '단계 한도에 걸려 같은 대화로 이어서 마무리해요'));
-        const next = await this.attempt(CONTINUE_PROMPT, result.sessionId);
+        const next = await this.attempt(CONTINUE_PROMPT, result.sessionId, model);
         result = next.sessionId ? next : { ...next, sessionId: result.sessionId };
       }
       if (this.stopReq) {
@@ -416,7 +418,7 @@ export class MissionLeader implements MissionLeaderApi {
     });
   }
 
-  private async attempt(prompt: string, resume: string | undefined): Promise<AttemptResult> {
+  private async attempt(prompt: string, resume: string | undefined, model: string): Promise<AttemptResult> {
     const { config, mission, tracker } = this;
     const roles = loadRoles(config, mission);
     const ctx = await readLeaderContext(
@@ -482,7 +484,7 @@ export class MissionLeader implements MissionLeaderApi {
     if (tmpReady) env.TMPDIR = tmpDir;
 
     const options: Options = {
-      model: config.models.repoLeader,
+      model,
       cwd: mission.targets[0] ?? mission.home,
       additionalDirectories: [...mission.readonlyRefs, mission.home],
       systemPrompt,

@@ -22,6 +22,24 @@ export function ranoEffortFrom(raw: any): RanoEffort {
   return (EFFORTS as string[]).includes(v) ? (v as RanoEffort) : 'low';
 }
 
+/** 설정 화면에서 고르는 모델 종류. 'other' = 화면 목록에 없는 이름(설정 파일에 직접 적은 것) */
+export type ModelKind = 'opus' | 'sonnet' | 'fable' | 'other';
+export const MODEL_KINDS = ['opus', 'sonnet', 'fable'] as const;
+const DEFAULT_MODEL_ID: Record<(typeof MODEL_KINDS)[number], string> = { opus: 'claude-opus-5-5', sonnet: 'sonnet', fable: 'fable' };
+
+/** 모델 이름 → 종류 (claude-fable-5-2 → fable) */
+export function modelKindOf(id: string): ModelKind {
+  for (const k of MODEL_KINDS) if (new RegExp(k, 'i').test(String(id ?? ''))) return k;
+  return 'other';
+}
+
+/** 고른 종류 → 저장할 모델 이름. 지금 이름이 이미 그 종류면 그대로 둔다(정식 이름을 줄이지 않게). 'keep'·모르는 값이면 null */
+export function modelIdFor(kind: unknown, current: string): string | null {
+  if (!(MODEL_KINDS as readonly unknown[]).includes(kind)) return null;
+  const k = kind as (typeof MODEL_KINDS)[number];
+  return modelKindOf(current) === k ? current : DEFAULT_MODEL_ID[k];
+}
+
 /** 구역의 외부 역할 폴더(rano.json zones.<구역>.externalPool, 읽기만). 없으면 빈 목록 */
 export function externalPools(raw: any, rootDir: string, zone: Zone): string[] {
   const v = raw?.zones?.[zone]?.externalPool;

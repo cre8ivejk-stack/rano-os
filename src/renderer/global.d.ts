@@ -254,6 +254,12 @@ interface AppSettings {
   roleLabels: Record<string, string>;
   zones: Record<Zone, { label: string; root: string }>;
   version: string;
+  models: ModelSettings;
+}
+
+interface ModelSettings {
+  rano: { kind: 'opus' | 'sonnet' | 'fable' | 'other'; id: string };
+  repoLeader: { kind: 'opus' | 'sonnet' | 'fable' | 'other'; id: string };
 }
 
 interface MissionProposal {
@@ -407,6 +413,7 @@ interface RanoApi {
   authOpenLoginPage(url: string): Promise<void>;
   settingsSaveProfile(profile: SetupInput['profile']): Promise<AuthResult>;
   settingsSaveZones(zones: Record<Zone, string>): Promise<{ ok: boolean; message: string; needsRestart: boolean }>;
+  settingsSaveModels(models: { rano: string; repoLeader: string }): Promise<{ ok: boolean; message: string }>;
   openDataFolder(): Promise<void>;
   updateCheck(): Promise<UpdateInfo>;
   openReleasePage(url: string): Promise<void>;

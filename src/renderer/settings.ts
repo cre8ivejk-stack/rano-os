@@ -1,4 +1,4 @@
-// 설정 창: 나에 대해 · 구역 폴더 · Claude 계정 · 데이터 폴더. 머리말의 [설정] 버튼으로 연다.
+// 설정 창: 나에 대해 · 구역 폴더 · 모델(라노·리더) · Claude 계정 · 데이터 폴더. 머리말의 [설정] 버튼으로 연다.
 import { AccountPanel } from './account.js';
 import { el } from './dom.js';
 import { button, field } from './orgCommon.js';
@@ -69,7 +69,7 @@ export class SettingsButton {
       body.replaceChildren(note('설정을 불러오지 못했어요. 잠시 뒤 다시 열어 주세요.', false));
       return;
     }
-    body.replaceChildren(this.profileSection(st), this.zoneSection(st));
+    body.replaceChildren(this.profileSection(st), this.zoneSection(st), this.modelSection(app));
     const acctSec = el('section', 'settings-sec');
     acctSec.appendChild(el('h4', 'settings-title', 'Claude 계정'));
     const acctHost = el('div');
@@ -180,6 +180,56 @@ export class SettingsButton {
     });
     row.append(save, msg);
     sec.appendChild(row);
+    return sec;
+  }
+
+  // ---------- 모델 ----------
+  private modelSection(app: AppSettings): HTMLElement {
+    const sec = el('section', 'settings-sec');
+    sec.appendChild(el('h4', 'settings-title', '모델'));
+    sec.appendChild(el('p', 'org-hint', '라노와 리더가 쓰는 모델을 골라요. 저장하면 라노는 다음 말부터, 리더는 새로 시작하는 과제부터 써요(진행 중인 과제는 원래 모델로 끝까지). 앱을 다시 켤 필요는 없어요.'));
+    const models = app.models ?? { rano: { kind: 'other', id: '' }, repoLeader: { kind: 'other', id: '' } };
+    const pick: Record<'rano' | 'repoLeader', string> = { rano: 'keep', repoLeader: 'keep' };
+    for (const [key, label] of [
+      ['rano', '라노'],
+      ['repoLeader', '리더'],
+    ] as const) {
+      const cur = models[key];
+      const sel = el('select', 'org-input org-select');
+      const opts: [string, string][] = [
+        ['opus', 'Opus · 꼼꼼하고 깊게'],
+        ['sonnet', 'Sonnet · 빠르고 가볍게 (사용량 적음)'],
+        ['fable', 'Fable · 가장 깊게 (가장 느리고 사용량 가장 많음)'],
+      ];
+      if (cur.kind === 'other') opts.unshift(['keep', `지금 설정 그대로 (${cur.id || '알 수 없음'})`]);
+      for (const [value, text] of opts) {
+        const o = el('option');
+        o.value = value;
+        o.textContent = text;
+        sel.appendChild(o);
+      }
+      sel.value = cur.kind === 'other' ? 'keep' : cur.kind;
+      pick[key] = sel.value;
+      sel.addEventListener('change', () => (pick[key] = sel.value));
+      const box = el('div', 'org-field');
+      const lab = el('label', 'org-label', label);
+      sel.id = `settings-model-${key}`;
+      lab.htmlFor = sel.id;
+      box.append(lab, sel);
+      sec.appendChild(box);
+    }
+    const row = el('div', 'org-row');
+    const save = button('저장', 'btn btn-confirm btn-small');
+    const msg = el('span');
+    save.addEventListener('click', async () => {
+      save.disabled = true;
+      const r = await window.rano.settingsSaveModels({ ...pick }).catch(() => ({ ok: false, message: '저장하지 못했어요' }));
+      msg.replaceChildren(note(r.message, r.ok));
+      save.disabled = false;
+    });
+    row.append(save, msg);
+    sec.appendChild(row);
+    sec.appendChild(el('p', 'org-hint', '팀원 모델은 지금처럼 조직 탭의 역할 편집과 팀 구성안 카드에서 골라요.'));
     return sec;
   }
 

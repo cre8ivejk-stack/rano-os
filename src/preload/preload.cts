@@ -64,6 +64,7 @@ const CH_UPDATE_CHECK = 'update:check';
 const CH_UPDATE_OPEN = 'update:open-page';
 const CH_SET_PROFILE = 'settings:save-profile';
 const CH_SET_ZONES = 'settings:save-zones';
+const CH_SET_MODELS = 'settings:save-models';
 const CH_OPEN_DATA = 'settings:open-data-folder';
 const CH_AUTH = {
   status: 'auth:status',
@@ -257,6 +258,9 @@ const api: RanoApi = {
   },
   settingsSaveZones(z: Record<Zone, string>): Promise<{ ok: boolean; message: string; needsRestart: boolean }> {
     return ipcRenderer.invoke(CH_SET_ZONES, { work: String(z?.work ?? ''), personal: String(z?.personal ?? '') });
+  },
+  settingsSaveModels(m: { rano: string; repoLeader: string }): Promise<{ ok: boolean; message: string }> {
+    return ipcRenderer.invoke(CH_SET_MODELS, { rano: String(m?.rano ?? 'keep'), repoLeader: String(m?.repoLeader ?? 'keep') });
   },
   async openDataFolder(): Promise<void> {
     await ipcRenderer.invoke(CH_OPEN_DATA);

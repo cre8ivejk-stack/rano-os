@@ -140,6 +140,13 @@ export interface AppSettings {
   roleLabels: Record<string, string>; // 역할 이름 → 쉬운 이름 (rano.json roleLabels)
   zones: Record<Zone, { label: string; root: string }>; // root 는 ~ 로 줄인 경로
   version: string; // 앱 버전
+  models: ModelSettings; // 라노·리더 모델 (설정 화면에서 고름)
+}
+
+/** 설정 화면의 모델 칸. kind 'other' = 목록에 없는 이름(설정 파일에 직접 적음), id 는 실제 이름 */
+export interface ModelSettings {
+  rano: { kind: 'opus' | 'sonnet' | 'fable' | 'other'; id: string };
+  repoLeader: { kind: 'opus' | 'sonnet' | 'fable' | 'other'; id: string };
 }
 
 /** 구역: 회사(~/work)와 개인(~/personal). 미션은 자기 구역 루트 아래 폴더만 쓰고, denyRead 는 그 구역 미션이 읽지도 쓰지도 못한다. */
@@ -392,6 +399,7 @@ export const IPC = {
   updateInstallLocal: 'update:install-local', // invoke → { ok, message? } (확인 창 뒤 앱을 끄고 새 판으로 바꿔 다시 켠다)
   settingsSaveProfile: 'settings:save-profile', // invoke(profile) → me.md
   settingsSaveZones: 'settings:save-zones', // invoke(zones) 미션이 있는 구역은 거절
+  settingsSaveModels: 'settings:save-models', // invoke({ rano, repoLeader }: 'opus'|'sonnet'|'fable'|'keep') → rano.json models, 켜진 앱에도 바로
   openDataFolder: 'settings:open-data-folder', // Finder 로 데이터 폴더 열기
   authStatus: 'auth:status',
   authStartLogin: 'auth:start-login', // invoke(kind) → { ok, url? } 로그인 페이지를 브라우저로 연다
@@ -457,6 +465,7 @@ export interface RanoApi {
   authOpenLoginPage(url: string): Promise<void>;
   settingsSaveProfile(profile: SetupInput['profile']): Promise<AuthResult>;
   settingsSaveZones(zones: Record<Zone, string>): Promise<{ ok: boolean; message: string; needsRestart: boolean }>;
+  settingsSaveModels(models: { rano: string; repoLeader: string }): Promise<{ ok: boolean; message: string }>;
   openDataFolder(): Promise<void>;
   updateCheck(): Promise<UpdateInfo>;
   openReleasePage(url: string): Promise<void>;

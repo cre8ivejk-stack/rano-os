@@ -58,7 +58,11 @@ function input(over: Partial<Parameters<typeof buildCarryBlock>[0]> = {}): Param
 test('리더는 과제마다 새 대화: 과제 시작 때 저장된 대화 번호로 이어 쓰지 않는다(빌드된 leaderSession.js 확인)', () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const src = readFileSync(path.join(here, 'leaderSession.js'), 'utf-8');
-  assert.match(src, /runTaskAttempts\(\(resume\) => this\.attempt\(prompt, resume\), undefined, looksLikeMissingSession\)/);
+  assert.match(src, /runTaskAttempts\(\(resume\) => this\.attempt\(prompt, resume, model\), undefined, looksLikeMissingSession\)/);
+  // 리더 모델은 과제를 시작할 때 한 번 정한다(설정 화면에서 바꿔도 진행 중인 과제는 같은 모델)
+  assert.match(src, /const model = this\.config\.models\.repoLeader;/);
+  assert.match(src, /this\.attempt\(CONTINUE_PROMPT, result\.sessionId, model\)/);
+  assert.ok(!/model: config\.models\.repoLeader/.test(src), '시도마다 설정을 다시 읽지 않음');
   assert.ok(!/attempt\(prompt, sessionId/.test(src), '저장된 sessionId 로 attempt 하지 않음');
   assert.match(src, /buildCarryBlock\(/);
 });
