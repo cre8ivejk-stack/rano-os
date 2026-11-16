@@ -1,6 +1,7 @@
 // 미션 리포 리더 세션: 라노 배정이나 사용자 직접 지시를 받아 팀원(서브에이전트)과 일하고 보고한다.
 import { query, type Options, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { claudeBinaryPath } from '../engine/claudeBinary.js';
@@ -200,6 +201,14 @@ export class MissionLeader implements MissionLeaderApi {
   }
 
   /** 지금 맡은 과제 (같은 미션의 다른 리더에게 알려 주기용) */
+  /** 진행 중 과제에 사용자의 말을 덧붙여 전한다(리더가 다음 도구를 쓴 직후에 읽는다). 전했으면 1 */
+  note(text: string, taskId?: string): number {
+    if (!this.currentTask || this.stopReq || (taskId && this.currentTask.id !== taskId)) return 0;
+    this.guard.addUserNote(text);
+    this.safe(() => this.tracker.activity('앱', `사용자가 진행 중에 덧붙인 말을 전했어요: ${text.replace(/\s+/g, ' ').slice(0, 60)}`));
+    return 1;
+  }
+
   /** 사용자가 진행 중 과제를 멈춘다(승인 대기도 함께 풀림). 멈출 과제가 있었으면 true */
   stop(taskId?: string): boolean {
     if (!this.currentTask || (taskId && this.currentTask.id !== taskId)) return false;
@@ -321,7 +330,7 @@ export class MissionLeader implements MissionLeaderApi {
         result = next.sessionId ? next : { ...next, sessionId: result.sessionId };
       }
       if (this.stopReq) {
-        report = interruptedReport('사용자가 [멈추기]를 눌러 과제를 멈췄어요. 이미 고친 파일은 그대로 남아 있어요.', result.text);
+        report = interruptedReport('사용자가 [멈추기]를 눌러 과제를 멈췄어요. 멈추기 전에 고친 파일이 있으면 그대로 남아 있어요.', result.text);
       } else if (result.errorText === null && result.text) {
         ok = true;
         report = result.text;
@@ -403,6 +412,7 @@ export class MissionLeader implements MissionLeaderApi {
       approvals,
       draftsDir: (id) => this.guard.draftsDir(id),
       handoffFile: HANDOFF_FILE,
+      exists: (p) => existsSync(p),
     });
   }
 

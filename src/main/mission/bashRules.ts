@@ -603,7 +603,21 @@ const REDIRECT_OUT = new Set(['>', '>>', '&>', '2>', '2>>', '1>', '>|']);
 const REDIRECT_IN = new Set(['<', '<<<']);
 
 const READ_ONLY_CMDS = new Set(['ls', 'pwd', 'wc', 'head', 'tail', 'cat', 'echo', 'true', 'md5', 'shasum', 'uniq', 'sort']);
-const GIT_READ = new Set(['status', 'diff', 'log', 'show', 'branch', 'rev-parse', 'ls-files', 'blame', 'rev-list', 'describe', 'shortlog', 'check-ignore', 'ls-tree', 'cat-file']);
+/** git add 뒤가 모두 파일 이름인지: 옵션(-A·-u·-p 등)·점·폴더·별표·pathspec 표시(:)가 하나라도 있으면 아니다 */
+function namedGitAdd(rest: string[], cwd: string): boolean {
+  const files = rest.filter((a) => a !== '--');
+  if (!files.length) return false;
+  return files.every((a) => {
+    if (a.startsWith('-') || a.startsWith(':') || a === '.' || a === '..' || a.endsWith('/') || /[*?\[\]{}~$`]/.test(a)) return false;
+    try {
+      return !statSync(path.resolve(cwd, a)).isDirectory();
+    } catch {
+      return true; // 지워진 파일을 담는 경우
+    }
+  });
+}
+
+const GIT_READ = new Set(['status', 'diff', 'log', 'show', 'branch', 'rev-parse', 'ls-files', 'blame', 'rev-list', 'describe', 'shortlog', 'check-ignore', 'ls-tree', 'cat-file', 'merge-base', 'name-rev', 'for-each-ref', 'show-ref', 'diff-tree', 'whatchanged', 'count-objects', 'show-branch', 'cherry']);
 const GIT_COMMIT = new Set([
   'commit', 'push', 'tag', 'reset', 'rebase', 'merge', 'checkout', 'switch', 'restore', 'pull',
   'cherry-pick', 'revert', 'am', 'apply', 'stash',
@@ -1206,6 +1220,9 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
         } else if (sub === 'fetch' && syncGitArgs('fetch', rest, remotesAt(gitCwd))) {
           bump('command', 'git fetch (받아오기)');
           syncBumps++;
+        } else if (sub === 'add' && namedGitAdd(rest, gitCwd)) {
+          // 파일 이름을 하나하나 적은 git add (옵션·점·폴더·별표 없음): 믿는 미션에서는 바로(커밋은 그대로 승인) (0.9.12)
+          bump('command', 'git add (파일 이름)');
         } else bump('command', `git ${sub || '(하위 명령 없음)'}`);
         continue;
       }

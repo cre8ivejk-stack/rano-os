@@ -5,7 +5,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { LEADER_MCP_NAME, type ApprovalQueueApi, type BundleFile, type DecisionItem, type MissionConfig, type MissionTrackerApi } from '../../shared/types.js';
+import { LEADER_MCP_NAME, MEMBER_MODEL_LABEL, type MemberModel, type ApprovalQueueApi, type BundleFile, type DecisionItem, type MissionConfig, type MissionTrackerApi } from '../../shared/types.js';
 import { fileChangeFor, fileFingerprint, grantInfoFor, releaseCommandProblem, RUN_PLAN_KINDS, redactCommand, type CommandGrant, type LeaderGuard } from './leaderPermissions.js';
 import { checkPreviewFile, PREVIEW_EXTS } from '../approvals/previewSafety.js';
 
@@ -172,7 +172,7 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
       }
       const recSkip = args.kind === 'teamPlan' ? (args.skipReview ?? '').trim() : '';
       const planWhat = understanding ? `과제 이해: ${understanding}\n\n${args.what}` : args.what;
-      const modelLine = (r: string, m: 'opus' | 'sonnet') => `- ${r}: ${m === 'opus' ? 'Opus' : 'Sonnet'}${recModels.get(r)?.reason ? ` — ${recModels.get(r)!.reason}` : ''}`;
+      const modelLine = (r: string, m: MemberModel) => `- ${r}: ${MEMBER_MODEL_LABEL[m]}${recModels.get(r)?.reason ? ` — ${recModels.get(r)!.reason}` : ''}`;
       // 읽고 정리만 하는 과제의 팀 구성: 묻지 않고 바로 시작한다(바꾸는 일은 이 과제 동안 앱이 막음). 모델은 리더 추천대로
       if (args.kind === 'teamPlan' && args.readOnly) {
         guard.markTeamApproved(task.id);
@@ -196,7 +196,7 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
           // 무시
         }
         deps.emitActivity?.(
-          `${guard.leaderLabel}: 읽고 정리만 하는 과제라 팀 구성은 묻지 않고 바로 시작해요 (${args.title}${recModels.size ? ` · ${[...recModels].map(([r, v]) => `${r} ${v.model === 'opus' ? 'Opus' : 'Sonnet'}`).join(', ')}` : ''})`,
+          `${guard.leaderLabel}: 읽고 정리만 하는 과제라 팀 구성은 묻지 않고 바로 시작해요 (${args.title}${recModels.size ? ` · ${[...recModels].map(([r, v]) => `${r} ${MEMBER_MODEL_LABEL[v.model]}`).join(', ')}` : ''})`,
         );
         return text(
           `읽고 정리만 하는 과제라 팀 구성안을 사용자에게 묻지 않고 바로 시작해요.${teamNote} 승인된 역할을 불러 일을 맡기세요. 이 과제 동안 작업 폴더 쓰기·삭제·커밋·외부 쓰기는 막혀요. 바꾸는 일이 필요해지면 팀 구성안을 readOnly 없이 다시 올리세요.`,
@@ -255,6 +255,7 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
           options: [
             { key: 'opus', label: 'Opus · 꼼꼼하고 깊게 (느리고 사용량 많음)' },
             { key: 'sonnet', label: 'Sonnet · 빠르고 가볍게 (자료 정리·초안·단순 작업에 충분)' },
+            { key: 'fable', label: 'Fable · 가장 깊게 (가장 느리고 사용량 가장 많음)' },
           ],
           recommended: v.model,
         }));
@@ -320,11 +321,11 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
           guard.markSolo(task.id, false); // 팀 모드로 바뀜
           guard.markReadOnly(task.id, false); // 바꾸는 일까지 하는 구성으로 다시 승인받음
           // 사용자가 고른 모델(바꾸지 않았으면 리더 추천)을 이 과제 동안 적용한다
-          const picked: Record<string, 'opus' | 'sonnet'> = {};
+          const picked: Record<string, MemberModel> = {};
           for (const it of decisionItems ?? []) {
             const role = [...recModels.keys()][Number(it.id) - 1];
             const key = d.choices?.[it.id] ?? it.recommended;
-            if (role && (key === 'opus' || key === 'sonnet')) picked[role] = key;
+            if (role && (key === 'opus' || key === 'sonnet' || key === 'fable')) picked[role] = key;
           }
           if (Object.keys(picked).length) guard.setMemberModels(task.id, picked);
           const reviewItem = decisionItems?.find((it) => it.id === 'review');
@@ -337,7 +338,7 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
             : '';
           const changed = Object.entries(picked).filter(([r, m]) => recModels.get(r)?.model !== m);
           const modelNote = Object.keys(picked).length
-            ? `\n팀원 모델: ${Object.entries(picked).map(([r, m]) => `${r} ${m === 'opus' ? 'Opus' : 'Sonnet'}`).join(', ')}${changed.length ? ` (사용자가 바꿈: ${changed.map(([r]) => r).join(', ')})` : ''}. 앱이 팀원을 부를 때 이 모델을 넣어요.`
+            ? `\n팀원 모델: ${Object.entries(picked).map(([r, m]) => `${r} ${MEMBER_MODEL_LABEL[m]}`).join(', ')}${changed.length ? ` (사용자가 바꿈: ${changed.map(([r]) => r).join(', ')})` : ''}. 앱이 팀원을 부를 때 이 모델을 넣어요.`
             : '';
           let teamNote = '';
           try {
@@ -640,14 +641,14 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
   const proposeRelease = tool(
     'propose_release',
     [
-      '사용자가 릴리즈(커밋·push·포장·배포본 올리기)를 시켰을 때, 마무리 명령 전체를 카드 한 장으로 승인받는 도구입니다. 리더만 씁니다(팀원은 못 씀).',
+      '사용자가 릴리즈(커밋·push·포장·배포본 올리기)나 "커밋하고 push"를 시켰을 때, 마무리 명령 전체를 카드 한 장으로 승인받는 도구입니다. 리더만 씁니다(팀원은 못 씀).',
       '방법: ① 먼저 타입 검사·시험을 돌려 통과를 확인한다. ② commands 에 실행할 명령을 순서대로, 글자 그대로 넣는다(git add 는 고친 파일 이름을 적는다). ③ 승인되면 글자 그대로 차례로 실행하고, 하나라도 실패하면 멈추고 보고한다.',
       '넣을 수 있는 것: 커밋(git add·commit·tag·push), 포장·배포 명령(npm run release 등), 일반 명령(gh release create 등). 넣을 수 없는 것: 지우기, DB, 작업 폴더 밖 쓰기, 폴더 전체를 바꾸는 git 명령(reset·checkout·stash·pull 등), 강제 push.',
-      '각 명령은 승인 뒤 한 번만 실행됩니다. 글자가 다르면 다시 묻습니다. 사용자가 릴리즈를 시키지 않았으면 쓰지 마세요.',
+      '각 명령은 승인 뒤 한 번만 실행됩니다. 글자가 다르면 다시 묻습니다. 사용자가 커밋·push·릴리즈를 시키지 않았으면 쓰지 마세요.',
       '모든 글은 비개발자도 읽을 수 있는 쉬운 한국어로 씁니다.',
     ].join('\n'),
     {
-      title: z.string().describe('한 줄 제목 (예: "0.9.11 커밋·push·포장·GitHub 릴리즈")'),
+      title: z.string().describe('한 줄 제목 (예: "0.9.11 커밋·push·포장·GitHub 릴리즈", "메뉴 문서 수정 커밋·push")'),
       why: z.string().describe('무엇을 내보내는지(바뀐 내용 요약)와 시험 결과'),
       recommendation: z.string().describe('권장안 한 줄'),
       commands: z
@@ -710,7 +711,7 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
             taskId: task.id,
             who: guard.leaderLabel,
             kind: 'deploy',
-            title: `릴리즈 목록 ${grants.length}개: ${args.title}`,
+            title: `마무리 명령 ${grants.length}개 한 번에: ${args.title}`,
             what: lines.join('\n'),
             why: args.why,
             recommendation: args.recommendation,

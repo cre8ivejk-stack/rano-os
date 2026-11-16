@@ -496,7 +496,7 @@ interface RoleInfo {
   model: RoleModel;
 }
 
-type RoleModel = 'default' | 'opus' | 'sonnet';
+type RoleModel = 'default' | 'opus' | 'sonnet' | 'fable';
 
 interface RoleDraft {
   zone?: Zone;

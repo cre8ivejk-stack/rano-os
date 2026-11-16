@@ -39,6 +39,7 @@ export class MissionTracker implements MissionTrackerApi {
   private readonly eventsFile: string;
   private readonly leaderName: string;
   private queued: QueuedTaskView[] = []; // 기다리는 과제 (디스패처가 알려 줌, 저장은 대기열 파일이 맡음)
+  private lastEventBody = ""; // 기록 파일에 마지막으로 적은 상태
   private readonly rejectedIn = new Set<string>(); // 승인함 반려가 있었던 과제 id
 
   constructor(
@@ -250,8 +251,12 @@ export class MissionTracker implements MissionTrackerApi {
       console.error('[mission tracker] 화면 알림 실패:', e);
     }
     try {
-      mkdirSync(path.dirname(this.eventsFile), { recursive: true });
-      appendFileSync(this.eventsFile, JSON.stringify({ at: new Date().toISOString(), kind: 'mission', status }) + '\n', 'utf-8');
+      const body = JSON.stringify(status);
+      if (body !== this.lastEventBody) {
+        mkdirSync(path.dirname(this.eventsFile), { recursive: true });
+        appendFileSync(this.eventsFile, JSON.stringify({ at: new Date().toISOString(), kind: 'mission', status }) + '\n', 'utf-8');
+        this.lastEventBody = body;
+      }
     } catch (e) {
       console.error('[mission tracker] 이벤트 기록 실패:', e);
     }

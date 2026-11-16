@@ -2,7 +2,7 @@
 // 실제 모델·네트워크·Electron 은 쓰지 않는다. 대화 기록·events.jsonl 은 시험용 임시 폴더에만 쓴다.
 // 실행: 빌드 후 `node --test dist/main/engine/ranoSession.test.js`
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -618,7 +618,8 @@ test('이어가기 실패로 새 대화 재시도: 지침을 새로 만들고(�
   assert.equal(t.calls[1].options.resume, 'sess-1');
   assert.ok(said(t.calls[1]).startsWith(HEAD), '첫 시도(이어 쓰기)에는 바뀐 것 안내');
   assert.equal(t.calls[2].options.resume, undefined);
-  assert.equal(said(t.calls[2]), 'b', '새 대화 재시도에는 안내 없음');
+  // 0.9.12: 새 대화로 다시 시도할 때는 직전까지 주고받은 말을 앞에 붙인다(바뀐 것 안내는 없음)
+  assert.ok(said(t.calls[2]).startsWith('[앱 안내] 이어 가는 대화') && said(t.calls[2]).endsWith('b') && !said(t.calls[2]).includes(HEAD), '새 대화 재시도에는 바뀐 것 안내 없음');
   assert.ok(sysOf(t.calls[2]).includes('호칭: 제이'), '지침을 최신 기억으로 새로 만듦');
   assert.notEqual(sysOf(t.calls[2]), sysOf(t.calls[0]));
   await say(t, 'c');
@@ -717,4 +718,20 @@ test('지침 판 정리에서 오류가 나도 답은 저장·표시된다', asy
   assert.deepEqual(messages.map((m) => [m.role, m.text]), [['user', 'a'], ['rano', '답이에요']]);
   assert.equal(ranoMsgs(t.events).length, 1);
   assert.ok(!t.events.some((e) => e.kind === 'error'), '오류 표시 없음');
+});
+
+test('0.9.12 대화 줄이기: 지난 차례의 대화가 크면 새 대화로 시작하고 최근 말만 넘긴다', async () => {
+  const w = world();
+  const t = setup([simpleAnswer('1'), simpleAnswer('2'), simpleAnswer('3')], {}, { memory: w.mem, todoText: w.todoText });
+  await say(t, '첫 말');
+  await say(t, '둘째 말');
+  assert.equal(t.calls[1].options.resume, 'sess-1', '작으면 그대로 이어 쓴다');
+  // 지난 차례가 아주 컸다고 적어 둔다
+  mkdirSync(path.join(t.config.runsDir, 'rano'), { recursive: true });
+  writeFileSync(path.join(t.config.runsDir, 'rano', 'context.json'), JSON.stringify({ sessionId: 'sess-1', tokens: 400000, at: Date.now() }));
+  await say(t, '셋째 말');
+  assert.equal(t.calls[2].options.resume, undefined, '새 대화로 시작');
+  const p = said(t.calls[2]);
+  assert.ok(p.startsWith('[앱 안내] 이어 가는 대화') && p.includes('첫 말') && p.includes('둘째 말') && p.endsWith('셋째 말'));
+  assert.equal(p.split('셋째 말').length, 2, '이번에 답할 말은 넘기는 글에 다시 넣지 않는다');
 });

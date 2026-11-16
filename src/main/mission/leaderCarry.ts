@@ -111,6 +111,7 @@ export interface CarryInput {
   approvals: Pick<ApprovalRequest, 'missionId' | 'taskId' | 'status' | 'decisionNote' | 'title'>[];
   draftsDir: (taskId: string) => string | undefined;
   handoffFile: string; // 인수 메모 파일 이름
+  exists?: (p: string) => boolean; // 주면 실제로 있는 폴더·메모만 적는다(빠른 모드는 인수 메모를 안 만든다)
   max?: number;
 }
 
@@ -125,7 +126,11 @@ function orderOf(t: TaskLike, messages: ChatMessage[]): string {
 
 function pathsLine(t: TaskLike, input: CarryInput): string {
   const d = input.draftsDir(t.taskId);
-  return d ? `  - 시안 폴더: ${d}\n  - 인수 메모: ${path.join(d, input.handoffFile)}` : '';
+  if (!d) return '';
+  const has = input.exists ?? (() => true);
+  if (!has(d)) return '';
+  const memo = path.join(d, input.handoffFile);
+  return `  - 시안 폴더: ${d}${has(memo) ? `\n  - 인수 메모: ${memo}` : '\n  - 인수 메모: 없음(이 과제는 메모를 남기지 않았어요. 읽으려 하지 마세요)'}`;
 }
 
 const KOR_STATUS: Record<string, string> = { revise: '수정 요청', rejected: '반려' };

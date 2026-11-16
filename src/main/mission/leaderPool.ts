@@ -53,6 +53,13 @@ export class MissionLeaderPool implements MissionLeaderApi {
     return this.slots.filter((l) => l.busy()).length;
   }
 
+  /** 진행 중 과제에 사용자의 말을 덧붙여 전한다. taskId 가 없으면 일하는 리더 모두. 전한 과제 수 */
+  note(text: string, taskId?: string): number {
+    let n = 0;
+    for (const l of this.slots) n += l.note?.(text, taskId) ?? 0;
+    return n;
+  }
+
   /** 진행 중 과제를 멈춘다. taskId 가 없으면 일하는 리더 모두 */
   stop(taskId?: string): boolean {
     let any = false;

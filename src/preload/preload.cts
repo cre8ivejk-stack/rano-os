@@ -117,7 +117,7 @@ function cleanRoleDraft(d: RoleDraft): RoleDraft {
     canWrite: d?.canWrite === true,
     canRun: d?.canRun === true,
     body: String(d?.body ?? ''),
-    model: d?.model === 'opus' || d?.model === 'sonnet' ? d.model : 'default',
+    model: d?.model === 'opus' || d?.model === 'sonnet' || d?.model === 'fable' ? d.model : 'default',
   };
 }
 

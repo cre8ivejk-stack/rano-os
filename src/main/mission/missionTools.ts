@@ -121,5 +121,26 @@ export function createMissionMcpServer(dispatcher: MissionDispatcherApi, config:
     { annotations: { readOnlyHint: true } },
   );
 
-  return createSdkMcpServer({ name: MISSION_MCP_NAME, version: '0.1.0', tools: [assign, status, terminal] });
+  const tell = tool(
+    'tell_running_task',
+    [
+      '지금 진행 중인 과제의 리더에게 사용자의 말을 덧붙여 전합니다(새 과제를 만들지 않음). 리더는 지금 하는 단계를 마치는 대로 읽고 반영합니다.',
+      '사용자가 진행 중인 과제의 방향을 바꾸거나 조건·정보를 덧붙일 때 씁니다(예: "dev 말고 운영 기준으로 봐", "그 파일은 건드리지 마"). 사용자가 한 말을 그대로, 필요한 만큼만 풀어서 적습니다.',
+      '진행 중인 과제가 없으면 실패를 돌려주니 그때는 assign_to_mission 으로 새로 맡기세요. 완전히 다른 새 일은 이 도구가 아니라 assign_to_mission 입니다.',
+      '등록된 미션 id:',
+      list,
+    ].join('\n'),
+    {
+      missionId: z.string().describe('미션 id'),
+      text: z.string().describe('리더에게 전할 말: 사용자가 덧붙인 내용 그대로(쉬운 한국어)'),
+      taskId: z.string().optional().describe('같은 미션에 진행 중인 과제가 둘 이상일 때 전할 과제 id. 비우면 진행 중인 과제 모두'),
+    },
+    async ({ missionId, text: body, taskId }) => {
+      if (!dispatcher.note) return text('이 앱에서는 진행 중인 과제에 말을 전할 수 없어요.', true);
+      const r = dispatcher.note(missionId, body, taskId);
+      return text(r.message, !r.ok);
+    },
+  );
+
+  return createSdkMcpServer({ name: MISSION_MCP_NAME, version: '0.1.0', tools: [assign, status, terminal, tell] });
 }

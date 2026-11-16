@@ -164,6 +164,17 @@ export class MissionDispatcher implements MissionDispatcherApi {
         : `${mission.name} 리더에게 배정했어요. 진행 상황은 현황판에서 볼 수 있어요. 끝나면 보고가 도착해요.`;
   }
 
+  /** 진행 중 과제에 사용자의 말을 덧붙여 전한다(라노의 tell_running_task) */
+  note(missionId: string, text: string, taskId?: string): { ok: boolean; message: string } {
+    const found = this.find(missionId);
+    if (typeof found === 'string') return { ok: false, message: found };
+    if (!text.trim()) return { ok: false, message: '전할 말이 비어 있어요' };
+    const n = found.leader.note?.(text, taskId) ?? 0;
+    return n > 0
+      ? { ok: true, message: `${found.mission.name}에서 진행 중인 과제${n > 1 ? ` ${n}건` : ''}에 전했어요. 리더가 지금 하는 단계를 마치는 대로 읽고 반영해요(승인을 기다리는 중이면 그 카드를 처리한 뒤).` }
+      : { ok: false, message: `${found.mission.name}에 지금 진행 중인 과제가 없어요. 새 과제로 맡기려면 assign_to_mission 을 쓰세요.` };
+  }
+
   /** 사용자가 진행 중 과제를 멈춘다 */
   stop(missionId: string, taskId?: string): { ok: boolean; message?: string } {
     const found = this.find(missionId);

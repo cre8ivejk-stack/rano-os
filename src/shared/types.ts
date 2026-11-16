@@ -616,6 +616,7 @@ export interface MissionLeaderApi {
   run(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; planFirst?: boolean; preSync?: boolean; attachments?: ChatAttachment[] }): Promise<{ ok: boolean; report: string; taskId?: string }>; // preSync: 사용자가 직접 받아오기를 시킴(받아오기는 승인 없이) // planFirst: 기획(안 선택) 먼저, 고른 뒤 구현 // onStart: 앞 과제가 끝나고 이 과제를 실제로 시작할 때
   busy(): boolean;
   working?(): number; // 같은 미션 동시 작업: 지금 일하는 리더 수
+  note?(text: string, taskId?: string): number; // 진행 중 과제에 사용자의 말을 덧붙여 전함(리더가 다음 단계에서 읽음). 전한 과제 수 (0.9.12)
   stop?(taskId?: string): boolean; // 사용자가 진행 중 과제를 멈춤. taskId 가 없으면 진행 중인 과제 모두. 멈춘 것이 있으면 true
   close?(): void; // 3단계: 앱을 끌 때 진행 중인 일과 승인 대기를 정리
 }
@@ -630,6 +631,7 @@ export interface MissionLeaderApi {
 export interface MissionDispatcherApi {
   assign(missionId: string, text: string, todoId?: string, planFirst?: boolean, preSync?: boolean): Promise<string>; // 라노가 배정. 접수 문구 반환. todoId 를 주면 그 할 일과 연결
   userSend(missionId: string, text: string): Promise<void>; // 사용자가 미션 카드에서 직접 지시
+  note?(missionId: string, text: string, taskId?: string): { ok: boolean; message: string }; // 진행 중 과제에 사용자의 말을 덧붙여 전함 (0.9.12)
   statuses(): MissionStatus[];
   resumePending?(): void; // 앱을 켤 때 한 번: 지난번에 기다리던 과제를 이어서 맡기고, 하다 멈춘 과제를 정리한다
 }
@@ -809,8 +811,11 @@ export interface RoleInfo {
   model: RoleModel; // 이 역할이 쓰는 모델. 'default' = 라노 설정(models.member). 회사 역할 폴더의 역할은 늘 'default'
 }
 
-/** 역할 모델: 기본(라노 설정) · Opus · Sonnet */
-export type RoleModel = 'default' | 'opus' | 'sonnet';
+/** 역할 모델: 기본(라노 설정) · Opus · Sonnet · Fable */
+export type RoleModel = 'default' | 'opus' | 'sonnet' | 'fable';
+/** 팀원에게 넣을 수 있는 모델(팀 구성안에서 사용자가 고름). Fable 은 사용자만 고르고 리더는 추천하지 않는다 */
+export type MemberModel = 'opus' | 'sonnet' | 'fable';
+export const MEMBER_MODEL_LABEL: Record<MemberModel, string> = { opus: 'Opus', sonnet: 'Sonnet', fable: 'Fable' };
 
 /** 역할 만들기·고치기 입력 (pool 에만 저장) */
 export interface RoleDraft {

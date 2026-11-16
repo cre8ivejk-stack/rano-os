@@ -1,6 +1,6 @@
 // 믿는 미션의 운영 DB 읽기 조회 (2026-11-12 사용자 결정)
 // 미션에 지정한 외부 연결 도구(예: 원격 앱에서 명령 한 번 실행)로, 지정한 앱에서, 정해진 꼴의 psql 읽기 조회만 승인 없이 바로 한다.
-// 정해진 꼴: PGOPTIONS='-c default_transaction_read_only=on' psql [허용 옵션] -c "SELECT …" [-c "…"] [2>&1] [| head -N]
+// 정해진 꼴: [PGPASSWORD="$POSTGRES_PASSWORD"] PGOPTIONS='-c default_transaction_read_only=on' psql [허용 옵션] -c "SELECT …" [-c "…"] [2>&1] [| head -N]
 //   또는 psql [허용 옵션] -c "SET default_transaction_read_only=on;" -c "SELECT …" …
 // 읽기 전용 거래(트랜잭션)로 묶이고, 문장은 SELECT·WITH·EXPLAIN·SHOW·TABLE·VALUES 로 시작해야 하며, 쓰기 단어·위험 함수·셸 확장이 있으면 승인함으로 간다.
 import type { MissionConfig } from '../../shared/types.js';
@@ -106,6 +106,8 @@ const ENV_VAR = /^\$\{?(POSTGRES|PG)[A-Z_]*(:-[A-Za-z0-9_]+)?\}?$/;
 const SECRET_VAR = /PASS|SECRET|TOKEN|KEY/;
 const RO_SET = /^\s*set\s+(session\s+)?default_transaction_read_only\s*(=|to)\s*(on|true)\s*;?\s*$/i;
 const READ_ONLY_PGOPTIONS = /^PGOPTIONS=-c default_transaction_read_only=on$/;
+/** 맨 앞에 붙일 수 있는 비밀번호 넘기기: 서버 안의 변수 이름만(값을 적으면 안 됨). 값은 psql 에만 넘어가고 화면에 나오지 않는다 (0.9.12) */
+const PASSWORD_PREFIX = /^PGPASSWORD="\$\{?POSTGRES_PASSWORD\}?"[ \t]+/;
 
 /**
  * 정해진 꼴의 psql 읽기 조회인지.
@@ -113,6 +115,7 @@ const READ_ONLY_PGOPTIONS = /^PGOPTIONS=-c default_transaction_read_only=on$/;
  */
 export function isReadOnlyPsql(command: string): boolean {
   if (typeof command !== 'string' || command.length > 30000) return false;
+  command = command.replace(PASSWORD_PREFIX, '');
   // -U "$POSTGRES_USER" 같은 변수 자리는 따로 확인하고 자리표로 바꾼다
   const vars: string[] = [];
   const masked = command.replace(/(-[Ud])\s+"(\$\{?[A-Z_]+(?::-[A-Za-z0-9_]+)?\}?)"/g, (_m, opt: string, v: string) => {
@@ -213,5 +216,5 @@ export function trustedDbRead(mission: MissionConfig, toolName: string, input: R
 export function dbReadGuide(mission: MissionConfig): string {
   const r = mission.dbRead;
   if (!mission.trustRepo || !r) return '';
-  return `운영 DB 읽기 조회는 ${r.tool} 도구로, 앱 ${r.apps.join('·')} 에서 아래 꼴로 하면 묻지 않고 바로 된다: PGOPTIONS='-c default_transaction_read_only=on' psql -X -At -F '|' -U "$POSTGRES_USER" -d "\${POSTGRES_DB:-postgres}" -c "SELECT …" (문장마다 -c 하나, 끝에 2>&1 · | head -N 가능). 주석·psql 명령(\\…)·$ 확장·쓰기 낱말(insert·update·set 등)이 섞이면 승인함으로 간다. 다른 꼴(node 스크립트 등)이나 바꾸는 쿼리는 승인함으로 간다.`;
+  return `운영 DB 읽기 조회는 ${r.tool} 도구로, 앱 ${r.apps.join('·')} 에서 아래 꼴로 하면 묻지 않고 바로 된다: PGPASSWORD="$POSTGRES_PASSWORD" PGOPTIONS='-c default_transaction_read_only=on' psql -X -At -F '|' -U "$POSTGRES_USER" -d "\${POSTGRES_DB:-postgres}" -c "SELECT …" (문장마다 -c 하나, 끝에 2>&1 · | head -N 가능. 맨 앞 PGPASSWORD 는 이 글자 그대로만 되고 빼도 된다. 비밀번호를 묻는 오류가 나면 붙인다). 주석·psql 명령(\\…)·$ 확장·쓰기 낱말(insert·update·set 등)이 섞이면 승인함으로 간다. 다른 꼴(node 스크립트 등)이나 바꾸는 쿼리는 승인함으로 간다.`;
 }

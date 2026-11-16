@@ -121,7 +121,7 @@ export async function savePoolRole(
   if (existing && !originalName) return { ok: false, message: '이미 있는 역할 이름이에요. 다른 이름을 골라 주세요' };
 
   const tools = ['Read', 'Grep', 'Glob', ...(draft.canWrite ? ['Edit', 'Write'] : []), ...(draft.canRun ? ['Bash'] : [])];
-  const model = draft.model === 'sonnet' || draft.model === 'opus' ? draft.model : null;
+  const model = draft.model === 'sonnet' || draft.model === 'opus' || draft.model === 'fable' ? draft.model : null;
   const text = `---\nname: ${name}\ndescription: ${description}\ntools: ${tools.join(', ')}\n${model ? `model: ${model}\n` : ''}---\n\n${body}\n`;
   const zone: Zone = draft.zone === 'personal' ? 'personal' : 'work';
   if (existing && existing.info.zone !== zone)

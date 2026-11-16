@@ -22,6 +22,11 @@ test('DB 읽기: 정해진 꼴의 SELECT 는 바로', () => {
     assert.equal(isReadOnlyPsql(cmd), true, cmd);
   }
   assert.equal(isReadOnlyPsql(`${RO} -At -c "select 1" -c "select 2" 2>&1 | head -20`), true);
+  // 비밀번호는 서버 안 변수 이름으로만 넘길 수 있다 (0.9.12)
+  assert.equal(isReadOnlyPsql(`PGPASSWORD="$POSTGRES_PASSWORD" ${RO} -At -c "select 1"`), true);
+  assert.equal(isReadOnlyPsql(`PGPASSWORD="\${POSTGRES_PASSWORD}" ${RO} -At -c "select 1" 2>&1 | head -5`), true);
+  for (const bad of [`PGPASSWORD=abc ${RO} -c "select 1"`, `PGPASSWORD="$OTHER" ${RO} -c "select 1"`, `PGPASSWORD="$POSTGRES_PASSWORD" psql -c "select 1"`, `PGPASSWORD="$POSTGRES_PASSWORD" echo "$POSTGRES_PASSWORD"`, `PGPASSWORD="$POSTGRES_PASSWORD" ${RO} -c "select 1"; env`])
+    assert.equal(isReadOnlyPsql(bad), false, bad);
   assert.equal(isReadOnlyPsql(`${RO} -At -h 127.0.0.1 -v ON_ERROR_STOP=1 -c "select 1" | head -n 5`), true);
 });
 

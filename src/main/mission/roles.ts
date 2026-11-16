@@ -16,15 +16,16 @@ export interface RoleFile {
   name: string;
   description: string;
   tools: string[] | null; // 적혀 있지 않으면 null
-  model: RoleModel; // frontmatter 의 model: opus · sonnet (전체 모델 ID 도 알아봄). 그 밖·없으면 'default'
+  model: RoleModel; // frontmatter 의 model: opus · sonnet · fable (전체 모델 ID 도 알아봄). 그 밖·없으면 'default'
   body: string;
 }
 
-/** frontmatter 의 model 값 → 'opus' · 'sonnet' · 'default' */
+/** frontmatter 의 model 값 → 'opus' · 'sonnet' · 'fable' · 'default' */
 export function normalizeRoleModel(raw: string | undefined): RoleModel {
   const v = String(raw ?? '').trim().toLowerCase();
   if (v === 'sonnet' || v.startsWith('claude-sonnet')) return 'sonnet';
   if (v === 'opus' || v.startsWith('claude-opus')) return 'opus';
+  if (v === 'fable' || v.startsWith('claude-fable')) return 'fable';
   return 'default';
 }
 
@@ -38,6 +39,7 @@ export function isOwnRoleFile(config: RanoConfig, roleFile: string): boolean {
 export function modelFor(config: RanoConfig, model: RoleModel): string {
   if (model === 'opus') return /opus/i.test(config.models.member) ? config.models.member : 'opus';
   if (model === 'sonnet') return /sonnet/i.test(config.models.member) ? config.models.member : 'sonnet';
+  if (model === 'fable') return /fable/i.test(config.models.member) ? config.models.member : 'fable';
   return config.models.member;
 }
 

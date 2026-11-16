@@ -58,7 +58,7 @@ const MISSION = {
 };
 
 test('역할 저장: 기본 모델 opus·sonnet 이 그대로 넘어간다', async () => {
-  for (const model of ['opus', 'sonnet'] as const) {
+  for (const model of ['opus', 'sonnet', 'fable'] as const) {
     const { api, calls } = loadPreload();
     await api.orgSaveRole({ ...ROLE, model });
     assert.equal(calls.length, 1);

@@ -431,7 +431,7 @@ export class ApprovalsView {
     const choices: Record<string, string> = {};
     if (a.decisionItems?.length) {
       if (a.planGate) card.appendChild(el('p', 'appr-plan', '기획 단계 결정이에요. 고르신 안대로 구현을 시작해요. 고르기 전에는 작업 폴더를 고치지 않아요.'));
-      if (modelPick) card.appendChild(el('p', 'appr-plan', '팀원마다 쓸 모델이에요. 리더가 일의 성격을 보고 추천한 것이 골라져 있어요. Opus 는 꼼꼼하지만 느리고 사용량이 많고, Sonnet 은 빠르고 가벼워요. 바꿔서 승인할 수 있어요.'));
+      if (modelPick) card.appendChild(el('p', 'appr-plan', '팀원마다 쓸 모델이에요. 리더가 일의 성격을 보고 추천한 것이 골라져 있어요. Opus 는 꼼꼼하지만 느리고 사용량이 많고, Sonnet 은 빠르고 가벼워요. Fable 은 가장 깊게 보지만 가장 느리고 사용량이 가장 많아서, 꼭 필요한 역할에만 골라 주세요. 바꿔서 승인할 수 있어요.'));
       const box = el('div', 'dec-items');
       for (const it of a.decisionItems) {
         choices[it.id] = it.recommended;

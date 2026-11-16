@@ -12,6 +12,8 @@ test('model 줄 읽기', () => {
   assert.equal(parseRoleFile('---\nname: a\n---\nbody', 'a').model, 'default');
   assert.equal(normalizeRoleModel('claude-sonnet-5-5'), 'sonnet');
   assert.equal(normalizeRoleModel('haiku'), 'default');
+  assert.equal(normalizeRoleModel('Fable'), 'fable');
+  assert.equal(normalizeRoleModel('claude-fable-5-2'), 'fable');
 });
 
 test('라노 데이터 폴더의 역할만 model 을 따른다', () => {
@@ -25,4 +27,5 @@ test('모델 이름 바꾸기', () => {
   assert.equal(modelFor(config, 'default'), 'claude-opus-5-5');
   assert.equal(modelFor(config, 'opus'), 'claude-opus-5-5');
   assert.equal(modelFor(config, 'sonnet'), 'sonnet');
+  assert.equal(modelFor(config, 'fable'), 'fable');
 });

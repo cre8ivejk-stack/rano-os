@@ -23,6 +23,7 @@ import {
   type ApprovalKind,
   type ApprovalQueueApi,
   type FileChange,
+  type MemberModel,
   type MissionConfig,
   type MissionTrackerApi,
   type PermissionLogEntry,
@@ -526,7 +527,7 @@ function readToolPaths(toolName: string, input: Record<string, unknown>, cwd: st
   return paths;
 }
 
-function agentCallInput(input: Record<string, unknown>, role: string, model?: 'opus' | 'sonnet'): Record<string, unknown> {
+function agentCallInput(input: Record<string, unknown>, role: string, model?: MemberModel): Record<string, unknown> {
   // 위험한 선택지(권한 모드·격리·모델 바꾸기·백그라운드)는 지우고 필요한 값만 남긴다.
   // 모델은 리더가 고를 수 없고, 팀 구성안에서 사용자가 승인한 모델만 앱이 넣는다(없으면 역할 파일·라노 설정).
   // 백그라운드를 끄면 팀원이 끝날 때 도구 결과가 돌아와서 진행 상황을 짝지어 추적할 수 있다.
@@ -547,7 +548,7 @@ export function decideLeaderTool(
   input: Record<string, unknown>,
   cwd: string = mission.targets[0] ?? mission.home,
   isSubagent = false,
-  memberModels?: Record<string, 'opus' | 'sonnet'>,
+  memberModels?: Record<string, MemberModel>,
   extraReadRoots: string[] = [], // 읽기만 과제의 앱 기록 파일(appLogRoots)
 ): LeaderDecision & { blocked?: string } {
   if (READ_TOOLS.has(toolName)) {
@@ -779,7 +780,7 @@ export function killTitleTarget(kill: Pick<BashRisk, 'program' | 'targets'>[]): 
  * (프로그램 이름, 파일은 이름만, 주소는 호스트만). 여러 종류가 섞이면 가장 위험한 것 하나 + "(그 밖에 N가지)".
  * 승인 종류(kind)와 판단은 바꾸지 않는다.
  */
-export function bashTitle(mission: MissionConfig, kind: BashKind, b: Pick<BashDecision, 'risks' | 'programs' | 'writePaths' | 'syncOnly'>): string {
+export function bashTitle(mission: MissionConfig, kind: BashKind, b: Pick<BashDecision, 'risks' | 'programs' | 'writePaths' | 'syncOnly'> & { reasons?: string[] }): string {
   const risks = b.risks ?? [];
   const of = (k: string) => risks.filter((r) => r.kind === k);
   const prog = (b.programs ?? [])[0];
@@ -805,7 +806,11 @@ export function bashTitle(mission: MissionConfig, kind: BashKind, b: Pick<BashDe
   }
   const tmp = of('tmp');
   if (tmp.length) cats.push([`공용 임시 폴더에 쓰기: ${fileNames(tmp.flatMap((r) => r.targets))}`, false]);
-  if (kind === 'commit') cats.push([b.syncOnly ? `${mission.name} 원격 최신 받아오기(보관·되살리기 포함, 커밋 아님)` : BASH_TITLES.commit(mission), true]);
+  // 기록을 바꾸는 git 명령이 push 뿐이면 "커밋"이 아니라 "서버에 올리기"로 적는다 (0.9.12)
+  const gitActs = (b.reasons ?? []).filter((r) => /^git [a-z-]+$/.test(r) && !/^git (add|status|diff|log|show)$/.test(r));
+  const pushOnly = gitActs.length > 0 && gitActs.every((r) => r === 'git push');
+  if (kind === 'commit')
+    cats.push([b.syncOnly ? `${mission.name} 원격 최신 받아오기(보관·되살리기 포함, 커밋 아님)` : pushOnly ? `${mission.name} 커밋을 서버에 올리기(push)` : BASH_TITLES.commit(mission), true]);
   if (kind === 'deploy') cats.push([`${BASH_TITLES.deploy(mission)}${prog ? `: ${prog}` : ''}`, true]);
   if (kind === 'db') cats.push([`${BASH_TITLES.db(mission)}${prog ? `: ${prog}` : ''}`, true]);
   const files = fileNames(b.writePaths ?? []);
@@ -930,8 +935,8 @@ function trustedRisk(r: { kind: string; program: string; targets: string[] }, co
   return false;
 }
 
-/** 믿는 미션에서 넘어갈 수 있는 판단 근거: 원격 최신 이력 받기(git fetch. 작업 파일은 안 바뀜), 개발 서버 끄기·이 맥 안 주소 확인 */
-const TRUST_OK_REASON = /^(git fetch \(받아오기\)|pkill \(판단이 필요한 명령\)|curl \(판단이 필요한 명령\))$/;
+/** 믿는 미션에서 넘어갈 수 있는 판단 근거: 커밋에 넣을 파일 고르기(git add 파일 이름. 커밋은 그대로 승인. -A·. 은 앞에서 막힘), 원격 최신 이력 받기(git fetch. 작업 파일은 안 바뀜), 개발 서버 끄기·이 맥 안 주소 확인 */
+const TRUST_OK_REASON = /^(git add \(파일 이름\)|git fetch \(받아오기\)|pkill \(판단이 필요한 명령\)|curl \(판단이 필요한 명령\))$/;
 
 // ---- 믿는 미션의 "아는 명령"만 바로 (H1-A, 2026-11-15 사용자 결정) ----
 // 믿는 미션이라도 ① 앱이 모르는 프로그램 ② 명령 글에 코드를 넣어 돌리기(node -e, python -c, sh -c, osascript, 파이프로 셸에 넘기기)
@@ -1434,7 +1439,7 @@ export function decideApprovalStage(
   toolName: string,
   input: Record<string, unknown>,
   cwd: string,
-  actor: { isSubagent: boolean; teamApproved: boolean; draftsDir?: string; planBlocked?: boolean; memberModels?: Record<string, 'opus' | 'sonnet'>; trustRepo?: boolean; netHosts?: ReadonlySet<string>; appLogs?: boolean },
+  actor: { isSubagent: boolean; teamApproved: boolean; draftsDir?: string; planBlocked?: boolean; memberModels?: Record<string, MemberModel>; trustRepo?: boolean; netHosts?: ReadonlySet<string>; appLogs?: boolean },
   mcpServer?: { name: string; source: string },
 ): StageDecision {
   // 믿는 미션 규칙은 미션이 믿는 미션이고, 기획 결정 전·읽기만 하는 과제가 아닐 때만(부르는 쪽이 actor.trustRepo 로 알려 줌)
@@ -1480,6 +1485,8 @@ export function decideApprovalStage(
     if (toolName !== 'NotebookEdit' && candidates.every((c) => c === path.join(mission.home, 'memory', CODE_MAP_FILE)))
       return { type: 'allow', reason: `코드 지도 갱신: ${abs}` };
     if (insideSome(mission.readonlyRefs)) return { type: 'deny', reason: `참고 폴더 쓰기: ${abs}`, message: MSG_REFS };
+    // 이 미션 임시 폴더(~/rano/runs/tmp/<미션>): 조회 스크립트·결과를 잠깐 두는 곳이라 파일 쓰기 도구도 묻지 않는다 (0.9.3 결정, 0.9.12 에 Write·Edit 까지)
+    if (toolName !== 'NotebookEdit' && insideAll([missionTmpDir(config, mission.id)])) return { type: 'allow', reason: `미션 임시 폴더 안 쓰기(${toolName}): ${abs}` };
     if (actor.planBlocked) return { type: 'deny', reason: `기획 결정 전 쓰기: ${abs}`, message: MSG_PLAN };
     if (mission.directWriteDirs.length && insideAll(mission.directWriteDirs)) {
       return { type: 'allow', reason: `바로 쓰기 폴더 안: ${abs}` };
@@ -1715,7 +1722,7 @@ export class LeaderGuard {
   private readonly planDecidedTasks = new Set<string>();
   private readonly readOnlyTasks = new Set<string>(); // 읽고 정리만 하기로 한 과제(팀 구성안 자동 승인)
   private readonly reviewSkippedTasks = new Set<string>(); // 팀 구성안에서 검수 생략으로 정한 과제
-  private readonly taskModels = new Map<string, Record<string, 'opus' | 'sonnet'>>(); // 과제 → 역할별로 승인된 모델
+  private readonly taskModels = new Map<string, Record<string, MemberModel>>(); // 과제 → 역할별로 승인된 모델
   private readonly commandGrants = new Map<string, CommandGrant[]>(); // 과제 → 실행 목록 승인
   private readonly soloTasks = new Set<string>(); // 빠른 모드(리더 혼자) 과제
   private readonly netGrants = new Map<string, Set<string>>(); // 과제 → 사용자가 승인한 사이트(호스트). 믿는 미션에서 같은 사이트 읽기는 다시 묻지 않는다
@@ -1817,11 +1824,11 @@ export class LeaderGuard {
   }
 
   /** 팀 구성안에서 승인된 역할별 모델(이 과제 동안 팀원을 부를 때 앱이 넣는다) */
-  setMemberModels(taskId: string, models: Record<string, 'opus' | 'sonnet'>) {
+  setMemberModels(taskId: string, models: Record<string, MemberModel>) {
     this.taskModels.set(taskId, { ...models });
   }
 
-  memberModels(taskId?: string): Record<string, 'opus' | 'sonnet'> | undefined {
+  memberModels(taskId?: string): Record<string, MemberModel> | undefined {
     const id = taskId ?? this.task?.id;
     return id ? this.taskModels.get(id) : undefined;
   }
@@ -1916,6 +1923,19 @@ export class LeaderGuard {
       hits.add(g);
     }
     return [...hits];
+  }
+
+  /** 진행 중에 사용자가 덧붙인 말(라노가 전함). 리더가 다음 도구를 쓴 직후에 읽는다 (0.9.12) */
+  private userNotes: string[] = [];
+  addUserNote(text: string) {
+    const t = text.trim();
+    if (t) this.userNotes.push(t.length > 2000 ? `${t.slice(0, 2000)}…` : t);
+  }
+  /** 쌓인 말을 꺼내고 비운다. 없으면 빈 글 */
+  takeUserNotes(): string {
+    if (!this.userNotes.length) return '';
+    const notes = this.userNotes.splice(0);
+    return `[앱 안내] 사용자가 이 과제를 하는 도중에 덧붙인 말이에요. 지금부터 이 말을 반영해서 진행하세요(앞의 지시와 다르면 이 말이 우선). 이미 한 일과 어긋나면 고치고, 보고에 반영했다고 한 줄 적으세요:\n${notes.map((n) => `- ${n}`).join('\n')}`;
   }
 
   /** 에이전트가 한 말을 적어 둔다(승인함의 "왜"로 쓰임). key: 'leader' 또는 agentID */
@@ -2105,6 +2125,7 @@ export class LeaderGuard {
     }
     this.activity(whoInfo.label, `승인을 기다리는 중: ${ask.title}`);
     const said = this.whyAndRec(agentID, whoInfo.role);
+    said.why = pickWhy(said.why, toolName === 'Bash' ? input.description : undefined, this.task?.title);
     let d;
     try {
       d = await approvals.request(
@@ -2218,6 +2239,19 @@ export class LeaderGuard {
       ],
       PostToolUse: [
         {
+          // 진행 중에 사용자가 덧붙인 말: 리더(팀원 말고)가 도구를 하나 쓴 직후에 전한다
+          hooks: [
+            async (raw) => {
+              const input = raw as PostToolUseHookInput;
+              if (input.hook_event_name !== 'PostToolUse' || input.agent_id) return {};
+              const notes = this.takeUserNotes();
+              if (!notes) return {};
+              this.activity('앱', '사용자가 덧붙인 말을 리더가 받았어요');
+              return { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: notes } };
+            },
+          ],
+        },
+        {
           matcher: 'Grep|Glob',
           hooks: [
             async (raw) => {
@@ -2239,6 +2273,20 @@ export class LeaderGuard {
       ],
     };
   }
+}
+
+/**
+ * 승인 카드의 "왜" 고르기 (0.9.12).
+ * 명령에 붙인 한국어 설명(Bash description)이 있으면 그것을 쓴다(그 명령 하나를 가리키는 말이라 앞 단계 이야기가 섞이지 않는다).
+ * 없으면 직전에 한 말을 쓰되, 한글이 거의 없는 말(영어 혼잣말)이면 "맡은 일: 제목"으로 바꾼다.
+ */
+export function pickWhy(said: string, description: unknown, taskTitle?: string): string {
+  const ko = (s: string) => (s.match(/[가-힣]/g) ?? []).length;
+  const desc = typeof description === 'string' ? description.replace(/\s+/g, ' ').trim() : '';
+  if (desc && ko(desc) >= 2) return clip(desc, 200);
+  const s = said.trim();
+  if (s && ko(s) >= Math.min(6, s.replace(/\s/g, '').length * 0.2)) return s;
+  return taskTitle ? `맡은 일: ${taskTitle}` : s;
 }
 
 function clip(text: string, max: number): string {

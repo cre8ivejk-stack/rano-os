@@ -26,6 +26,7 @@ import { buildRanoSystemPrompt, ranoMissionList, ranoPromptFrame } from './ranoP
 import { zoneText } from '../admin/paths.js';
 import { imageBlocks } from './attachments.js';
 import { recordLimit, recordResult } from './usage.js';
+import { carryText, RanoContextFile, shouldRotate } from './ranoCarry.js';
 import { findUnanswered, LANE_LIMITS, markPassed, noticePrompt, planNextTurn, toolLabel, userTurnPrompt, type LaneLimits, type LaneNotice, type LaneUser, type TurnPlan } from './ranoLanes.js';
 import { contentKey, nextState, planPrompt, PromptStateFile, withNotice, type PromptPlan, type RanoPromptState } from './ranoPromptState.js';
 
@@ -86,6 +87,7 @@ interface AttemptResult {
   engineMs?: number; // 엔진이 알려 준 이번 일 시간
   plan?: PromptPlan; // 이번 시도에 넘긴 지침·안내와, 정상으로 끝나면 비교 기준이 될 판
   compacted?: boolean; // 이번 시도 중 엔진이 대화를 요약함(compact_boundary)
+  ctxTokens?: number; // 이번 시도의 마지막 호출이 읽은 입력 크기(지침 + 지난 대화)
   todoIds?: string[]; // 이번 시도에서 도구로 다룬 할 일 id
   assigned?: string; // 이번 시도에서 리더에게 과제를 맡긴 미션 id
 }
@@ -261,6 +263,7 @@ export class RanoCore implements RanoSessionApi {
   private prevEngine: { finished: Promise<void>; close: () => void } | null = null;
   // 라노 지침 고정: 이 대화를 시작할 때 만든 지침과, 마지막으로 정상 끝난 차례에 라노가 본 기억·할 일 판(runs/rano/prompt-state.json)
   private readonly promptFile: PromptStateFile;
+  private readonly ctxFile: RanoContextFile; // 마지막 차례의 대화 크기(대화가 커지거나 오래 쉬면 새 대화로 잇는 판단에 씀)
   private promptState: RanoPromptState | null | undefined; // undefined = 아직 읽지 않음
 
   // 두 칸 줄: 사용자 말(먼저) · 앱 알림(뒤)
@@ -296,6 +299,7 @@ export class RanoCore implements RanoSessionApi {
     this.limits = deps.limits ?? LANE_LIMITS;
     this.drainMs = deps.engineDrainMs ?? ENGINE_DRAIN_MS;
     this.promptFile = PromptStateFile.at(deps.config.runsDir);
+    this.ctxFile = RanoContextFile.at(deps.config.runsDir);
   }
 
   private loadPromptState(): RanoPromptState | null {
@@ -464,13 +468,24 @@ export class RanoCore implements RanoSessionApi {
     let answeredAt: number | undefined;
     let result: AttemptResult | undefined;
     try {
-      const { sessionId } = await this.store.load();
-      result = await this.attempt(prompt, sessionId ?? undefined, attachments, live);
+      const { sessionId, messages: past } = await this.store.load();
+      // 대화가 커졌거나 오래 쉬어 엔진의 임시 저장이 식었으면, 새 대화로 시작하면서 최근에 주고받은 말만 넘긴다(사용량 줄이기)
+      const carry = () => {
+        const c = carryText(past, ids);
+        return c ? `${c}\n\n${prompt}` : prompt;
+      };
+      const rotate = shouldRotate(this.ctxFile.load(), sessionId ?? undefined, this.now());
+      result = rotate ? await this.attempt(carry(), undefined, attachments, live) : await this.attempt(prompt, sessionId ?? undefined, attachments, live);
 
       // 이어가기에 실패하면(세션 기록이 없어졌을 때 등) 새 세션으로 한 번 다시 시도한다. 쓰던 말풍선은 비운다
-      if (sessionId && result.errorText !== null && !result.text && (!result.gotInit || looksLikeMissingSession(result.errorText))) {
+      if (sessionId && !rotate && result.errorText !== null && !result.text && (!result.gotInit || looksLikeMissingSession(result.errorText))) {
         live.reset();
-        result = await this.attempt(prompt, undefined, attachments, live);
+        result = await this.attempt(carry(), undefined, attachments, live);
+      }
+      // 이번 차례의 대화 크기를 적어 둔다(다음 차례에 새 대화로 이을지 판단)
+      if (result.ctxTokens && result.errorText === null) {
+        const sid = (await this.store.load().catch(() => ({ sessionId: null }))).sessionId;
+        if (sid) this.ctxFile.save({ sessionId: sid, tokens: result.ctxTokens, at: this.now() });
       }
       // 지침 판 저장(settlePromptState)은 답 저장 뒤 finally 에서 한다(그 안에서 오류가 나도 답 저장·표시가 막히지 않게)
 
@@ -693,6 +708,8 @@ export class RanoCore implements RanoSessionApi {
                 continue;
               }
               const blocks = Array.isArray(msg.message?.content) ? msg.message.content : [];
+              const u = (msg.message as { usage?: { input_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } } | undefined)?.usage;
+              if (u) out.ctxTokens = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) || out.ctxTokens;
               let hadToolUse = false;
               const texts: string[] = [];
               const tools: { id?: string; name?: string }[] = [];

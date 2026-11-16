@@ -10,6 +10,9 @@ export function taskTitle(text: string, max = 44): string {
   const tag = /^\[[^\]]{1,16}\]\s*/.exec(t)?.[0] ?? '';
   let body = t.slice(tag.length);
   body = body.replace(/^(빠른 모드로|팀으로|혼자)\s*(해\s?주세요|진행해\s?주세요|해줘)?[.!]?\s*/u, '') || body;
+  // "○○님 지시: …" · "사용자 요청: …" 같은 머리말은 뗀다. 웹 주소는 사이트 이름만 남긴다 (0.9.12)
+  body = body.replace(/^\S{1,12}(님)?(의)?\s*(지시|요청)\s*[:：]\s*/u, '') || body;
+  body = body.replace(/https?:\/\/([^\s\/]+)\S*/g, '$1');
   body = body.split(/\s+[—–]\s+|\s+목적\s*[:：]|\s+배경\s*[:：]|\s+범위\s*[:：]/)[0];
   // 문장 끝(다. 요. 기. 등 뒤의 마침표 + 빈칸)에서 자른다. 파일 이름의 점(README.md)은 자르지 않는다
   const cut = /[.!?。](?=\s)/.exec(body);

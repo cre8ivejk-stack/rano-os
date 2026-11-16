@@ -156,6 +156,7 @@ export class RoleEditor {
       ['default', '기본 (라노 설정 모델)'],
       ['opus', 'Opus · 꼼꼼하고 깊게 (느리고 사용량 많음)'],
       ['sonnet', 'Sonnet · 빠르고 가볍게 (자료 정리·초안·단순 작업)'],
+      ['fable', 'Fable · 가장 깊게 (가장 느리고 사용량 가장 많음)'],
     ] as const) {
       const o = el('option');
       o.value = value;
@@ -296,6 +297,6 @@ export class RoleEditor {
 
 /** 역할 한 줄 설명(목록용) */
 export function roleSummary(r: RoleInfo): string {
-  const model = r.model === 'opus' ? ' · Opus' : r.model === 'sonnet' ? ' · Sonnet' : '';
+  const model = r.model === 'opus' ? ' · Opus' : r.model === 'sonnet' ? ' · Sonnet' : r.model === 'fable' ? ' · Fable' : '';
   return `${abilityText(r)}${model} · ${SOURCE_LABEL[r.source] ?? r.source}`;
 }
