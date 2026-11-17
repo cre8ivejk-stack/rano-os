@@ -13,6 +13,9 @@ export function taskTitle(text: string, max = 44): string {
   // "○○님 지시: …" · "사용자 요청: …" 같은 머리말은 뗀다. 웹 주소는 사이트 이름만 남긴다 (0.9.12)
   body = body.replace(/^\S{1,12}(님)?(의)?\s*(지시|요청)\s*[:：]\s*/u, '') || body;
   body = body.replace(/https?:\/\/([^\s\/]+)\S*/g, '$1');
+  // "지난 과제(c2226f79)에서 고친 …" 의 과제 번호와 머리말은 뗀다 (0.9.14)
+  body = body.replace(/^((지난|직전|앞|이전)\s*과제)\s*\([0-9a-f]{6,}\)/u, '$1');
+  body = body.replace(/^(지난|직전|앞|이전)\s*과제에서\s+(?=\S)/u, '') || body;
   body = body.split(/\s+[—–]\s+|\s+목적\s*[:：]|\s+배경\s*[:：]|\s+범위\s*[:：]/)[0];
   // 문장 끝(다. 요. 기. 등 뒤의 마침표 + 빈칸)에서 자른다. 파일 이름의 점(README.md)은 자르지 않는다
   const cut = /[.!?。](?=\s)/.exec(body);

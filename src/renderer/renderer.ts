@@ -7,6 +7,7 @@ import { OrgView } from './org.js';
 import { OutputsView } from './outputs.js';
 import { TodoView } from './todo.js';
 import { ChatNow } from './chatNow.js';
+import { registerTask, shortTitle, taskChip, taskRef } from './taskTags.js';
 import { proposalCard } from './orgProposal.js';
 import { ChatView, type SpeakerStyle } from './chatView.js';
 import { bindComposer, el, mustGet, setRoleLabels, setZoneInfo } from './dom.js';
@@ -85,6 +86,8 @@ function addRecipient(s: MissionStatus): void {
   sendTo.appendChild(o);
 }
 sendTo.addEventListener('change', () => {
+  // 리더에게 바로 보내기로 바꾸면 과제 골라 보기는 끝낸다
+  if (sendTo.value && aboutTask) selectTask(null);
   const name = sendTo.selectedOptions[0]?.textContent ?? '라노에게';
   chatInput.placeholder = sendTo.value ? `${name} 바로 시킬 일을 적어 주세요 (라노를 거치지 않아요)` : '라노에게 할 말을 적어 주세요';
   sendTo.classList.toggle('send-to-leader', !!sendTo.value);
@@ -196,7 +199,7 @@ async function submit(): Promise<void> {
   try {
     // 저장·화면 표시까지만 기다린다(라노 답은 이벤트로 온다)
     const to = sendTo.value;
-    const r = to ? await rano.missionSend(to, text, images, true) : await rano.send(text, images);
+    const r = to ? await rano.missionSend(to, text, images, true) : await rano.send(text, images, aboutTask ?? undefined);
     if (to && (!r || r.ok !== false)) {
       sendTo.value = '';
       sendTo.dispatchEvent(new Event('change'));
@@ -331,6 +334,39 @@ chatNow.onOpenApprovals = (id) => {
   showTab('approvals');
   approvals.focus(id);
 };
+chatNow.taskTitle = (missionId, taskId) => board.taskTitle(missionId, taskId);
+
+// ---------- 과제 골라 보기(과제 꼬리표) ----------
+// 과제를 고르면: 대화에 그 과제의 말·보고만 보이고, 입력창의 말이 그 과제에 대한 말로 라노에게 간다
+let aboutTask: TaskRef | null = null;
+const replyTask = mustGet<HTMLDivElement>('reply-task');
+function selectTask(taskId: string | null): void {
+  aboutTask = taskId ? (taskRef(taskId) ?? { missionId: '', taskId, title: '' }) : null;
+  chatNow.select(taskId);
+  chat.filterTask(taskId);
+  replyTask.replaceChildren();
+  replyTask.hidden = !aboutTask;
+  if (aboutTask) {
+    // 과제를 골라 하는 말은 라노가 그 과제 리더에게 전한다(받는 사람을 라노로 되돌림)
+    if (sendTo.value) {
+      sendTo.value = '';
+      sendTo.dispatchEvent(new Event('change'));
+    }
+    replyTask.appendChild(taskChip(aboutTask, undefined, 30));
+    replyTask.appendChild(el('span', 'reply-task-text', '과제에 답하는 중 · 이 과제의 말만 보여요'));
+    const x = el('button', 'reply-task-x', '×');
+    x.type = 'button';
+    x.title = '전체 보기로 돌아가기';
+    x.setAttribute('aria-label', '과제 골라 보기 끝내기');
+    x.addEventListener('click', () => selectTask(null));
+    replyTask.appendChild(x);
+    chatInput.placeholder = `「${shortTitle(aboutTask.title, 20)}」 과제에 할 말을 적어 주세요`;
+    chatInput.focus();
+  } else chatInput.placeholder = '라노에게 할 말을 적어 주세요';
+}
+chatNow.onPickTask = (id) => selectTask(id);
+chat.onPickTask = (id) => selectTask(aboutTask?.taskId === id ? null : id);
+chat.onHiddenNew = () => chatNow.noteHiddenNew();
 
 board.onNamesChange = () => {
   approvals.refresh();
@@ -527,7 +563,11 @@ async function start(): Promise<void> {
   void board.load();
   void approvals.load();
   void outputs.load();
-  rano.outputsList().then((items) => board.office.setOutputsCount(Array.isArray(items) ? items.filter((x) => x.status === 'done').length : 0)).catch(() => undefined);
+  rano.outputsList().then((items) => {
+    const list = Array.isArray(items) ? items : [];
+    for (const o of list) registerTask({ missionId: o.missionId, taskId: o.taskId, title: o.title });
+    board.office.setOutputsCount(list.filter((x) => x.status === 'done').length);
+  }).catch(() => undefined);
   await todo.load(); // 보고 카드의 [확인 완료]가 할 일 상태를 보므로 대화 기록보다 먼저
   void org.load();
   try {

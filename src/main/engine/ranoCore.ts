@@ -20,6 +20,7 @@ import {
   type RanoEffort,
   type RanoSessionApi,
   type RanoUiEvent,
+  type TaskRef,
 } from '../../shared/types.js';
 import { createPermissionGate } from './permissions.js';
 import { buildRanoSystemPrompt, ranoMissionList, ranoPromptFrame } from './ranoPrompt.js';
@@ -340,8 +341,8 @@ export class RanoCore implements RanoSessionApi {
   }
 
   /** 내 말: 바로 저장·화면 표시하고 줄에 세운 뒤 돌아간다(답을 기다리지 않음) */
-  async send(text: string, attachments: ChatAttachment[] = [], via?: 'mobile'): Promise<void> {
-    const userMsg: ChatMessage = { id: randomUUID(), role: 'user', text, at: new Date().toISOString(), ...(attachments.length ? { attachments } : {}), ...(via ? { via } : {}) };
+  async send(text: string, attachments: ChatAttachment[] = [], via?: 'mobile', about?: TaskRef): Promise<void> {
+    const userMsg: ChatMessage = { id: randomUUID(), role: 'user', text, at: new Date().toISOString(), ...(attachments.length ? { attachments } : {}), ...(via ? { via } : {}), ...(about ? { about } : {}) };
     try {
       await this.store.append(userMsg);
     } catch {
@@ -349,7 +350,7 @@ export class RanoCore implements RanoSessionApi {
     }
     const waits = this.running;
     this.emit({ kind: 'message', message: userMsg, ...(waits ? { queued: true, ...(this.currentLabel ? { waitFor: this.currentLabel } : {}) } : {}) });
-    this.users.push({ id: userMsg.id, text, attachments, ...(via ? { via } : {}), at: this.now() });
+    this.users.push({ id: userMsg.id, text, attachments, ...(via ? { via } : {}), ...(about ? { about } : {}), at: this.now() });
     this.pump();
   }
 
@@ -375,7 +376,7 @@ export class RanoCore implements RanoSessionApi {
     if (!m) return { ok: false, message: '그 말을 찾지 못했어요' };
     if (!findUnanswered(messages).includes(messageId)) return { ok: false, message: '이미 답한 말이에요' };
     this.emit({ kind: 'activity', text: `다시 보냈어요: ${firstLine(m.text, 40)}`, at: new Date().toISOString() });
-    this.users.push({ id: m.id, text: m.text, attachments: m.attachments ?? [], ...(m.via ? { via: m.via } : {}), at: this.now() });
+    this.users.push({ id: m.id, text: m.text, attachments: m.attachments ?? [], ...(m.via ? { via: m.via } : {}), ...(m.about ? { about: m.about } : {}), at: this.now() });
     this.pump();
     return { ok: true };
   }
@@ -474,7 +475,8 @@ export class RanoCore implements RanoSessionApi {
         const c = carryText(past, ids);
         return c ? `${c}\n\n${prompt}` : prompt;
       };
-      const rotate = shouldRotate(this.ctxFile.load(), sessionId ?? undefined, this.now());
+      const before = past.filter((m) => !ids.includes(m.id));
+      const rotate = shouldRotate(this.ctxFile.load(), sessionId ?? undefined, this.now(), { lastAt: before[before.length - 1]?.at, count: before.length });
       result = rotate ? await this.attempt(carry(), undefined, attachments, live) : await this.attempt(prompt, sessionId ?? undefined, attachments, live);
 
       // 이어가기에 실패하면(세션 기록이 없어졌을 때 등) 새 세션으로 한 번 다시 시도한다. 쓰던 말풍선은 비운다
@@ -514,7 +516,7 @@ export class RanoCore implements RanoSessionApi {
       const text = raw && cut ? `${raw}\n\n${CUT_NOTE}` : raw;
       if (text) {
         // replyTo 는 늘 둔다: 알림 차례 답은 [] (findUnanswered 가 기준에서 건너뜀), 칸이 없는 것은 예전 기록뿐
-        const ranoMsg: ChatMessage = { id: randomUUID(), role: 'rano', text, at: new Date().toISOString(), replyTo: cut ? [] : ids, ...(todoIds.length ? { todoIds } : {}), ...this.shapeOf(plan, result, raw, cut, marked.choices) };
+        const ranoMsg: ChatMessage = { id: randomUUID(), role: 'rano', text, at: new Date().toISOString(), replyTo: cut ? [] : ids, ...(todoIds.length ? { todoIds } : {}), ...(users[0]?.about && users.every((u) => u.about?.taskId === users[0].about?.taskId) ? { about: users[0].about } : {}), ...this.shapeOf(plan, result, raw, cut, marked.choices) };
         try {
           await this.store.append(ranoMsg);
         } catch {

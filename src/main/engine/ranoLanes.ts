@@ -1,6 +1,6 @@
 // 라노 차례 줄: 사용자 말 칸(먼저)과 앱 알림 칸(뒤) 두 칸으로 줄을 세우고, 다음 차례에 무엇을 할지 정한다.
 // 이 파일은 순수 함수만 둔다(파일·엔진·화면을 건드리지 않음) — 시험에서 그대로 부른다.
-import type { ChatAttachment, ChatMessage } from '../../shared/types.js';
+import type { ChatAttachment, ChatMessage, TaskRef } from '../../shared/types.js';
 
 /** 기다리는 사용자 말 하나 (이미 저장·화면 표시를 마친 말) */
 export interface LaneUser {
@@ -9,6 +9,20 @@ export interface LaneUser {
   attachments: ChatAttachment[];
   via?: 'mobile';
   at: number; // 줄에 선 시각(ms)
+  about?: TaskRef; // 대화 화면에서 과제를 골라 한 말
+}
+
+/** 화면에서 넘어온 과제 꼬리표를 다듬는다(글자 수 제한, 줄바꿈 없음). 쓸 수 없으면 undefined */
+export function cleanTaskRef(v: unknown): TaskRef | undefined {
+  const o = v as { missionId?: unknown; taskId?: unknown; title?: unknown } | null;
+  if (!o || typeof o.taskId !== 'string' || !/^[\w-]{1,64}$/.test(o.taskId)) return undefined;
+  const one = (x: unknown, max: number) => String(typeof x === 'string' ? x : '').replace(/\s+/g, ' ').trim().slice(0, max);
+  return { missionId: one(o.missionId, 64).replace(/[^\w-]/g, ''), taskId: o.taskId, title: one(o.title, 80) };
+}
+
+/** 과제를 골라 한 말 앞에 붙이는 안내 */
+export function aboutNote(a: TaskRef): string {
+  return `[앱 안내] 사용자가 대화 화면에서 「${a.title || '과제'}」 과제(미션 ${a.missionId || '?'}, 과제 id ${a.taskId})를 골라 놓고 한 말이에요. 이 과제에 대한 말로 다루세요: 그 과제가 진행 중이면 tell_running_task(missionId·taskId 를 이 값 그대로)로 그 과제 리더에게 전하고, 끝났으면 그 과제에 이어지는 일로 맡기거나 직접 답하세요. 다른 과제 이야기로 섞지 마세요.`;
 }
 
 /** 기다리는 앱 알림 하나 (리더 보고·직접 지시 알림) */
@@ -104,11 +118,11 @@ export function userTurnPrompt(users: LaneUser[], notices: LaneNotice[]): string
   }
   if (users.length === 1) {
     const u = users[0];
-    parts.push(u.text + (u.via === 'mobile' ? '\n\n(휴대폰에서 보냄)' : ''));
+    parts.push((u.about ? `${aboutNote(u.about)}\n\n` : '') + u.text + (u.via === 'mobile' ? '\n\n(휴대폰에서 보냄)' : ''));
   } else {
     const lines = users.map((u, i) => {
       const pics = u.attachments.length ? ` [그림 ${u.attachments.length}개: ${u.attachments.map((a) => a.id).join(', ')}]` : '';
-      return `${i + 1}) ${u.via === 'mobile' ? '(휴대폰에서 보냄) ' : ''}${u.text}${pics}`;
+      return `${i + 1}) ${u.about ? `(「${u.about.title || '과제'}」 과제 id ${u.about.taskId} 를 골라 한 말: 진행 중이면 tell_running_task 에 이 taskId 로 전하기) ` : ''}${u.via === 'mobile' ? '(휴대폰에서 보냄) ' : ''}${u.text}${pics}`;
     });
     parts.push(`사용자가 연달아 보낸 말 ${users.length}개예요. ${BATCH_RULE}\n\n${lines.join('\n\n')}`);
   }

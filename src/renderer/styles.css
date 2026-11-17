@@ -1338,3 +1338,32 @@ button.fl-counter { cursor: pointer; }
 .org-role-ko { margin: 0; font-size: 14.5px; }
 .org-role-id { font-size: 11.5px; color: var(--muted); }
 .skill-rec-sum { cursor: pointer; }
+
+/* ---------- 과제 꼬리표 (0.9.14): 같은 미션에서 과제 여러 개가 함께 돌 때 어느 과제 것인지 ---------- */
+.task-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; border: 1px solid transparent; border-radius: 999px; padding: 0 8px 0 6px; font: inherit; font-size: 11.5px; font-weight: 600; line-height: 1.7; background: var(--tc-soft); color: var(--tc); white-space: nowrap; }
+button.task-chip { cursor: pointer; }
+button.task-chip:hover { border-color: var(--tc); }
+.task-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--tc); }
+.task-chip-text { overflow: hidden; text-overflow: ellipsis; }
+.task-chip-dot { padding: 0 4px; background: none; }
+.task-chip-dot .task-chip-text { display: none; }
+.task-c0 { --tc: #2f6f9f; --tc-soft: #e4eff7; }
+.task-c1 { --tc: #a5561b; --tc-soft: #fbebdc; }
+.task-c2 { --tc: #6a4fa3; --tc-soft: #ede8f7; }
+.task-c3 { --tc: #2f7d55; --tc-soft: #e2f1e8; }
+.task-c4 { --tc: #a33d62; --tc-soft: #f8e6ed; }
+.task-c5 { --tc: #6b6a22; --tc-soft: #f0efd9; }
+.task-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 2px 0; }
+.task-chip-big { font-size: 12.5px; padding: 2px 10px 2px 8px; }
+.task-chip-on { border-color: var(--tc, var(--accent)); box-shadow: 0 0 0 2px var(--tc-soft, var(--accent-soft)); }
+.task-wait { flex: none; min-width: 16px; padding: 0 4px; border-radius: 999px; background: #c9731f; color: #fff; font-size: 10.5px; line-height: 16px; text-align: center; }
+.task-done { flex: none; font-size: 10.5px; font-weight: 500; opacity: 0.75; }
+.task-all { border: 1px solid var(--line, #d9d6cf); border-radius: 999px; padding: 2px 12px; font: inherit; font-size: 12.5px; background: #fff; color: var(--muted); cursor: pointer; }
+.task-all.task-chip-on { color: var(--accent); font-weight: 600; }
+.msg.msg-off { display: none; }
+.reply-task { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; padding: 5px 10px; border: 1px dashed #cfccc4; border-radius: 10px; font-size: 12.5px; color: var(--muted); }
+.reply-task-text { flex: 1; min-width: 0; }
+.reply-task-x { border: 0; background: none; font: inherit; font-size: 16px; line-height: 1; color: var(--muted); cursor: pointer; padding: 0 4px; }
+.reply-task-x:hover { color: var(--text, #222); }
+/* 과제 하나만 보는 동안 날짜 줄·활동 줄은 숨긴다 */
+.task-filtered .item.day, .task-filtered .item.activity:not(.transient) { display: none; }

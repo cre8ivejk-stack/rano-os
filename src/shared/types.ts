@@ -303,6 +303,13 @@ export interface ChatMessage {
   choices?: string[]; // 라노 답: 사용자가 고를 수 있는 짧은 답 단추(첫 번째가 권장)
   toMission?: string; // 내 말: 대화 화면에서 라노가 아니라 이 미션 리더에게 직접 보낸 말(미션 id)
   replyTo?: string[]; // 라노 답: 이 답이 답한 사용자 말 id (묶어 답하면 여럿). 예전 기록에는 없음
+  about?: TaskRef; // 내 말: 대화 화면에서 이 과제를 골라 한 말. 라노 답: 그 말에 대한 답 (과제 꼬리표, 0.9.14)
+}
+/** 대화에서 과제 하나를 가리키는 꼬리표 */
+export interface TaskRef {
+  missionId: string;
+  taskId: string;
+  title: string;
 }
 /** 대화 첨부 그림 */
 export interface ChatAttachment {
@@ -424,7 +431,7 @@ export const IPC = {
 // 화면(window.rano)에 노출되는 API
 export interface RanoApi {
   loadHistory(): Promise<ChatMessage[]>;
-  send(text: string, attachments?: NewAttachment[]): Promise<{ ok: boolean; message?: string }>;
+  send(text: string, attachments?: NewAttachment[], about?: TaskRef): Promise<{ ok: boolean; message?: string }>; // about: 과제를 골라 한 말
   unanswered(): Promise<string[]>; // 앱이 꺼져 답하지 못한 내 말 id
   resend(messageId: string): Promise<{ ok: boolean; message?: string }>; // 그 말을 다시 줄에 세움
   attachmentData(a: ChatAttachment): Promise<string | null>; // 미리보기 data URL
@@ -576,7 +583,7 @@ export interface ConversationStoreApi {
 export interface RanoSessionApi {
   // 사용자 말을 바로 저장·emit 하고 줄(사용자 칸)에 세운 뒤 resolve 한다(라노 답을 기다리지 않음).
   // 앞 차례가 돌고 있으면 그 차례가 끝난 뒤, 그 사이 쌓인 내 말과 묶어 한 차례로 답한다.
-  send(text: string, attachments?: ChatAttachment[], via?: 'mobile'): Promise<void>;
+  send(text: string, attachments?: ChatAttachment[], via?: 'mobile', about?: TaskRef): Promise<void>;
   // 2단계: 앱이 라노에게 알림(리포 리더 보고 = 'report', 사용자의 직접 지시 사실 = 'direct'). 사용자 말풍선은 만들지 않는다.
   // 줄의 알림 칸(사용자 말 뒤)에 선다. 사용자 말 차례가 먼저 오면 그 프롬프트 앞에 붙고, 너무 오래 기다리면 따로 한 차례.
   // 처리되면(붙었거나 따로 답했거나) resolve.

@@ -491,6 +491,22 @@ export function allMissionZones(config: RanoConfig): string[] {
   return [...(config.missions ?? []).map((m) => m.zone), ...fromRaw];
 }
 export const MISSION_LOG_FILES = ['outputs.json', 'queue.json', 'state.json'];
+/**
+ * 엔진이 대화마다 보관하는 폴더: 큰 도구 결과(~/.claude/projects/<폴더 이름>/<대화 번호>/tool-results)와
+ * 뒤에서 돌린 작업 출력(/tmp/claude-<사용자 번호>/<폴더 이름>/<대화 번호>/tasks). 폴더 이름은 작업 폴더 경로의 글자·숫자 밖을 - 로 바꾼 것
+ */
+export function ownOutputDirs(cwd: string, sessionIds: string[], home: string = homedir(), uid: number | undefined = process.getuid?.()): string[] {
+  if (!sessionIds.length) return [];
+  const slugs = [...new Set([path.resolve(cwd), real(path.resolve(cwd))].map((p) => p.replace(/[^a-zA-Z0-9]/g, '-')))];
+  const out: string[] = [];
+  for (const slug of slugs)
+    for (const id of sessionIds) {
+      out.push(path.join(home, '.claude', 'projects', slug, id, 'tool-results'));
+      if (uid !== undefined) out.push(path.join('/private/tmp', `claude-${uid}`, slug, id, 'tasks'), path.join('/tmp', `claude-${uid}`, slug, id, 'tasks'));
+    }
+  return out;
+}
+
 export function appLogRoots(config: RanoConfig, mission: MissionConfig): string[] {
   const own = MISSION_LOG_FILES.map((f) => path.join(config.runsDir, 'missions', mission.id, f));
   // 보관한 미션(archived)도 앱 전체 기록에 그 미션의 명령·파일이 남아 있으므로 함께 본다(config.missions 는 보관 미션을 뺀 목록)
@@ -1439,13 +1455,14 @@ export function decideApprovalStage(
   toolName: string,
   input: Record<string, unknown>,
   cwd: string,
-  actor: { isSubagent: boolean; teamApproved: boolean; draftsDir?: string; planBlocked?: boolean; memberModels?: Record<string, MemberModel>; trustRepo?: boolean; netHosts?: ReadonlySet<string>; appLogs?: boolean },
+  actor: { isSubagent: boolean; teamApproved: boolean; draftsDir?: string; planBlocked?: boolean; memberModels?: Record<string, MemberModel>; trustRepo?: boolean; netHosts?: ReadonlySet<string>; appLogs?: boolean; ownOutputs?: string[] },
   mcpServer?: { name: string; source: string },
 ): StageDecision {
   // 믿는 미션 규칙은 미션이 믿는 미션이고, 기획 결정 전·읽기만 하는 과제가 아닐 때만(부르는 쪽이 actor.trustRepo 로 알려 줌)
   const trust = !!(actor.trustRepo && mission.trustRepo && !actor.planBlocked);
   // 읽기만 하는 과제: 정해 둔 앱 기록 파일도 바로 읽기(S5-A). 비밀·대화 기록은 넣지 않는다
-  const logRoots = actor.appLogs ? appLogRoots(config, mission) : [];
+  // 이 리더 대화가 남긴 큰 도구 결과·뒤에서 돌린 작업 출력(엔진이 보관하는 폴더)도 읽기만 바로 (0.9.14)
+  const logRoots = [...(actor.appLogs ? appLogRoots(config, mission) : []), ...(actor.ownOutputs ?? [])];
   // 읽기·검색: 2단계와 같음
   if (READ_TOOLS.has(toolName)) {
     const d = decideLeaderTool(config, mission, toolName, input, cwd, actor.isSubagent, undefined, logRoots);
@@ -1925,6 +1942,16 @@ export class LeaderGuard {
     return [...hits];
   }
 
+  /** 이 리더가 연 엔진 대화 번호들. 그 대화의 도구 결과 보관 폴더만 읽기 허용에 넣는다 (0.9.14) */
+  private readonly sessionIds = new Set<string>();
+  addSession(id: string) {
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) this.sessionIds.add(id.toLowerCase());
+  }
+  /** 이 리더 대화가 남긴 큰 도구 결과(tool-results)·뒤에서 돌린 작업 출력(tasks) 폴더. 다른 대화(사용자의 터미널 등) 것은 넣지 않는다 */
+  ownOutputRoots(): string[] {
+    return ownOutputDirs(this.deps.mission.targets[0] ?? this.deps.mission.home, [...this.sessionIds]);
+  }
+
   /** 진행 중에 사용자가 덧붙인 말(라노가 전함). 리더가 다음 도구를 쓴 직후에 읽는다 (0.9.12) */
   private userNotes: string[] = [];
   addUserNote(text: string) {
@@ -2046,6 +2073,7 @@ export class LeaderGuard {
         trustRepo: !this.isReadOnlyTask(),
         netHosts: this.task ? this.netGrants.get(this.task.id) : undefined,
         appLogs: this.isReadOnlyTask(), // 읽기만 과제: 정한 앱 기록 파일 바로 읽기 (S5-A)
+        ownOutputs: this.ownOutputRoots(),
       },
       mcpServer,
     );

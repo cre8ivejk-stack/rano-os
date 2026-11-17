@@ -110,7 +110,9 @@ test('대괄호·+= 꼴 설정값과 설정값 이름 반복 변수는 승인함
   assert.equal(label(classifyBash('a[x=/y/cat docs/a.md', ctx)), 'command');
   // 소문자 지역 반복 변수는 원래 판단 그대로
   assert.equal(label(classifyBash('for f in src/a.ts src/b.ts; do wc -l $f; done', ctx)), 'allow');
-  const g = classifyBash('for f in src/*.ts; do wc -l $f; done', ctx); // 글롭 값은 원래도 "경로를 알 수 없음"으로 승인함
+  // 지금 폴더 아래 단순 글롭으로 도는 읽기는 바로 (0.9.14). 폴더 밖·점 파일 글롭은 그대로 "경로를 알 수 없음"으로 승인함
+  assert.equal(label(classifyBash('for f in src/*.ts; do wc -l $f; done', ctx)), 'allow');
+  const g = classifyBash('for f in ../*.ts; do wc -l $f; done', ctx);
   assert.equal(label(g), 'command', g.reasons.join('; '));
   assert.ok(!g.reasons.some((x) => x.includes('반복 변수')), g.reasons.join('; '));
   assert.ok(g.reasons.includes('변수·확장을 써서 경로를 알 수 없음'), g.reasons.join('; '));

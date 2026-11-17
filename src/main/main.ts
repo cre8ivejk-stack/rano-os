@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { defaultRootDir, loadConfig, modelKindOf } from './config.js';
 import { defaultsDir, ensureDataHome } from './dataHome.js';
 import { randomUUID } from 'node:crypto';
+import { cleanTaskRef } from './engine/ranoLanes.js';
 import { IPC, type ChatMessage, type NewAttachment, type MissionConfig, type MissionLeaderApi, type MissionTrackerApi, type RanoUiEvent } from '../shared/types.js';
 import { MemoryService } from './memory/memoryService.js';
 import { createMemoryMcpServer } from './memory/memoryTools.js';
@@ -201,13 +202,13 @@ async function boot() {
 
   ipcMain.handle(IPC.loadHistory, async () => (await store.load()).messages);
   // 보내기: 내 말을 저장·화면에 띄우면 바로 돌아간다(라노 답은 이벤트로 온다). 라노가 바빠도 보낼 수 있다
-  ipcMain.handle(IPC.send, async (_e, text: unknown, attachments: unknown) => {
+  ipcMain.handle(IPC.send, async (_e, text: unknown, attachments: unknown, about: unknown) => {
     const t = typeof text === 'string' ? text.trim() : '';
     const list = Array.isArray(attachments) ? (attachments as NewAttachment[]) : [];
     if (!t && !list.length) return { ok: false, message: '보낼 내용이 없어요' };
     const saved = saveAttachments(config.runsDir, list);
     if (!saved.ok) return { ok: false, message: saved.message };
-    await rano.send(t || '(그림만 보냈어요)', saved.saved);
+    await rano.send(t || '(그림만 보냈어요)', saved.saved, undefined, cleanTaskRef(about));
     return { ok: true };
   });
   // 앱이 꺼져 답하지 못한 내 말(자동으로 다시 실행하지 않음) · 그 말 다시 보내기

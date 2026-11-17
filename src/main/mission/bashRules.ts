@@ -617,7 +617,12 @@ function namedGitAdd(rest: string[], cwd: string): boolean {
   });
 }
 
-const GIT_READ = new Set(['status', 'diff', 'log', 'show', 'branch', 'rev-parse', 'ls-files', 'blame', 'rev-list', 'describe', 'shortlog', 'check-ignore', 'ls-tree', 'cat-file', 'merge-base', 'name-rev', 'for-each-ref', 'show-ref', 'diff-tree', 'whatchanged', 'count-objects', 'show-branch', 'cherry']);
+/** for 변수 in … 에 쓸 수 있는 단순 글롭: 지금 폴더 아래 상대 경로, 점 파일·.. ·~·중괄호 없음 (예: *.html · src/*.ts) */
+function plainGlob(text: string): boolean {
+  return /^[\w가-힣*?\-.]+(\/[\w가-힣*?\-.]+)*$/.test(text) && !text.split('/').some((p) => p.startsWith('.'));
+}
+
+const GIT_READ = new Set(['status', 'diff', 'log', 'show', 'branch', 'rev-parse', 'ls-files', 'blame', 'rev-list', 'describe', 'shortlog', 'check-ignore', 'ls-tree', 'cat-file', 'merge-base', 'name-rev', 'for-each-ref', 'show-ref', 'diff-tree', 'whatchanged', 'count-objects', 'show-branch', 'cherry', 'grep']);
 const GIT_COMMIT = new Set([
   'commit', 'push', 'tag', 'reset', 'rebase', 'merge', 'checkout', 'switch', 'restore', 'pull',
   'cherry-pick', 'revert', 'am', 'apply', 'stash',
@@ -910,6 +915,8 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
     const known = new Map<string, string[] | null>(inherited ?? []); // 변수 → 값들(null 이면 알 수 없음)
     /** 단어 안의 변수를 알려진 값으로 바꾼 후보들. 알 수 없는 변수가 있으면 null */
     const readVars = new Set<string>(); // read 로 값을 담은 변수
+    // for f in *.html 처럼 글롭으로 돈 변수: 값을 글롭 글자 그대로 두고, 그 변수를 쓴 낱말을 글롭 인자처럼 판단한다(비밀 파일 검사 포함) (0.9.14)
+    const globVars = new Set<string>();
     const expandWord = (w: string, f: Token): string[] | null => {
       if (f.expand) return null;
       let outs = [w];
@@ -929,8 +936,9 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
         // 반복 변수가 설정값(PATH·path 등)이면 값을 믿지 않는다(승인함 판단은 아래 본 검사에서)
         known.set(
           sg.words[1],
-          isRiskyAssignName(sg.words[1]) || sg.flags.slice(3).some((f) => f.glob || f.expand || f.subst || f.vars?.length) ? null : sg.words.slice(3),
+          isRiskyAssignName(sg.words[1]) || sg.flags.slice(3).some((f) => f.expand || f.subst || f.vars?.length || (f.glob && !plainGlob(f.text))) ? null : sg.words.slice(3),
         );
+      if (sg.words[0] === 'for' && sg.words[2] === 'in' && known.get(sg.words[1]) && sg.flags.slice(3).some((f) => f.glob)) globVars.add(sg.words[1]);
     }
     for (const sub of tk.subs) {
       if (depth < 3) visit(sub, cwd, depth + 1, known);
@@ -956,10 +964,11 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
         const onlyReadVars = showsOnly && !f.expand && !!f.vars?.length && f.vars.every((v) => readVars.has(v) || SAFE_VARS.has(v));
         const vals = onlyReadVars ? [w] : f.vars?.length || f.expand ? expandWord(w, f) : [w];
         if (!vals || (f.subst && !showsOnly && !(isAssign(w) && idx === 0))) unknownVar = true;
+        const fromGlob = !!f.vars?.some((v) => globVars.has(v));
         for (const v of vals ?? [w]) {
           seg.words.push(v);
           seg.quoted.push(rawSeg.quoted[idx]);
-          seg.flags.push(f);
+          seg.flags.push(fromGlob ? { ...f, glob: true } : f);
         }
       });
       const redirOut: string[] = [];
@@ -991,7 +1000,7 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
       // for 변수 in 값들 / 변수=값 만 있는 줄: 값을 기억한다
       if (seg.words[0] === 'for' && seg.words[2] === 'in' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(seg.words[1])) {
         const vals = seg.words.slice(3);
-        const bad = unknownVar || seg.flags.slice(3).some((f) => f.glob || f.expand);
+        const bad = unknownVar || seg.flags.slice(3).some((f) => f.expand || (f.glob && !plainGlob(f.text)));
         known.set(seg.words[1], bad || isRiskyAssignName(seg.words[1]) ? null : vals);
         for (const v of vals) checkBlocked(v);
         // `for PATH in /x; do ls; done` · `for path in …` 는 반복마다 설정값을 바꾼다. 소문자 지역 변수(for f in …)는 그대로
@@ -1209,6 +1218,8 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
           if (sub === 'branch' && nonOptions(rest).length && !listing) bump('command', 'git branch 로 가지 만들기·지우기');
           else if (sub === 'branch' && rest.some((a) => /^-(d|D|m|M|c|C|f)$|^--(delete|move|copy|force)/.test(a))) bump('command', 'git branch 변경');
           if (rest.some((a) => /^--(output|ext-diff|textconv|no-index|exec|upload-pack|open-files-in-pager)/.test(a) || /^-O/.test(a))) bump('command', `git ${sub} 의 쓰기·실행 옵션`);
+          // git grep: 찾을 글을 파일에서 읽는 옵션(-f)·리포 밖 검색(--no-index 는 위에서)·추적 안 하는 파일(--untracked · --no-exclude-standard: .env 등이 걸릴 수 있음)은 승인함으로 (0.9.14)
+          if (sub === 'grep' && rest.some((a) => /^-f/.test(a) || /^--(file|untracked|no-exclude-standard|cached)/.test(a))) bump('command', 'git grep 의 파일·추적 밖 옵션');
           // 리비전:경로 (git show HEAD:.env) 의 경로도 차단 목록 검사
           for (const a of rest) {
             const m = /^[^:\s]*:(.+)$/.exec(a);

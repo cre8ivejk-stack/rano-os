@@ -2,6 +2,7 @@
 // 바로 승인은 일반 명령·작업 폴더 밖 쓰기만(approvalSafety.ts). 커밋·지우기·파일 쓰기·DB·배포·외부 게시는 빨간 표를 붙이고 [열어서 정하기]로 승인함에서 본다.
 import { canQuickApprove, carefulTag, commandOf, filesOf } from './approvalSafety.js';
 import { el, mustGet } from './dom.js';
+import { registerTask, taskChip, taskRef } from './taskTags.js';
 
 function minutesSince(iso: string): string {
   const m = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
@@ -18,6 +19,38 @@ export class ChatNow {
   private readonly box = mustGet<HTMLDivElement>('chat-now');
 
   onOpenApprovals: (id: string) => void = () => {};
+  /** 과제 띠에서 과제를 고르거나([전체]는 null) 풀었을 때 */
+  onPickTask: (taskId: string | null) => void = () => {};
+  /** 승인 카드의 과제 제목을 찾는다 */
+  taskTitle: (missionId: string, taskId: string) => string | undefined = () => undefined;
+  private selected: string | null = null; // 골라 보는 과제
+  private hiddenNew = 0; // 골라 보는 동안 가려진 새 말 수
+
+  /** 골라 보는 과제를 바꾼다(화면만. 대화 거르기는 부르는 쪽이 한다) */
+  select(taskId: string | null): void {
+    this.selected = taskId;
+    this.hiddenNew = 0;
+    this.render();
+  }
+  noteHiddenNew(): void {
+    this.hiddenNew++;
+    this.render();
+  }
+
+  /** 과제 띠에 올릴 과제: 진행 중 + 승인 대기가 있는 과제 + 골라 보는 과제 */
+  private tasks(): { ref: TaskRef; waiting: number; running: boolean }[] {
+    const out = new Map<string, { ref: TaskRef; waiting: number; running: boolean }>();
+    for (const { mission, task } of this.running()) out.set(task.id, { ref: { missionId: mission.missionId, taskId: task.id, title: task.title }, waiting: 0, running: true });
+    for (const a of this.pending) {
+      if (!a.taskId) continue;
+      const cur = out.get(a.taskId) ?? { ref: { missionId: a.missionId, taskId: a.taskId, title: taskRef(a.taskId)?.title || this.taskTitle(a.missionId, a.taskId) || '' }, waiting: 0, running: false };
+      cur.waiting++;
+      out.set(a.taskId, cur);
+    }
+    if (this.selected && !out.has(this.selected)) out.set(this.selected, { ref: taskRef(this.selected) ?? { missionId: '', taskId: this.selected, title: '' }, waiting: 0, running: false });
+    for (const t of out.values()) registerTask(t.ref);
+    return [...out.values()];
+  }
 
   constructor() {
     // 걸린 시간 표시를 1분마다 새로
@@ -29,12 +62,14 @@ export class ChatNow {
   setMission(s: MissionStatus): void {
     if (!s || typeof s.missionId !== 'string') return;
     this.missions.set(s.missionId, s);
+    for (const t of [...(s.running ?? []), ...(s.currentTask ? [s.currentTask] : [])]) registerTask({ missionId: s.missionId, taskId: t.id, title: t.title });
     this.render();
   }
 
   setApprovals(items: ApprovalRequest[]): void {
     if (!Array.isArray(items)) return;
     this.pending = items.filter((a) => a.status === 'pending').sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    for (const a of this.pending) if (a.taskId) registerTask({ missionId: a.missionId, taskId: a.taskId, title: this.taskTitle(a.missionId, a.taskId) ?? '' });
     this.render();
   }
 
@@ -76,14 +111,42 @@ export class ChatNow {
   private render(): void {
     const running = this.running();
     this.box.replaceChildren();
-    this.box.hidden = !running.length && !this.pending.length;
+    const tasks = this.tasks();
+    this.box.hidden = !running.length && !this.pending.length && !this.selected;
     if (this.box.hidden) return;
 
-    for (const a of this.pending.slice(0, 2)) {
+    // 과제 띠: 과제가 둘 이상 걸려 있거나 하나를 골라 보는 중일 때. 누르면 그 과제 것만 보이고, 말도 그 과제로 간다
+    if (tasks.length > 1 || this.selected) {
+      const bar = el('div', 'task-bar');
+      bar.setAttribute('aria-label', '과제 골라 보기');
+      for (const t of tasks) {
+        const chip = taskChip(t.ref, (id) => this.onPickTask(this.selected === id ? null : id), 22);
+        chip.classList.add('task-chip-big');
+        chip.classList.toggle('task-chip-on', this.selected === t.ref.taskId);
+        chip.setAttribute('aria-pressed', String(this.selected === t.ref.taskId));
+        if (t.waiting) {
+          const n = el('span', 'task-wait', String(t.waiting));
+          n.title = `내 답을 기다리는 카드 ${t.waiting}장`;
+          chip.appendChild(n);
+        } else if (!t.running) chip.appendChild(el('span', 'task-done', '끝남'));
+        bar.appendChild(chip);
+      }
+      const all = el('button', `task-all${this.selected ? '' : ' task-chip-on'}`, this.selected && this.hiddenNew ? `전체 · 새 말 ${this.hiddenNew}` : '전체');
+      all.type = 'button';
+      all.title = '모든 과제와 라노 대화를 함께 보기';
+      all.addEventListener('click', () => this.onPickTask(null));
+      bar.appendChild(all);
+      this.box.appendChild(bar);
+    }
+
+    // 골라 보는 과제의 카드를 앞에 둔다
+    const pending = this.selected ? [...this.pending.filter((a) => a.taskId === this.selected), ...this.pending.filter((a) => a.taskId !== this.selected)] : this.pending;
+    for (const a of pending.slice(0, 2)) {
       const row = el('div', 'now-row now-approval');
       row.dataset.approval = a.id;
       const text = el('div', 'now-text');
       text.appendChild(el('span', 'now-tag now-tag-wait', '승인 대기'));
+      if (a.taskId && tasks.length > 1) text.appendChild(taskChip({ taskId: a.taskId, title: taskRef(a.taskId)?.title || '과제' }, (id) => this.onPickTask(this.selected === id ? null : id)));
       const risk = carefulTag(a.kind, a);
       if (risk) text.appendChild(el('span', 'now-tag now-tag-risk', risk));
       text.appendChild(el('span', 'now-title', a.title));
@@ -118,10 +181,10 @@ export class ChatNow {
       row.appendChild(btns);
       this.box.appendChild(row);
     }
-    if (this.pending.length > 2) {
-      const more = el('button', 'now-more now-more-btn', `승인 대기 ${this.pending.length - 2}건 더 있어요 · 승인함에서 보기`);
+    if (pending.length > 2) {
+      const more = el('button', 'now-more now-more-btn', `승인 대기 ${pending.length - 2}건 더 있어요 · 승인함에서 보기`);
       more.type = 'button';
-      more.addEventListener('click', () => this.onOpenApprovals(this.pending[2].id));
+      more.addEventListener('click', () => this.onOpenApprovals(pending[2].id));
       this.box.appendChild(more);
     }
     // 진행 중 과제가 여러 건이면 한 줄로 접는다(대화 영역을 밀어 올리지 않게)
@@ -150,6 +213,7 @@ export class ChatNow {
       const row = el('div', 'now-row');
       const text = el('div', 'now-text');
       text.appendChild(el('span', 'now-tag', '진행 중'));
+      if (tasks.length > 1) text.appendChild(taskChip({ taskId: task.id, title: '' }, undefined, 0)).classList.add('task-chip-dot');
       text.appendChild(el('span', 'now-title', `${mission.name} · ${task.title}`));
       const working = mission.members.filter((m) => (m.state === 'working' || m.state === 'reviewing') && (!m.taskId || m.taskId === task.id));
       text.appendChild(el('span', 'now-sub', `${minutesSince(task.startedAt)}${working.length ? ` · ${working.some((m) => m.state === 'reviewing') ? '검수 중' : `팀원 ${working.length}명 작업 중`}` : ''}`));

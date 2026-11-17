@@ -31,6 +31,7 @@ import type {
   MobileStatus,
   ChatAttachment,
   NewAttachment,
+  TaskRef,
 } from '../shared/types.js' with { 'resolution-mode': 'import' };
 
 const CH_LOAD_HISTORY = 'rano:load-history';
@@ -126,9 +127,10 @@ const api: RanoApi = {
   loadHistory(): Promise<ChatMessage[]> {
     return ipcRenderer.invoke(CH_LOAD_HISTORY);
   },
-  send(text: string, attachments?: NewAttachment[]): Promise<{ ok: boolean; message?: string }> {
+  send(text: string, attachments?: NewAttachment[], about?: TaskRef): Promise<{ ok: boolean; message?: string }> {
     const list = Array.isArray(attachments) ? attachments.slice(0, 6).map((x) => ({ name: String(x?.name ?? ''), mime: String(x?.mime ?? ''), data: String(x?.data ?? ''), ...(x?.marked === true ? { marked: true } : {}) })) : [];
-    return ipcRenderer.invoke(CH_SEND, String(text), list);
+    const ref = about && typeof about.taskId === 'string' && about.taskId ? { missionId: String(about.missionId ?? ''), taskId: String(about.taskId), title: String(about.title ?? '') } : undefined;
+    return ipcRenderer.invoke(CH_SEND, String(text), list, ref);
   },
   unanswered(): Promise<string[]> {
     return ipcRenderer.invoke(CH_UNANSWERED);

@@ -17,6 +17,13 @@ interface ChatMessage {
   report?: { title: string; ok: boolean; taskId?: string };
   choices?: string[];
   toMission?: string;
+  about?: TaskRef; // 이 과제를 골라 한 말(과제 꼬리표)
+}
+
+interface TaskRef {
+  missionId: string;
+  taskId: string;
+  title: string;
 }
 
 type MemberState = 'idle' | 'working' | 'reviewing' | 'done';
@@ -375,7 +382,7 @@ interface TaskOutput {
 
 interface RanoApi {
   loadHistory(): Promise<ChatMessage[]>;
-  send(text: string, attachments?: NewAttachment[]): Promise<{ ok: boolean; message?: string }>;
+  send(text: string, attachments?: NewAttachment[], about?: TaskRef): Promise<{ ok: boolean; message?: string }>;
   unanswered(): Promise<string[]>; // 앱이 꺼져 답하지 못한 내 말 id
   resend(messageId: string): Promise<{ ok: boolean; message?: string }>;
   attachmentData(a: ChatAttachment): Promise<string | null>;

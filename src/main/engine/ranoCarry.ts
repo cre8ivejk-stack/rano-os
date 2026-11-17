@@ -19,6 +19,8 @@ export const ROTATE_TOKENS = 150_000;
 export const COLD_MS = 60 * 60_000;
 /** 식었을 때는 이보다 크면 새 대화로 */
 export const COLD_TOKENS = 40_000;
+/** 크기 기록이 없을 때 대신 보는 기준: 주고받은 말이 이만큼 넘으면 큰 대화로 본다 */
+export const COLD_MESSAGES = 40;
 
 export const CARRY_HEAD = '[앱 안내] 이어 가는 대화';
 const CARRY_MESSAGES = 24; // 넘길 최근 말 수
@@ -27,8 +29,13 @@ const USER_MAX = 1_500;
 const RANO_MAX = 900;
 
 /** 이번 차례를 새 대화로 시작할지 */
-export function shouldRotate(info: RanoContextInfo | null, sessionId: string | undefined, now: number): boolean {
-  if (!info || !sessionId || info.sessionId !== sessionId || !(info.tokens > 0)) return false;
+export function shouldRotate(info: RanoContextInfo | null, sessionId: string | undefined, now: number, past?: { lastAt?: string; count: number }): boolean {
+  if (!sessionId) return false;
+  if (!info || info.sessionId !== sessionId || !(info.tokens > 0)) {
+    // 크기 기록이 없거나 다른 대화 것일 때(새 판을 처음 켠 날 등): 주고받은 말이 많고 1시간 넘게 쉬었으면 새 대화로 (0.9.14)
+    const last = past?.lastAt ? Date.parse(past.lastAt) : NaN;
+    return !!past && past.count >= COLD_MESSAGES && Number.isFinite(last) && now - last >= COLD_MS;
+  }
   if (info.tokens >= ROTATE_TOKENS) return true;
   return now - info.at >= COLD_MS && info.tokens >= COLD_TOKENS;
 }

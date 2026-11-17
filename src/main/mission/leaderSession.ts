@@ -28,7 +28,7 @@ import { behindNotes } from './gitBehind.js';
 import { interruptedReport, taskTitle } from './taskText.js';
 import { PREVIEW_EXTS } from '../approvals/previewSafety.js';
 import { createLeaderMcpServer } from './leaderTools.js';
-import { buildLeaderSystemPrompt, CODE_MAP_FILE, codeMapText, HANDOFF_FILE, readLeaderContext } from './leaderPrompt.js';
+import { buildLeaderMaterial, buildLeaderSystemPrompt, CODE_MAP_FILE, codeMapText, HANDOFF_FILE, readLeaderContext } from './leaderPrompt.js';
 import { APPROVAL_STAGE_TOOLS, loadRoles, READ_ONLY_TOOLS } from './roles.js';
 import { shareWithMission } from '../engine/attachments.js';
 import { fetchPlanLimits, recordLimit, recordResult } from '../engine/usage.js';
@@ -203,7 +203,9 @@ export class MissionLeader implements MissionLeaderApi {
   /** 지금 맡은 과제 (같은 미션의 다른 리더에게 알려 주기용) */
   /** 진행 중 과제에 사용자의 말을 덧붙여 전한다(리더가 다음 도구를 쓴 직후에 읽는다). 전했으면 1 */
   note(text: string, taskId?: string): number {
-    if (!this.currentTask || this.stopReq || (taskId && this.currentTask.id !== taskId)) return 0;
+    // 과제 번호는 앞 8자리만 넘어와도 맞춘다(화면·보고에는 앞 8자리로 보인다)
+    const id = taskId?.trim();
+    if (!this.currentTask || this.stopReq || (id && this.currentTask.id !== id && !(id.length >= 8 && this.currentTask.id.startsWith(id)))) return 0;
     this.guard.addUserNote(text);
     this.safe(() => this.tracker.activity('앱', `사용자가 진행 중에 덧붙인 말을 전했어요: ${text.replace(/\s+/g, ' ').slice(0, 60)}`));
     return 1;
@@ -446,6 +448,8 @@ export class MissionLeader implements MissionLeaderApi {
       () => true,
       () => false,
     );
+    // 과제마다 바뀌는 미션 자료(코드 지도·미션 기억)는 시스템 프롬프트가 아니라 과제 글 끝에 붙인다. 이어 가는 시도(resume)에는 앞 글에 이미 있다
+    if (!resume) prompt = `${prompt}\n\n${buildLeaderMaterial(ctx)}`;
     const systemPrompt = buildLeaderSystemPrompt({ ...ctx, tmpDir }) + (mission.stagePolicy === 'approval' ? skillCatalog([], true) : '') + connBlock + downBlock;
 
     // 팀원도 같은 규칙을 따르도록 역할 프롬프트 끝에 규칙 파일을 붙인다(설정 파일은 불러오지 않으므로)
@@ -542,6 +546,7 @@ export class MissionLeader implements MissionLeaderApi {
           if (msg.subtype === 'init') {
             out.gotInit = true;
             if (msg.session_id) out.sessionId = msg.session_id;
+            if (msg.session_id) this.guard.addSession(msg.session_id);
             if (msg.session_id) await this.store.setSessionId(msg.session_id).catch(() => undefined);
           } else if (msg.subtype === 'task_notification' && msg.tool_use_id) {
             // 팀원이 백그라운드로 돌았을 때를 위한 예비 처리
