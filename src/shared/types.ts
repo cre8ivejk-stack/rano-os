@@ -303,13 +303,18 @@ export interface ChatMessage {
   choices?: string[]; // 라노 답: 사용자가 고를 수 있는 짧은 답 단추(첫 번째가 권장)
   toMission?: string; // 내 말: 대화 화면에서 라노가 아니라 이 미션 리더에게 직접 보낸 말(미션 id)
   replyTo?: string[]; // 라노 답: 이 답이 답한 사용자 말 id (묶어 답하면 여럿). 예전 기록에는 없음
-  about?: TaskRef; // 내 말: 대화 화면에서 이 과제를 골라 한 말. 라노 답: 그 말에 대한 답 (과제 꼬리표, 0.9.14)
 }
-/** 대화에서 과제 하나를 가리키는 꼬리표 */
-export interface TaskRef {
-  missionId: string;
-  taskId: string;
-  title: string;
+/** 업무(대화 방): 한 가지 일에 딸린 과제와 말의 묶음 (0.9.15) */
+export interface Work {
+  id: string; // w_ + 8자리
+  name: string; // 짧은 이름(예: 메뉴 문서 정리)
+  missionId?: string; // 주로 맡긴 미션
+  color: number; // 색 번호 0~5
+  createdAt: string;
+  updatedAt: string; // 마지막으로 과제·말이 달린 시각
+  archived?: boolean; // 사용자가 정리한 업무(지난 업무로 접힘)
+  taskIds: string[]; // 이 업무로 맡긴 과제
+  msgIds: string[]; // 이 업무 방에 보일 라노 대화의 말 id
 }
 /** 대화 첨부 그림 */
 export interface ChatAttachment {
@@ -353,6 +358,7 @@ export type RanoUiEvent =
   | { kind: 'navigate'; tab: 'chat' | 'board' | 'approvals' | 'outputs' } // 맥 알림을 눌렀을 때 해당 탭으로
   // ---- 할 일 목록 ----
   | { kind: 'todos'; items: TodoItem[] } // 할 일 전체 목록 (바뀔 때마다)
+  | { kind: 'works'; items: Work[] } // 업무(대화 방) 전체 목록 (바뀔 때마다)
   // ---- 조직: 라노의 미션 구성안 ----
   | { kind: 'orgProposal'; proposal: MissionProposal; at: string } // 라노가 구성안을 만들었다 → 대화에 카드로 보인다
   | { kind: 'orgOpenProposal'; proposal: MissionProposal }
@@ -361,6 +367,9 @@ export type RanoUiEvent =
 // ---------- IPC 채널 이름 (preload 는 샌드박스라 이 파일을 불러올 수 없으니 같은 문자열을 그대로 적는다) ----------
 export const IPC = {
   loadHistory: 'rano:load-history', // invoke → ChatMessage[]
+  worksList: 'works:list', // invoke() → Work[]
+  workRename: 'works:rename', // invoke(id, name) → { ok }
+  workArchive: 'works:archive', // invoke(id, on) → { ok }
   send: 'rano:send', // invoke(text: string) → { ok, message? } (내 말을 저장·화면에 띄우면 바로 resolve. 라노 답은 이벤트로 온다)
   unanswered: 'rano:unanswered', // invoke → string[] (앱이 꺼져 답하지 못한 내 말 id. 다시 실행하지 않음)
   resend: 'rano:resend', // invoke(messageId) → { ok, message? } (답하지 못한 내 말을 그대로 다시 줄에 세움)
@@ -431,7 +440,10 @@ export const IPC = {
 // 화면(window.rano)에 노출되는 API
 export interface RanoApi {
   loadHistory(): Promise<ChatMessage[]>;
-  send(text: string, attachments?: NewAttachment[], about?: TaskRef): Promise<{ ok: boolean; message?: string }>; // about: 과제를 골라 한 말
+  send(text: string, attachments?: NewAttachment[], workId?: string): Promise<{ ok: boolean; message?: string }>; // workId: 그 업무 방에서 한 말
+  worksList(): Promise<Work[]>;
+  workRename(id: string, name: string): Promise<{ ok: boolean }>;
+  workArchive(id: string, on: boolean): Promise<{ ok: boolean }>;
   unanswered(): Promise<string[]>; // 앱이 꺼져 답하지 못한 내 말 id
   resend(messageId: string): Promise<{ ok: boolean; message?: string }>; // 그 말을 다시 줄에 세움
   attachmentData(a: ChatAttachment): Promise<string | null>; // 미리보기 data URL
@@ -439,7 +451,7 @@ export interface RanoApi {
   // ---- 2단계 ----
   missionList(): Promise<MissionStatus[]>;
   missionHistory(missionId: string): Promise<ChatMessage[]>;
-  missionSend(missionId: string, text: string, attachments?: NewAttachment[], fromChat?: boolean): Promise<{ ok: boolean; message?: string }>; // fromChat: 라노 대화 화면에서 보냄(그 대화에도 내 말로 남긴다)
+  missionSend(missionId: string, text: string, attachments?: NewAttachment[], fromChat?: boolean, workId?: string): Promise<{ ok: boolean; message?: string }>; // fromChat: 라노 대화 화면에서 보냄(그 대화에도 내 말로 남긴다)
   missionStop(missionId: string, taskId?: string): Promise<{ ok: boolean; message?: string }>;
   // ---- 3단계 ----
   approvalsList(): Promise<ApprovalRequest[]>;
@@ -583,11 +595,11 @@ export interface ConversationStoreApi {
 export interface RanoSessionApi {
   // 사용자 말을 바로 저장·emit 하고 줄(사용자 칸)에 세운 뒤 resolve 한다(라노 답을 기다리지 않음).
   // 앞 차례가 돌고 있으면 그 차례가 끝난 뒤, 그 사이 쌓인 내 말과 묶어 한 차례로 답한다.
-  send(text: string, attachments?: ChatAttachment[], via?: 'mobile', about?: TaskRef): Promise<void>;
+  send(text: string, attachments?: ChatAttachment[], via?: 'mobile', workId?: string): Promise<void>;
   // 2단계: 앱이 라노에게 알림(리포 리더 보고 = 'report', 사용자의 직접 지시 사실 = 'direct'). 사용자 말풍선은 만들지 않는다.
   // 줄의 알림 칸(사용자 말 뒤)에 선다. 사용자 말 차례가 먼저 오면 그 프롬프트 앞에 붙고, 너무 오래 기다리면 따로 한 차례.
   // 처리되면(붙었거나 따로 답했거나) resolve.
-  notify(text: string, kind?: 'report' | 'direct'): Promise<void>;
+  notify(text: string, kind?: 'report' | 'direct', workId?: string): Promise<void>;
   unanswered(): Promise<string[]>; // 앱이 꺼져 답하지 못한 내 말 id (줄에 서 있거나 지금 답하는 말은 뺌)
   resend(messageId: string): Promise<{ ok: boolean; message?: string }>; // 답하지 못한 내 말을 그대로 다시 줄에 세움
 }
@@ -629,7 +641,7 @@ export interface MissionTrackerApi {
 //   run 은 큐로 하나씩 처리. 시작 시 tracker.taskStart, 팀원 호출 시 memberStart/End, 끝나면 tracker.taskEnd.
 //   대화 기록(store)과 emit({kind:'leaderMessage'}) 로 지시(role rano/user)와 리더 답(role leader)을 남긴다.
 export interface MissionLeaderApi {
-  run(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; planFirst?: boolean; preSync?: boolean; attachments?: ChatAttachment[] }): Promise<{ ok: boolean; report: string; taskId?: string }>; // preSync: 사용자가 직접 받아오기를 시킴(받아오기는 승인 없이) // planFirst: 기획(안 선택) 먼저, 고른 뒤 구현 // onStart: 앞 과제가 끝나고 이 과제를 실제로 시작할 때
+  run(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; onTask?: (taskId: string) => void; planFirst?: boolean; preSync?: boolean; attachments?: ChatAttachment[] }): Promise<{ ok: boolean; report: string; taskId?: string }>; // onTask: 과제 번호가 정해졌을 때(업무에 다는 데 씀) // preSync: 사용자가 직접 받아오기를 시킴(받아오기는 승인 없이) // planFirst: 기획(안 선택) 먼저, 고른 뒤 구현 // onStart: 앞 과제가 끝나고 이 과제를 실제로 시작할 때
   busy(): boolean;
   working?(): number; // 같은 미션 동시 작업: 지금 일하는 리더 수
   note?(text: string, taskId?: string): number; // 진행 중 과제에 사용자의 말을 덧붙여 전함(리더가 다음 단계에서 읽음). 전한 과제 수 (0.9.12)
@@ -645,8 +657,8 @@ export interface MissionLeaderApi {
 //   미션 기억(진행업무.md)에 한 줄 남기고 미션 홈 자동 저장(autoCommit, 기억 담당 모듈 재사용) 후 notifyRano 로 보고를 전달한다.
 //   userSend 는 시작할 때 notifyRano(…, 'direct') 로 "사용자가 ○○ 리더에게 직접 지시함: …" 을 알린다 (결정 11).
 export interface MissionDispatcherApi {
-  assign(missionId: string, text: string, todoId?: string, planFirst?: boolean, preSync?: boolean): Promise<string>; // 라노가 배정. 접수 문구 반환. todoId 를 주면 그 할 일과 연결
-  userSend(missionId: string, text: string): Promise<void>; // 사용자가 미션 카드에서 직접 지시
+  assign(missionId: string, text: string, todoId?: string, planFirst?: boolean, preSync?: boolean, workId?: string): Promise<string>; // 라노가 배정. 접수 문구 반환. todoId 를 주면 그 할 일과 연결
+  userSend(missionId: string, text: string, attachments?: ChatAttachment[], workId?: string): Promise<void>; // 사용자가 미션 카드에서 직접 지시
   note?(missionId: string, text: string, taskId?: string): { ok: boolean; message: string }; // 진행 중 과제에 사용자의 말을 덧붙여 전함 (0.9.12)
   statuses(): MissionStatus[];
   resumePending?(): void; // 앱을 켤 때 한 번: 지난번에 기다리던 과제를 이어서 맡기고, 하다 멈춘 과제를 정리한다

@@ -223,7 +223,7 @@ export class MissionLeader implements MissionLeaderApi {
     return this.currentTask ? { ...this.currentTask } : null;
   }
 
-  run(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; planFirst?: boolean; preSync?: boolean; attachments?: ChatAttachment[] }): Promise<{ ok: boolean; report: string; taskId?: string }> {
+  run(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; onTask?: (taskId: string) => void; planFirst?: boolean; preSync?: boolean; attachments?: ChatAttachment[] }): Promise<{ ok: boolean; report: string; taskId?: string }> {
     this.pending++;
     const work = () => this.handle(task);
     const next = this.queue.then(work, work).finally(() => {
@@ -260,7 +260,7 @@ export class MissionLeader implements MissionLeaderApi {
     }
   }
 
-  private async handle(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; planFirst?: boolean; preSync?: boolean; attachments?: ChatAttachment[] }): Promise<{ ok: boolean; report: string; taskId?: string }> {
+  private async handle(task: { text: string; from: 'rano' | 'user'; onStart?: () => void; onTask?: (taskId: string) => void; planFirst?: boolean; preSync?: boolean; attachments?: ChatAttachment[] }): Promise<{ ok: boolean; report: string; taskId?: string }> {
     // 앱이 꺼지는 중이면 줄 서 있던 과제는 시작하지 않는다 (대화·현황판에 흔적을 남기지 않고, 다음 실행 때 이어 간다)
     if (this.closed) return { ok: false, report: '앱이 종료되는 중이라 시작하지 않았어요' };
     this.safe(() => task.onStart?.());
@@ -278,6 +278,7 @@ export class MissionLeader implements MissionLeaderApi {
       status: 'running',
       startedAt: new Date().toISOString(),
     };
+    this.safe(() => task.onTask?.(mt.id));
     this.currentTask = mt;
     this.stopReq = false;
     this.taskUsage = { cost: 0, tokens: 0, lastCost: 0, lastTokens: 0 };

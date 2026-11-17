@@ -1,7 +1,7 @@
 // 대화 목록 하나를 그리는 부품. 라노 대화와 리포 리더 대화가 함께 쓴다.
 import { dayKey, el, formatDay, formatTime, renderRich } from './dom.js';
 import { messageImages } from './attach.js';
-import { registerTask, taskChip, taskRef } from './taskTags.js';
+import { workChip } from './workRooms.js';
 
 export interface SpeakerStyle {
   side: 'left' | 'right';
@@ -23,7 +23,7 @@ export class ChatView {
   private ready = false;
   private todosByMsg = new Map<string, string[]>(); // 말 id → 그 말이 다룬 할 일 id (라노 답과, 그 답이 답한 내 말)
   private filterId: string | null = null;
-  private taskFilter: string | null = null; // 이 과제의 말만 보이는 중(과제 꼬리표)
+  private room: string | null = null; // 보고 있는 업무 방(null = 전체 대화)
   /** 긴 왼쪽 말(리더 보고 등)을 접어서 보일지(리더 대화 창에서 켠다) */
   clampLong = false;
   /** 말의 짧은 판을 만든다(예: 배정 말에서 앱 안내문을 뺀 글). 돌려준 글이 원문과 다르면 [전문 보기]가 붙는다 */
@@ -39,10 +39,10 @@ export class ChatView {
   onConfirmTodo: (todoId: string) => Promise<boolean> = async () => false;
   /** 보고 카드 머리글에 덧붙일 글(걸린 시간·승인 카드 수). 없으면 빈 글 */
   reportMeta: (taskId: string) => string = () => '';
-  /** 과제 꼬리표를 눌렀을 때: 그 과제만 보기 */
-  onPickTask: (taskId: string) => void = () => {};
-  /** 과제 하나만 보는 동안 다른 말이 새로 와서 가려졌을 때 */
-  onHiddenNew: () => void = () => {};
+  /** 그 말이 달린 업무 */
+  workOf: (msgId: string) => Work | undefined = () => undefined;
+  /** 업무 꼬리표를 눌렀을 때: 그 업무 방 열기 */
+  onOpenRoom: (workId: string) => void = () => {};
   /** 미션 id → 이름 */
   missionName: (id: string) => string = (id) => id;
   /** 그 할 일이 지금 확인 요청 상태인지([확인 완료] 단추를 보일지) */
@@ -72,7 +72,6 @@ export class ChatView {
     this.shownIds.clear();
     this.todosByMsg.clear();
     this.filterId = null;
-    this.taskFilter = null;
     this.textById.clear();
     this.lastDayKey = null;
     this.ready = false;
@@ -126,17 +125,6 @@ export class ChatView {
       m = { ...m, text: (m.text ?? '').replace(oldMobile, '') || '(사진)' };
     }
     if (m.role === 'user' && typeof m.toMission === 'string' && m.toMission) meta.appendChild(el('span', 'msg-to', `→ ${this.missionName(m.toMission)} 리더에게`));
-    // 과제 꼬리표: 과제를 골라 한 말과 그 답, 리더 보고
-    const about = m.about && typeof m.about.taskId === 'string' && m.about.taskId ? m.about : null;
-    const reportId = m.role === 'rano' && m.form === 'report' && m.report?.taskId ? m.report.taskId : null;
-    const tag = about ?? (reportId ? { missionId: taskRef(reportId)?.missionId ?? '', taskId: reportId, title: m.report?.title ?? '' } : null);
-    if (tag) {
-      registerTask(tag);
-      row.dataset.task = tag.taskId;
-      meta.appendChild(taskChip({ taskId: tag.taskId, title: taskRef(tag.taskId)?.title || tag.title }, (id) => this.onPickTask(id)));
-      if (this.taskFilter && this.taskFilter !== tag.taskId) row.classList.add('msg-off');
-    } else if (this.taskFilter) row.classList.add('msg-off');
-    if (row.classList.contains('msg-off') && this.ready) this.onHiddenNew();
     meta.appendChild(el('span', 'msg-time', formatTime(m.at)));
 
     const text = typeof m.text === 'string' ? m.text : '';
@@ -283,7 +271,8 @@ export class ChatView {
     }
     if (Array.isArray(m.attachments) && m.attachments.length) row.appendChild(messageImages(m.attachments));
     this.textById.set(m.id, text);
-    this.append(row, m.at, forceScroll || style.side === 'right');
+    this.decorate(row);
+    this.append(row, m.at, (forceScroll || style.side === 'right') && !row.classList.contains('msg-off'));
   }
 
   private linkTodos(row: HTMLElement, msgId: string, ids: string[]): void {
@@ -319,18 +308,36 @@ export class ChatView {
     return n;
   }
 
-  /** 그 과제의 말(골라 한 말·그 답·보고)만 보인다. null 이면 모두. 돌려주는 값은 보이는 말 수 */
-  filterTask(taskId: string | null): number {
-    this.taskFilter = taskId;
-    let n = 0;
-    for (const row of Array.from(this.logEl.querySelectorAll<HTMLElement>('.msg'))) {
-      const hit = !taskId || row.dataset.task === taskId;
-      row.classList.toggle('msg-off', !hit);
-      if (hit) n++;
+  /** 말 한 줄에 업무 꼬리표를 달고, 보고 있는 방에 맞춰 보이거나 숨긴다 */
+  private decorate(row: HTMLElement): void {
+    const w = row.dataset.id ? this.workOf(row.dataset.id) : undefined;
+    const old = row.querySelector<HTMLElement>('.work-chip');
+    if (!w) old?.remove();
+    else if (!old || old.dataset.work !== w.id || old.textContent !== w.name || !old.classList.contains(`work-c${w.color % 6}`)) {
+      const chip = workChip(w, (id) => this.onOpenRoom(id));
+      if (old) old.replaceWith(chip);
+      else {
+        const host = row.querySelector<HTMLElement>('.ack-line') ?? row.querySelector<HTMLElement>('.msg-meta');
+        if (host?.classList.contains('ack-line')) host.prepend(chip);
+        else host?.appendChild(chip);
+      }
     }
-    this.logEl.classList.toggle('task-filtered', !!taskId);
+    row.classList.toggle('msg-off', this.room !== null && w?.id !== this.room);
+  }
+
+  /** 업무 방을 바꾼다(null = 전체 대화): 그 업무에 달린 말만 보인다 */
+  setRoom(workId: string | null): void {
+    this.room = workId;
+    this.logEl.classList.toggle('in-room', workId !== null);
+    this.refreshWorks();
     this.scrollToBottom();
-    return n;
+  }
+
+  /** 업무 목록이 바뀌었을 때: 꼬리표와 보임을 다시 맞춘다 */
+  refreshWorks(): void {
+    const stick = this.isNearBottom();
+    for (const row of Array.from(this.logEl.querySelectorAll<HTMLElement>('.msg'))) this.decorate(row);
+    if (stick) this.scrollToBottom();
   }
 
   /** 대화 흐름 사이에 카드 같은 요소를 끼워 넣는다 (예: 라노의 미션 구성안) */

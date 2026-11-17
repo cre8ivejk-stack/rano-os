@@ -33,7 +33,10 @@
 
       <!-- 라노와 대화 -->
       <main class="chat-wrap" id="view-chat" role="tabpanel" aria-labelledby="tab-chat">
+      <!-- 업무 방 목록: 한 가지 일에 딸린 과제·카드·보고·말을 한 방에서 -->
+      <nav class="work-list" id="work-list" aria-label="업무 방"></nav>
       <section class="chat" aria-label="라노와 대화">
+        <div class="room-head" id="room-head" hidden></div>
         <div class="scroll" id="scroll">
           <div class="log" id="log" role="log" aria-live="polite" aria-label="라노와 나눈 대화">
             <div class="empty" id="empty" hidden>
@@ -48,7 +51,6 @@
         </div>
 
         <div class="chat-now" id="chat-now" aria-label="진행 중인 과제와 승인 대기" hidden></div>
-        <div class="reply-task" id="reply-task" hidden></div>
         <form class="composer" id="composer" autocomplete="off">
           <select id="send-to" class="send-to" aria-label="누구에게 보낼지"><option value="">라노에게</option></select>
           <textarea id="input" class="input" rows="1" placeholder="라노에게 할 말을 적어 주세요" aria-label="할 말"></textarea>

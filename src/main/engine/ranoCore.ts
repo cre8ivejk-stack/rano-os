@@ -20,8 +20,8 @@ import {
   type RanoEffort,
   type RanoSessionApi,
   type RanoUiEvent,
-  type TaskRef,
 } from '../../shared/types.js';
+import type { WorkStore, WorkTurn } from './works.js';
 import { createPermissionGate } from './permissions.js';
 import { buildRanoSystemPrompt, ranoMissionList, ranoPromptFrame } from './ranoPrompt.js';
 import { zoneText } from '../admin/paths.js';
@@ -41,6 +41,9 @@ export interface RanoSessionDeps {
   todoMcp?: unknown; // 할 일 도구 서버 (todo_list, todo_add, todo_update, todo_remove)
   todoText?: () => string; // 프롬프트에 넣을 할 일 목록
   todoItems?: () => { id: string; title: string; status: string }[]; // 할 일 목록(라노 답과 할 일을 잇는 안전망·id 확인용)
+  works?: WorkStore; // 업무(대화 방): 말과 과제를 업무에 단다
+  workTurn?: WorkTurn; // 이번 차례의 업무(맡기기 도구와 함께 봄)
+  roomNote?: (workId: string) => string; // 업무 방에서 한 말 앞에 붙일 안내
   statusNote?: () => string; // 사용자 말 차례마다 앞에 붙일 "지금 현황"(미션 진행·승인 대기·터미널 세션). 실패하면 붙이지 않는다
   orgMcp?: unknown; // 조직 도구 서버 (org_overview, propose_mission, open_mission_proposal)
 }
@@ -248,6 +251,9 @@ export class RanoCore implements RanoSessionApi {
   private readonly orgMcp: McpServerConfig | undefined;
   private readonly todoText: (() => string) | undefined;
   private readonly statusNote: (() => string) | undefined;
+  private readonly works: WorkStore | undefined;
+  private readonly workTurn: WorkTurn | undefined;
+  private readonly roomNote: ((workId: string) => string) | undefined;
   private readonly todoItems: (() => { id: string; title: string; status: string }[]) | undefined;
   private readonly eventsLog: string;
   private readonly permissionsLog: string;
@@ -288,6 +294,9 @@ export class RanoCore implements RanoSessionApi {
     this.orgMcp = deps.orgMcp as McpServerConfig | undefined;
     this.todoText = deps.todoText;
     this.statusNote = deps.statusNote;
+    this.works = deps.works;
+    this.workTurn = deps.workTurn;
+    this.roomNote = deps.roomNote;
     this.todoItems = deps.todoItems;
     this.eventsLog = path.join(deps.config.runsDir, 'events.jsonl');
     this.permissionsLog = path.join(deps.config.runsDir, 'permissions.jsonl');
@@ -341,8 +350,10 @@ export class RanoCore implements RanoSessionApi {
   }
 
   /** 내 말: 바로 저장·화면 표시하고 줄에 세운 뒤 돌아간다(답을 기다리지 않음) */
-  async send(text: string, attachments: ChatAttachment[] = [], via?: 'mobile', about?: TaskRef): Promise<void> {
-    const userMsg: ChatMessage = { id: randomUUID(), role: 'user', text, at: new Date().toISOString(), ...(attachments.length ? { attachments } : {}), ...(via ? { via } : {}), ...(about ? { about } : {}) };
+  async send(text: string, attachments: ChatAttachment[] = [], via?: 'mobile', workId?: string): Promise<void> {
+    const userMsg: ChatMessage = { id: randomUUID(), role: 'user', text, at: new Date().toISOString(), ...(attachments.length ? { attachments } : {}), ...(via ? { via } : {}) };
+    const room = this.works?.get(workId)?.id;
+    if (room) this.works?.linkMsgs(room, [userMsg.id]); // 화면에 띄우기 전에 달아 둔다(그 방에 바로 보이게)
     try {
       await this.store.append(userMsg);
     } catch {
@@ -350,13 +361,13 @@ export class RanoCore implements RanoSessionApi {
     }
     const waits = this.running;
     this.emit({ kind: 'message', message: userMsg, ...(waits ? { queued: true, ...(this.currentLabel ? { waitFor: this.currentLabel } : {}) } : {}) });
-    this.users.push({ id: userMsg.id, text, attachments, ...(via ? { via } : {}), ...(about ? { about } : {}), at: this.now() });
+    this.users.push({ id: userMsg.id, text, attachments, ...(via ? { via } : {}), ...(room ? { workId: room } : {}), at: this.now() });
     this.pump();
   }
 
   // 앱이 라노에게 알린다(리포 리더 보고 등). 사용자 말풍선은 만들지 않고 대화 기록에도 사용자 말로 남기지 않는다.
-  notify(text: string, kind: 'report' | 'direct' = 'report'): Promise<void> {
-    const n: LaneNotice = { id: randomUUID(), text, kind, at: this.now(), passed: 0 };
+  notify(text: string, kind: 'report' | 'direct' = 'report', workId?: string): Promise<void> {
+    const n: LaneNotice = { id: randomUUID(), text, kind, at: this.now(), passed: 0, ...(workId ? { workId } : {}) };
     const done = new Promise<void>((resolve) => this.noticeDone.set(n.id, resolve));
     this.notices.push(n);
     this.pump();
@@ -376,7 +387,8 @@ export class RanoCore implements RanoSessionApi {
     if (!m) return { ok: false, message: '그 말을 찾지 못했어요' };
     if (!findUnanswered(messages).includes(messageId)) return { ok: false, message: '이미 답한 말이에요' };
     this.emit({ kind: 'activity', text: `다시 보냈어요: ${firstLine(m.text, 40)}`, at: new Date().toISOString() });
-    this.users.push({ id: m.id, text: m.text, attachments: m.attachments ?? [], ...(m.via ? { via: m.via } : {}), ...(m.about ? { about: m.about } : {}), at: this.now() });
+    const room = this.works?.ofMsg(m.id)?.id;
+    this.users.push({ id: m.id, text: m.text, attachments: m.attachments ?? [], ...(m.via ? { via: m.via } : {}), ...(room ? { workId: room } : {}), at: this.now() });
     this.pump();
     return { ok: true };
   }
@@ -461,7 +473,21 @@ export class RanoCore implements RanoSessionApi {
         statusNote = '';
       }
     }
-    const prompt = plan.kind === 'user' ? `${statusNote ? `${statusNote}\n\n[사용자 말]\n` : ''}${userTurnPrompt(users, plan.notices)}` : noticePrompt(plan.notice);
+    // 이번 차례의 업무: 같은 업무 방에서 한 말들이면 그 업무, 보고·직접 지시 알림이면 그 과제의 업무
+    const rooms = [...new Set(users.map((u) => u.workId ?? ''))];
+    const turnWork =
+      plan.kind === 'user'
+        ? (rooms.length === 1 && rooms[0] ? rooms[0] : null)
+        : (plan.notice.workId ?? (plan.notice.kind === 'report' ? this.works?.byTask(parseReportNotice(plan.notice.text)?.taskId)?.id : undefined) ?? null);
+    this.workTurn?.begin(turnWork, ids);
+    const roomNote = (id: string) => {
+      try {
+        return this.roomNote?.(id) ?? '';
+      } catch {
+        return '';
+      }
+    };
+    const prompt = plan.kind === 'user' ? `${statusNote ? `${statusNote}\n\n[사용자 말]\n` : ''}${userTurnPrompt(users, plan.notices, roomNote)}` : noticePrompt(plan.notice);
     const attachments = users.flatMap((u) => u.attachments);
     const extra = { turn, ...(mobile ? { mobile: true } : {}) };
     this.emit({ kind: 'status', status: 'thinking', turn, ...(label ? { label } : {}), ...(ids.length ? { users: ids } : {}), ...(mobile ? { mobile: true } : {}) });
@@ -516,7 +542,11 @@ export class RanoCore implements RanoSessionApi {
       const text = raw && cut ? `${raw}\n\n${CUT_NOTE}` : raw;
       if (text) {
         // replyTo 는 늘 둔다: 알림 차례 답은 [] (findUnanswered 가 기준에서 건너뜀), 칸이 없는 것은 예전 기록뿐
-        const ranoMsg: ChatMessage = { id: randomUUID(), role: 'rano', text, at: new Date().toISOString(), replyTo: cut ? [] : ids, ...(todoIds.length ? { todoIds } : {}), ...(users[0]?.about && users.every((u) => u.about?.taskId === users[0].about?.taskId) ? { about: users[0].about } : {}), ...this.shapeOf(plan, result, raw, cut, marked.choices) };
+        const ranoMsg: ChatMessage = { id: randomUUID(), role: 'rano', text, at: new Date().toISOString(), replyTo: cut ? [] : ids, ...(todoIds.length ? { todoIds } : {}), ...this.shapeOf(plan, result, raw, cut, marked.choices) };
+        // 답을 업무에 단다: 그 방에서 한 말에 대한 답·그 업무의 보고는 그 업무로, 이번 차례에 업무 하나에 맡겼으면 그 업무로
+        const made = this.workTurn?.assigned ?? [];
+        const replyWork = turnWork ?? (made.length === 1 ? made[0] : null);
+        if (replyWork) this.works?.linkMsgs(replyWork, [ranoMsg.id]);
         try {
           await this.store.append(ranoMsg);
         } catch {

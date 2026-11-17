@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { defaultRootDir, loadConfig, modelKindOf } from './config.js';
 import { defaultsDir, ensureDataHome } from './dataHome.js';
 import { randomUUID } from 'node:crypto';
-import { cleanTaskRef } from './engine/ranoLanes.js';
+import { nameFromTask, roomNoteText, WorkStore, WorkTurn } from './engine/works.js';
+import { taskTitle } from './mission/taskText.js';
 import { IPC, type ChatMessage, type NewAttachment, type MissionConfig, type MissionLeaderApi, type MissionTrackerApi, type RanoUiEvent } from '../shared/types.js';
 import { MemoryService } from './memory/memoryService.js';
 import { createMemoryMcpServer } from './memory/memoryTools.js';
@@ -140,15 +141,19 @@ async function boot() {
   // 조직(미션 관리·인재풀): 화면과 라노의 조직 도구가 함께 쓴다
   const org = createOrgAdmin({ config, memory, activeMissionIds: config.missions.map((m) => m.id) });
 
+  // 업무(대화 방): 과제·말을 일 단위로 묶는다. 바뀔 때마다 화면에 알린다
+  const works = new WorkStore(config.runsDir, (items) => emit({ kind: 'works', items }));
+  const workTurn = new WorkTurn();
   // 라노 세션과 디스패처는 서로를 참조하므로 notifyRano 는 나중에 묶는다
   let session: RanoSession | null = null;
   const dispatcher = new MissionDispatcher({
     config,
     leaders,
     trackers,
-    notifyRano: async (text: string, kind?: 'report' | 'direct') => {
-      await session?.notify(text, kind);
+    notifyRano: async (text: string, kind?: 'report' | 'direct', workId?: string) => {
+      await session?.notify(text, kind, workId);
     },
+    works,
     // 리더 보고가 오면 라노 요약을 기다리지 않고 첫 줄 카드를 바로 띄운다 (휴대폰은 비밀처럼 보이는 글을 가려 보냄)
     onReport: (card) => emit({ kind: 'report', ...card, at: new Date().toISOString() }),
     todos,
@@ -185,16 +190,32 @@ async function boot() {
       const out: string[] = [];
       for (let i = msgs.length - 1; i >= 0 && msgs[i].role === 'user'; i--) out.unshift(msgs[i].text);
       return out.join('\n');
-    }, terminalText),
+    }, terminalText, { store: works, turn: workTurn }),
+    works,
+    workTurn,
+    roomNote: (workId) => {
+      const w = works.get(workId);
+      if (!w) return '';
+      const running = dispatcher.statuses().flatMap((s) => (s.running?.length ? s.running : s.currentTask?.status === 'running' ? [s.currentTask] : [])).filter((t) => w.taskIds.includes(t.id));
+      return roomNoteText(w, running.map((t) => ({ id: t.id, title: t.title })), config.missions.find((m) => m.id === w.missionId)?.name);
+    },
     todoMcp: createTodoMcpServer(todos, config),
     todoText: () => todos.describe(),
     todoItems: () => todos.list().map((x) => ({ id: x.id, title: x.title, status: x.status })),
     statusNote: () =>
+      [
+        works.describe(
+          (w) => dispatcher.statuses().flatMap((s) => (s.running?.length ? s.running : s.currentTask?.status === 'running' ? [s.currentTask] : [])).filter((t) => w.taskIds.includes(t.id)).map((t) => t.id.slice(0, 8)),
+          (id) => config.missions.find((m) => m.id === id)?.name ?? id,
+        ),
       buildStatusNote({
         missions: dispatcher.statuses(),
         pending: approvals.list().filter((a) => a.status === 'pending').map((a) => ({ missionId: a.missionId, title: a.title })),
         terminal: config.missions.map((m) => ({ missionName: m.name, text: terminalOf(m).length ? describeTerminalSessions(terminalOf(m).slice(0, 4)) : '' })),
       }),
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
     orgMcp: createOrgMcpServer(org, emit, config),
   });
   const rano = session;
@@ -202,13 +223,16 @@ async function boot() {
 
   ipcMain.handle(IPC.loadHistory, async () => (await store.load()).messages);
   // 보내기: 내 말을 저장·화면에 띄우면 바로 돌아간다(라노 답은 이벤트로 온다). 라노가 바빠도 보낼 수 있다
-  ipcMain.handle(IPC.send, async (_e, text: unknown, attachments: unknown, about: unknown) => {
+  ipcMain.handle(IPC.worksList, async () => works.list());
+  ipcMain.handle(IPC.workRename, async (_e, id: unknown, name: unknown) => ({ ok: typeof id === 'string' && typeof name === 'string' && works.rename(id, name) }));
+  ipcMain.handle(IPC.workArchive, async (_e, id: unknown, on: unknown) => ({ ok: typeof id === 'string' && works.archive(id, on === true) }));
+  ipcMain.handle(IPC.send, async (_e, text: unknown, attachments: unknown, workId: unknown) => {
     const t = typeof text === 'string' ? text.trim() : '';
     const list = Array.isArray(attachments) ? (attachments as NewAttachment[]) : [];
     if (!t && !list.length) return { ok: false, message: '보낼 내용이 없어요' };
     const saved = saveAttachments(config.runsDir, list);
     if (!saved.ok) return { ok: false, message: saved.message };
-    await rano.send(t || '(그림만 보냈어요)', saved.saved, undefined, cleanTaskRef(about));
+    await rano.send(t || '(그림만 보냈어요)', saved.saved, undefined, typeof workId === 'string' ? workId : undefined);
     return { ok: true };
   });
   // 앱이 꺼져 답하지 못한 내 말(자동으로 다시 실행하지 않음) · 그 말 다시 보내기
@@ -524,7 +548,7 @@ async function boot() {
     typeof missionId === 'string' ? dispatcher.stop(missionId, typeof taskId === 'string' ? taskId : undefined) : { ok: false, message: '미션을 찾지 못했어요' },
   );
 
-  ipcMain.handle(IPC.missionSend, async (_e, missionId: unknown, text: unknown, attachments: unknown, fromChat: unknown) => {
+  ipcMain.handle(IPC.missionSend, async (_e, missionId: unknown, text: unknown, attachments: unknown, fromChat: unknown, workId: unknown) => {
     const t = typeof text === 'string' ? text.trim() : '';
     const list = Array.isArray(attachments) ? (attachments as NewAttachment[]) : [];
     if (typeof missionId !== 'string' || (!t && !list.length)) return { ok: false, message: '보낼 내용이 없어요' };
@@ -532,16 +556,20 @@ async function boot() {
     if (!saved.ok) return { ok: false, message: saved.message };
     if (!config.missions.some((m) => m.id === missionId)) return { ok: false, message: '그 미션을 찾지 못했어요' };
     // 라노 대화 화면에서 리더에게 바로 보낸 말은 그 대화에도 내 말로 남긴다(라노가 답할 말은 아님)
+    // 리더에게 바로 시킨 일도 업무에 단다: 업무 방에서 보냈으면 그 업무, 아니면 지시문으로 이름을 지어 새 업무
+    const body = t || '(그림만 보냈어요)';
+    const work = works.get(typeof workId === 'string' ? workId : undefined) ?? works.create(nameFromTask(taskTitle(body)), missionId);
     if (fromChat === true) {
       const mine: ChatMessage = { id: randomUUID(), role: 'user', text: t || '(그림만 보냈어요)', at: new Date().toISOString(), toMission: missionId, ...(saved.saved.length ? { attachments: saved.saved } : {}) };
       try {
+        works.linkMsgs(work.id, [mine.id]);
         await store.append(mine);
         emit({ kind: 'message', message: mine });
       } catch {
         // 대화에 남기지 못해도 지시는 전한다
       }
     }
-    await dispatcher.userSend(missionId, t || '(그림만 보냈어요)', saved.saved);
+    await dispatcher.userSend(missionId, body, saved.saved, work.id);
     return { ok: true };
   });
 

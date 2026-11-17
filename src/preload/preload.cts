@@ -31,7 +31,7 @@ import type {
   MobileStatus,
   ChatAttachment,
   NewAttachment,
-  TaskRef,
+  Work,
 } from '../shared/types.js' with { 'resolution-mode': 'import' };
 
 const CH_LOAD_HISTORY = 'rano:load-history';
@@ -127,10 +127,9 @@ const api: RanoApi = {
   loadHistory(): Promise<ChatMessage[]> {
     return ipcRenderer.invoke(CH_LOAD_HISTORY);
   },
-  send(text: string, attachments?: NewAttachment[], about?: TaskRef): Promise<{ ok: boolean; message?: string }> {
+  send(text: string, attachments?: NewAttachment[], workId?: string): Promise<{ ok: boolean; message?: string }> {
     const list = Array.isArray(attachments) ? attachments.slice(0, 6).map((x) => ({ name: String(x?.name ?? ''), mime: String(x?.mime ?? ''), data: String(x?.data ?? ''), ...(x?.marked === true ? { marked: true } : {}) })) : [];
-    const ref = about && typeof about.taskId === 'string' && about.taskId ? { missionId: String(about.missionId ?? ''), taskId: String(about.taskId), title: String(about.title ?? '') } : undefined;
-    return ipcRenderer.invoke(CH_SEND, String(text), list, ref);
+    return ipcRenderer.invoke(CH_SEND, String(text), list, typeof workId === 'string' && workId ? workId : undefined);
   },
   unanswered(): Promise<string[]> {
     return ipcRenderer.invoke(CH_UNANSWERED);
@@ -155,9 +154,18 @@ const api: RanoApi = {
   missionHistory(missionId: string): Promise<ChatMessage[]> {
     return ipcRenderer.invoke(CH_MISSION_HISTORY, String(missionId));
   },
-  missionSend(missionId: string, text: string, attachments?: NewAttachment[], fromChat?: boolean): Promise<{ ok: boolean; message?: string }> {
+  worksList(): Promise<Work[]> {
+    return ipcRenderer.invoke('works:list');
+  },
+  workRename(id: string, name: string): Promise<{ ok: boolean }> {
+    return ipcRenderer.invoke('works:rename', String(id), String(name));
+  },
+  workArchive(id: string, on: boolean): Promise<{ ok: boolean }> {
+    return ipcRenderer.invoke('works:archive', String(id), on === true);
+  },
+  missionSend(missionId: string, text: string, attachments?: NewAttachment[], fromChat?: boolean, workId?: string): Promise<{ ok: boolean; message?: string }> {
     const list = Array.isArray(attachments) ? attachments.slice(0, 6).map((x) => ({ name: String(x?.name ?? ''), mime: String(x?.mime ?? ''), data: String(x?.data ?? ''), ...(x?.marked === true ? { marked: true } : {}) })) : [];
-    return ipcRenderer.invoke(CH_MISSION_SEND, String(missionId), String(text), list, fromChat === true);
+    return ipcRenderer.invoke(CH_MISSION_SEND, String(missionId), String(text), list, fromChat === true, typeof workId === 'string' && workId ? workId : undefined);
   },
   missionStop(missionId: string, taskId?: string): Promise<{ ok: boolean; message?: string }> {
     return ipcRenderer.invoke('mission:stop', String(missionId), typeof taskId === 'string' ? taskId : undefined);

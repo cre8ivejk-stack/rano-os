@@ -141,17 +141,3 @@ test('리더 시스템 프롬프트는 미션 기억이 바뀌어도 같고, 미
   assert.ok(m.startsWith(MATERIAL_HEAD) && m.includes('src/a.ts — 가') && m.includes('### 진행업무.md\n어제 한 일'), m);
   assert.ok(buildLeaderMaterial({ memory: [] }).includes('(아직 없음'));
 });
-
-test('과제 꼬리표: 화면에서 넘어온 값 다듬기와 라노에게 붙이는 안내', async () => {
-  const { aboutNote, cleanTaskRef, userTurnPrompt } = await import('../engine/ranoLanes.js');
-  assert.deepEqual(cleanTaskRef({ missionId: 'm1', taskId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', title: ' 메뉴\n정리 ' }), { missionId: 'm1', taskId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', title: '메뉴 정리' });
-  for (const bad of [null, undefined, 'x', {}, { taskId: '' }, { taskId: 'a b' }, { taskId: 'x'.repeat(65) }, { taskId: '../etc' }]) assert.equal(cleanTaskRef(bad), undefined);
-  assert.equal(cleanTaskRef({ taskId: 't1', title: 'x'.repeat(200) })?.title.length, 80);
-  const about = { missionId: 'm1', taskId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', title: '메뉴 정리' };
-  assert.ok(aboutNote(about).includes('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee') && aboutNote(about).includes('tell_running_task'));
-  const one = userTurnPrompt([{ id: 'u1', text: '운영 기준으로 봐', attachments: [], at: 0, about }], []);
-  assert.ok(one.startsWith('[앱 안내]') && one.endsWith('운영 기준으로 봐'), one);
-  assert.ok(!userTurnPrompt([{ id: 'u1', text: '안녕', attachments: [], at: 0 }], []).includes('[앱 안내]'));
-  const two = userTurnPrompt([{ id: 'u1', text: '가', attachments: [], at: 0, about }, { id: 'u2', text: '나', attachments: [], at: 0 }], []);
-  assert.ok(/1\) \(「메뉴 정리」 과제 id aaaaaaaa-bbbb[^)]*\) 가/.test(two) && /2\) 나/.test(two), two);
-});

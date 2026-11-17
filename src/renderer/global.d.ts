@@ -17,13 +17,18 @@ interface ChatMessage {
   report?: { title: string; ok: boolean; taskId?: string };
   choices?: string[];
   toMission?: string;
-  about?: TaskRef; // 이 과제를 골라 한 말(과제 꼬리표)
 }
 
-interface TaskRef {
-  missionId: string;
-  taskId: string;
-  title: string;
+interface Work {
+  id: string;
+  name: string;
+  missionId?: string;
+  color: number;
+  createdAt: string;
+  updatedAt: string;
+  archived?: boolean;
+  taskIds: string[];
+  msgIds: string[];
 }
 
 type MemberState = 'idle' | 'working' | 'reviewing' | 'done';
@@ -91,6 +96,7 @@ type RanoUiEvent =
   | { kind: 'outputs'; items: TaskOutput[] }
   | { kind: 'navigate'; tab: 'chat' | 'board' | 'approvals' | 'outputs' }
   | { kind: 'todos'; items: TodoItem[] }
+  | { kind: 'works'; items: Work[] }
   | { kind: 'orgProposal'; proposal: MissionProposal; at: string }
   | { kind: 'orgOpenProposal'; proposal: MissionProposal }
   | { kind: 'skillSuggest'; need: string; items: SkillSuggestion[]; at: string };
@@ -382,14 +388,17 @@ interface TaskOutput {
 
 interface RanoApi {
   loadHistory(): Promise<ChatMessage[]>;
-  send(text: string, attachments?: NewAttachment[], about?: TaskRef): Promise<{ ok: boolean; message?: string }>;
+  send(text: string, attachments?: NewAttachment[], workId?: string): Promise<{ ok: boolean; message?: string }>;
+  worksList(): Promise<Work[]>;
+  workRename(id: string, name: string): Promise<{ ok: boolean }>;
+  workArchive(id: string, on: boolean): Promise<{ ok: boolean }>;
   unanswered(): Promise<string[]>; // 앱이 꺼져 답하지 못한 내 말 id
   resend(messageId: string): Promise<{ ok: boolean; message?: string }>;
   attachmentData(a: ChatAttachment): Promise<string | null>;
   onEvent(cb: (e: RanoUiEvent) => void): () => void;
   missionList(): Promise<MissionStatus[]>;
   missionHistory(missionId: string): Promise<ChatMessage[]>;
-  missionSend(missionId: string, text: string, attachments?: NewAttachment[], fromChat?: boolean): Promise<{ ok: boolean; message?: string }>;
+  missionSend(missionId: string, text: string, attachments?: NewAttachment[], fromChat?: boolean, workId?: string): Promise<{ ok: boolean; message?: string }>;
   missionStop(missionId: string, taskId?: string): Promise<{ ok: boolean; message?: string }>;
   approvalsList(): Promise<ApprovalRequest[]>;
   approvalDecide(id: string, decision: ApprovalDecision): Promise<void>;

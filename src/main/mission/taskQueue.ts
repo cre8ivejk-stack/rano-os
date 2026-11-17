@@ -18,6 +18,7 @@ export interface QueueEntry {
   planFirst?: boolean; // 기획(안 선택) 먼저
   preSync?: boolean; // 사용자가 직접 받아오기를 시킴
   attachments?: ChatAttachment[]; // 사용자가 직접 지시하며 붙인 그림
+  workId?: string; // 이 과제가 달릴 업무
 }
 
 export class TaskQueueStore {
