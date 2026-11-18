@@ -279,7 +279,7 @@ export class WorkRooms {
   render(): void {
     if (this.renaming && this.box.querySelector('.work-rename') === document.activeElement) return; // 이름을 적는 중에는 다시 그리지 않는다
     this.box.replaceChildren();
-    this.box.appendChild(el('h2', 'work-heading', '업무'));
+    this.box.appendChild(el('h2', 'work-heading', '현재 진행중'));
     const all = el('button', `work-all${this.room === null ? ' work-on' : ''}`);
     all.type = 'button';
     all.setAttribute('aria-pressed', String(this.room === null));

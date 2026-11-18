@@ -1390,7 +1390,7 @@ button.work-chip:hover { border-color: var(--wc); }
 /* 창이 좁으면 업무 목록을 좁게 */
 @media (max-width: 1180px) { .chat-wrap { grid-template-columns: 172px minmax(0, 1fr) 300px; } }
 
-/* ---------- 내 차례 (0.9.16): 오른쪽 패널을 답할 카드·확인할 보고·기다리는 일·나중에 할 일로 ---------- */
+/* ---------- 해야할 일 (0.9.16): 오른쪽 패널을 답할 카드·확인할 보고·기다리는 일·나중에 할 일로 ---------- */
 .turn-sec { margin-bottom: 14px; }
 .turn-sec .todo-group-title { display: flex; align-items: center; gap: 6px; }
 .turn-n { min-width: 17px; padding: 0 5px; border-radius: 999px; background: #e9e7df; color: var(--muted); font-size: 11px; line-height: 17px; text-align: center; font-weight: 600; }

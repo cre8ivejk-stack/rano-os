@@ -1,4 +1,4 @@
-// "내 차례" 패널(대화 화면 오른쪽, 0.9.16): 사용자가 지금 해야 할 것만 모은다.
+// "해야할 일" 패널(대화 화면 오른쪽, 0.9.16): 사용자가 지금 해야 할 것만 모은다.
 // 답할 카드 → 확인할 보고 → 기다리는 일 → 나중에 할 일 → 끝난 일. 진행 중인 일은 왼쪽 업무 목록에 있다(업무 하나가 곧 할 일 하나).
 // 사용자는 추가·제목 고치기·순서 바꾸기·삭제·상태 바꾸기(완료 포함)를 할 수 있다. 라노는 완료를 표시하지 못한다.
 import { el, mustGet } from './dom.js';
@@ -265,7 +265,7 @@ export class TodoView {
     if (!mine) {
       const box = el('div', 'todo-empty turn-clear');
       box.appendChild(el('p', undefined, '지금 답하거나 확인할 것이 없어요.'));
-      if (running.length) box.appendChild(el('p', 'todo-empty-ex', `진행 중인 일 ${running.length}건은 왼쪽 업무에서 볼 수 있어요.`));
+      if (running.length) box.appendChild(el('p', 'todo-empty-ex', `진행 중인 일 ${running.length}건은 왼쪽 「현재 진행중」에서 볼 수 있어요.`));
       this.groupsEl.appendChild(box);
     }
     if (this.pending.length) {
