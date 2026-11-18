@@ -43,6 +43,7 @@ export class WorkRooms {
   private seenLoaded = false;
   private showOld = false;
   private renaming: string | null = null;
+  private todoByWork = new Map<string, TodoItem>(); // 업무에 달린 할 일(단계·상태). 업무 하나가 곧 할 일 하나 (0.9.16)
   private readonly box = mustGet<HTMLElement>('work-list');
 
   /** 방을 바꿨을 때(null = 전체 대화) */
@@ -96,6 +97,21 @@ export class WorkRooms {
     this.markSeen();
     this.render();
     this.onChange();
+  }
+
+  /** 할 일 목록: 업무마다 달린 할 일을 찾아 단계와 상태를 함께 보인다 */
+  setTodos(items: TodoItem[]): void {
+    if (!Array.isArray(items)) return;
+    this.todoByWork.clear();
+    for (const x of items) {
+      if (!x.workId) continue;
+      const cur = this.todoByWork.get(x.workId);
+      if (!cur || (cur.status === 'done' && x.status !== 'done')) this.todoByWork.set(x.workId, x);
+    }
+    this.render();
+  }
+  todoOf(workId: string | null | undefined): TodoItem | undefined {
+    return workId ? this.todoByWork.get(workId) : undefined;
   }
 
   setApprovals(items: ApprovalRequest[]): void {
@@ -155,6 +171,9 @@ export class WorkRooms {
   private isOld(w: Work): boolean {
     if (this.room === w.id) return false;
     if (w.archived) return true;
+    // 확인을 기다리거나 밖의 답을 기다리는 일은 조용해도 접지 않는다
+    const st = this.todoByWork.get(w.id)?.status;
+    if (st === 'review' || st === 'hold' || st === 'active') return false;
     return !this.waiting(w) && !this.running(w) && Date.now() - new Date(w.updatedAt).getTime() > STALE_MS;
   }
 
@@ -207,9 +226,33 @@ export class WorkRooms {
       top.appendChild(b);
     }
     main.appendChild(top);
-    const state = waiting ? '내 답을 기다려요' : running ? `진행 중${running > 1 ? ` ${running}건` : ''}` : unread ? '새 보고가 왔어요' : ago(w.updatedAt);
-    const sub = el('span', `work-sub${waiting ? ' work-sub-wait' : running ? ' work-sub-run' : ''}`, [w.missionId ? (this.missionName(w.missionId) ?? w.missionId) : '', state].filter(Boolean).join(' · '));
+    const todo = this.todoByWork.get(w.id);
+    const review = todo?.status === 'review';
+    const hold = todo?.status === 'hold';
+    const state = waiting
+      ? '내 답을 기다려요'
+      : running
+        ? `진행 중${running > 1 ? ` ${running}건` : ''}`
+        : review
+          ? '확인해 주세요'
+          : hold
+            ? `기다리는 중${todo?.note ? ` · ${todo.note}` : ''}`
+            : unread
+              ? '새 보고가 왔어요'
+              : todo?.status === 'done'
+                ? '끝남'
+                : ago(w.updatedAt);
+    const sub = el('span', `work-sub${waiting ? ' work-sub-wait' : running ? ' work-sub-run' : review ? ' work-sub-review' : ''}`, [w.missionId ? (this.missionName(w.missionId) ?? w.missionId) : '', state].filter(Boolean).join(' · '));
     main.appendChild(sub);
+    // 단계(마일스톤): 점으로만 보인다. 누르면 방이 열리고, 끝남 표시는 방 머리줄이나 오른쪽에서 한다
+    if (todo?.steps?.length && todo.status !== 'done') {
+      const steps = el('span', 'work-steps');
+      const cur = todo.steps.findIndex((s) => !s.done);
+      todo.steps.forEach((s, i) => steps.appendChild(el('span', `work-step${s.done ? ' done' : i === cur ? ' current' : ''}`)));
+      steps.appendChild(el('span', 'work-steps-text', cur < 0 ? '모든 단계 끝' : `${todo.steps.filter((s) => s.done).length}/${todo.steps.length} · ${todo.steps[cur].title}`));
+      steps.title = todo.steps.map((s, i) => `${i + 1}. ${s.title}${s.done ? ' ✓' : ''}`).join('\n');
+      main.appendChild(steps);
+    }
     row.appendChild(main);
     const acts = el('span', 'work-acts');
     const ren = el('button', 'work-act', '✎');
@@ -222,7 +265,7 @@ export class WorkRooms {
     });
     const arc = el('button', 'work-act', w.archived ? '↩' : '✓');
     arc.type = 'button';
-    arc.title = w.archived ? '지난 업무에서 꺼내기' : '끝난 업무로 정리하기(지난 업무로 접혀요)';
+    arc.title = w.archived ? '지난 업무에서 꺼내기' : '끝내기: 지난 업무로 접고, 이 업무의 할 일도 완료로 표시해요';
     arc.setAttribute('aria-label', w.archived ? `${w.name} 꺼내기` : `${w.name} 정리하기`);
     arc.addEventListener('click', () => {
       if (!w.archived && this.room === w.id) this.open(null);

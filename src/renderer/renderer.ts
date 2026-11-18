@@ -278,6 +278,10 @@ const org = new OrgView();
 // ---------- 할 일 ----------
 const todo = new TodoView();
 todo.onOpenOutputs = () => showTab('outputs');
+todo.onOpenCard = (id) => {
+  showTab('approvals');
+  approvals.focus(id);
+};
 // 할 일 ↔ 대화 잇기: 말풍선에 마우스를 올리면 그 말의 할 일을, 가장 최근 라노 답의 할 일은 "지금 이야기 중"으로 강조
 chat.onHoverTodos = (ids) => todo.setHover(ids);
 // 선택 단추: 누르면 그 말을 라노에게 보낸다. [직접 적기]는 입력창으로
@@ -338,6 +342,7 @@ chatNow.onOpenApprovals = (id) => {
 const rooms = new WorkRooms();
 const roomHead = mustGet<HTMLDivElement>('room-head');
 rooms.missionName = (id) => board.nameOf(id);
+todo.onOpenRoom = (id) => rooms.open(id);
 chat.workOf = (msgId) => rooms.ofMsg(msgId);
 chat.onOpenRoom = chatNow.onOpenRoom = (id) => rooms.open(id);
 chatNow.workOf = (taskId) => rooms.ofTask(taskId);
@@ -347,7 +352,20 @@ function showRoomHead(): void {
   roomHead.hidden = !w;
   if (!w) return;
   roomHead.appendChild(workChip(w));
-  roomHead.appendChild(el('span', 'room-head-text', `${w.missionId ? `${board.nameOf(w.missionId) ?? w.missionId} · ` : ''}이 업무의 말·보고·승인만 보여요`));
+  const t = rooms.todoOf(w.id);
+  const stepNow = t?.steps?.length && t.status !== 'done' ? t.steps.find((s) => !s.done) : undefined;
+  const stepText = t?.steps?.length && t.status !== 'done' ? ` · 단계 ${t.steps.filter((s) => s.done).length}/${t.steps.length}${stepNow ? ` (지금: ${stepNow.title})` : ''}` : '';
+  roomHead.appendChild(el('span', 'room-head-text', `${w.missionId ? `${board.nameOf(w.missionId) ?? w.missionId} · ` : ''}이 업무의 말·보고·승인만 보여요${stepText}`));
+  if (!w.archived) {
+    const fin = el('button', 'room-head-back room-head-finish', '끝내기');
+    fin.type = 'button';
+    fin.title = '이 업무를 끝난 것으로 정리해요(할 일도 완료로 표시)';
+    fin.addEventListener('click', () => {
+      rooms.open(null);
+      void rano.workArchive(w.id, true).catch(() => undefined);
+    });
+    roomHead.appendChild(fin);
+  }
   const back = el('button', 'room-head-back', '전체 대화');
   back.type = 'button';
   back.addEventListener('click', () => rooms.open(null));
@@ -498,10 +516,12 @@ function handleEvent(e: RanoUiEvent): void {
     board.leaderLine(e.missionId, e.kind, e.text, e.at);
   } else if (e.kind === 'works') {
     rooms.setWorks(e.items);
+    todo.setWorks(e.items);
   } else if (e.kind === 'approvals') {
     approvals.update(e.items);
     chatNow.setApprovals(e.items);
     rooms.setApprovals(e.items);
+    todo.setApprovals(e.items);
     board.office.setApprovals(e.items);
   } else if (e.kind === 'outputs') {
     outputs.update(e.items);
@@ -515,6 +535,8 @@ function handleEvent(e: RanoUiEvent): void {
     org.openProposal(e.proposal);
   } else if (e.kind === 'todos') {
     todo.update(e.items);
+    rooms.setTodos(e.items);
+    showRoomHead();
     outputs.setTodos(e.items);
   } else if (e.kind === 'mission') {
     board.updateMission(e.status);
@@ -567,7 +589,7 @@ async function start(): Promise<void> {
   void approvals.load();
   void outputs.load();
   rano.outputsList().then((items) => board.office.setOutputsCount(Array.isArray(items) ? items.filter((x) => x.status === 'done').length : 0)).catch(() => undefined);
-  void rano.worksList().then((items) => rooms.setWorks(items)).catch(() => rooms.render());
+  void rano.worksList().then((items) => { rooms.setWorks(items); todo.setWorks(items); }).catch(() => rooms.render());
   await todo.load(); // 보고 카드의 [확인 완료]가 할 일 상태를 보므로 대화 기록보다 먼저
   void org.load();
   try {
@@ -577,7 +599,8 @@ async function start(): Promise<void> {
   } catch {
     // 보고 카드에 걸린 시간만 안 보인다
   }
-  void rano.approvalsList().then((items) => { chatNow.setApprovals(items); rooms.setApprovals(items); board.office.setApprovals(items); }).catch(() => undefined);
+  void rano.approvalsList().then((items) => { chatNow.setApprovals(items); rooms.setApprovals(items); todo.setApprovals(items); board.office.setApprovals(items); }).catch(() => undefined);
+  void rano.todosList().then((items) => rooms.setTodos(items)).catch(() => undefined);
   void rano.missionList().then((list) => { for (const s of Array.isArray(list) ? list : []) { chatNow.setMission(s); rooms.setMission(s); addRecipient(s); } }).catch(() => undefined);
 
   let history: ChatMessage[] = [];

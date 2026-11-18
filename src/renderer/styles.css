@@ -1389,3 +1389,30 @@ button.work-chip:hover { border-color: var(--wc); }
 .room-head-back:hover { color: var(--text); }
 /* 창이 좁으면 업무 목록을 좁게 */
 @media (max-width: 1180px) { .chat-wrap { grid-template-columns: 172px minmax(0, 1fr) 300px; } }
+
+/* ---------- 내 차례 (0.9.16): 오른쪽 패널을 답할 카드·확인할 보고·기다리는 일·나중에 할 일로 ---------- */
+.turn-sec { margin-bottom: 14px; }
+.turn-sec .todo-group-title { display: flex; align-items: center; gap: 6px; }
+.turn-n { min-width: 17px; padding: 0 5px; border-radius: 999px; background: #e9e7df; color: var(--muted); font-size: 11px; line-height: 17px; text-align: center; font-weight: 600; }
+.turn-cards .turn-n { background: #c9731f; color: #fff; }
+.turn-review .turn-n { background: var(--accent); color: #fff; }
+.turn-clear { padding: 10px 2px 14px; }
+.turn-card { list-style: none; padding: 7px 9px; border: 1px solid #ecd9bf; background: #fdf7ee; border-radius: 9px; margin-bottom: 6px; }
+.turn-card-main { display: flex; align-items: baseline; gap: 7px; width: 100%; border: 0; background: none; padding: 0; font: inherit; text-align: left; cursor: pointer; color: var(--text); }
+.turn-card-main:hover .turn-card-title { text-decoration: underline; }
+.turn-card-kind { flex: none; font-size: 11px; font-weight: 600; color: #a8590f; border: 1px solid #e3c08f; border-radius: 6px; padding: 0 5px; line-height: 17px; background: #fff; }
+.turn-card-pick .turn-card-kind { color: #33598c; border-color: #b9cbe3; }
+.turn-card-title { flex: 1; min-width: 0; font-size: 13px; line-height: 1.4; overflow-wrap: anywhere; }
+.turn-card .todo-sub { margin: 3px 0 0; padding-left: 0; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.todo-finish { border-color: var(--accent); background: var(--accent); color: #fff; }
+.todo-finish:hover { background: var(--accent); filter: brightness(0.93); }
+.todo-status.st-hold { color: #7a6a2f; }
+.turn-later .todo-item { opacity: 0.92; }
+/* 왼쪽 업무 줄의 단계 점 */
+.work-steps { display: flex; align-items: center; gap: 3px; margin-top: 3px; min-width: 0; padding-left: 16px; }
+.work-step { flex: none; width: 7px; height: 7px; border-radius: 50%; border: 1.5px solid #b9b8b2; box-sizing: border-box; }
+.work-step.done { background: var(--accent); border-color: var(--accent); }
+.work-step.current { border-color: var(--accent); }
+.work-steps-text { margin-left: 4px; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.work-sub-review { color: var(--accent); font-weight: 600; }
+.room-head-finish { color: var(--accent); border-color: var(--accent); }

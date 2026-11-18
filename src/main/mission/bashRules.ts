@@ -1319,7 +1319,8 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
         addRun();
         continue;
       }
-      if (DEPLOY_CMDS.has(name) || /\bdeploy\b/.test(lowerAll)) {
+      // 읽기 명령(grep 등)은 찾는 글자에 deploy 가 있어도 배포로 보지 않는다 (0.9.16)
+      if (DEPLOY_CMDS.has(name) || (!READ_CMDS.has(name) && /\bdeploy\b/.test(lowerAll))) {
         bump('deploy', `${name} (배포·운영)`);
         continue;
       }

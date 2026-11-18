@@ -59,17 +59,17 @@
         <p class="hint">Enter 보내기 · Shift+Enter 줄바꿈</p>
       </section>
 
-      <!-- 할 일 목록: 사용자와 라노가 함께 보는 굵직한 일 -->
+      <!-- 내 차례: 답할 카드·확인할 보고·기다리는 일·나중에 할 일 (0.9.16) -->
       <aside class="todo" aria-labelledby="todo-heading">
         <div class="todo-head">
-          <h2 class="todo-heading" id="todo-heading">할 일</h2>
+          <h2 class="todo-heading" id="todo-heading">내 차례</h2>
           <span class="todo-count" id="todo-count"></span>
         </div>
-        <p class="todo-rule">완료는 직접 표시해 주세요. 라노는 "확인 요청"까지만 바꿔요.</p>
+        <p class="todo-rule">답할 카드와 확인할 보고가 여기 모여요. 진행 중인 일은 왼쪽 업무에 있어요.</p>
         <div class="todo-groups" id="todo-groups"></div>
         <form class="todo-add" id="todo-add" autocomplete="off">
           <select id="todo-mission" class="todo-mission" aria-label="어느 미션의 일인지"></select>
-          <input id="todo-title" class="todo-title-input" placeholder="할 일 추가" aria-label="새 할 일" maxlength="120" />
+          <input id="todo-title" class="todo-title-input" placeholder="나중에 할 일 추가" aria-label="나중에 할 일" maxlength="120" />
           <button type="submit" id="todo-add-btn" class="todo-add-btn">추가</button>
         </form>
       </aside>

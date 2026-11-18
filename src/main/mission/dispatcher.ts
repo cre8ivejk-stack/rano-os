@@ -152,10 +152,12 @@ export class MissionDispatcher implements MissionDispatcherApi {
       return `할 일 "${todo.title}" 은(는) 다른 미션(${todo.missionId})의 일이에요. 맞는 미션으로 배정하세요.`;
     }
     if (todo?.status === 'done') todo = undefined; // 사용자가 완료한 일은 건드리지 않는다
+    // 할 일을 적지 않았어도 같은 업무 방에 달린 할 일이 있으면 그 할 일의 과제로 본다(업무 하나가 곧 할 일 하나, 0.9.16)
+    if (!todo && !todoId && workId && todos) todo = todos.list().find((x) => x.workId === workId && x.status !== 'done' && (!x.missionId || x.missionId === mission.id));
     const wasBusy = leader.busy();
     const alongside = leader.working?.() ?? 0; // 같은 미션에서 동시에 하고 있는 과제 수
     if (todo && todos) {
-      this.safeTodo(() => todos.update(todo!.id, { status: 'active', queued: wasBusy, note: wasBusy ? '앞 과제가 끝나면 시작' : '' }, 'app'));
+      this.safeTodo(() => todos.update(todo!.id, { status: 'active', queued: wasBusy, note: wasBusy ? '앞 과제가 끝나면 시작' : '', ...(workId && !todo!.workId ? { workId } : {}) }, 'app'));
     }
     this.runInBackground(mission, leader, text, 'rano', todo?.id, false, !!planFirst, [], !!preSync, workId);
     return wasBusy

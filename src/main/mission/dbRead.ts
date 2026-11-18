@@ -107,7 +107,9 @@ const SECRET_VAR = /PASS|SECRET|TOKEN|KEY/;
 const RO_SET = /^\s*set\s+(session\s+)?default_transaction_read_only\s*(=|to)\s*(on|true)\s*;?\s*$/i;
 const READ_ONLY_PGOPTIONS = /^PGOPTIONS=-c default_transaction_read_only=on$/;
 /** 맨 앞에 붙일 수 있는 비밀번호 넘기기: 서버 안의 변수 이름만(값을 적으면 안 됨). 값은 psql 에만 넘어가고 화면에 나오지 않는다 (0.9.12) */
-const PASSWORD_PREFIX = /^PGPASSWORD="\$\{?POSTGRES_PASSWORD\}?"[ \t]+/;
+// 서버에 따라 비밀번호가 변수 대신 파일(POSTGRES_PASSWORD_FILE)에만 있어, 그 파일을 읽어 넘기는 꼴도 글자 그대로 받는다 (0.9.16)
+const PW_FILE = String.raw`\$\(cat "?\$\{?POSTGRES_PASSWORD_FILE\}?"?\)`;
+const PASSWORD_PREFIX = new RegExp(String.raw`^PGPASSWORD="(?:\$\{?POSTGRES_PASSWORD\}?|${PW_FILE}|\$\{POSTGRES_PASSWORD:-${PW_FILE}\})"[ \t]+`);
 
 /**
  * 정해진 꼴의 psql 읽기 조회인지.
@@ -216,5 +218,5 @@ export function trustedDbRead(mission: MissionConfig, toolName: string, input: R
 export function dbReadGuide(mission: MissionConfig): string {
   const r = mission.dbRead;
   if (!mission.trustRepo || !r) return '';
-  return `운영 DB 읽기 조회는 ${r.tool} 도구로, 앱 ${r.apps.join('·')} 에서 아래 꼴로 하면 묻지 않고 바로 된다: PGPASSWORD="$POSTGRES_PASSWORD" PGOPTIONS='-c default_transaction_read_only=on' psql -X -At -F '|' -U "$POSTGRES_USER" -d "\${POSTGRES_DB:-postgres}" -c "SELECT …" (문장마다 -c 하나, 끝에 2>&1 · | head -N 가능. 맨 앞 PGPASSWORD 는 이 글자 그대로만 되고 빼도 된다. 비밀번호를 묻는 오류가 나면 붙인다). 주석·psql 명령(\\…)·$ 확장·쓰기 낱말(insert·update·set 등)이 섞이면 승인함으로 간다. 다른 꼴(node 스크립트 등)이나 바꾸는 쿼리는 승인함으로 간다.`;
+  return `운영 DB 읽기 조회는 ${r.tool} 도구로, 앱 ${r.apps.join('·')} 에서 아래 꼴로 하면 묻지 않고 바로 된다: PGPASSWORD="\${POSTGRES_PASSWORD:-$(cat "$POSTGRES_PASSWORD_FILE")}" PGOPTIONS='-c default_transaction_read_only=on' psql -X -At -F '|' -U "$POSTGRES_USER" -d "\${POSTGRES_DB:-postgres}" -c "SELECT …" (문장마다 -c 하나, 끝에 2>&1 · | head -N 가능. 맨 앞 PGPASSWORD 는 이 글자 그대로만 되고(변수가 비어 있으면 서버의 비밀번호 파일을 읽어 넘긴다) 빼도 된다. 비밀번호를 묻는 오류가 나면 붙인다). 주석·psql 명령(\\…)·$ 확장·쓰기 낱말(insert·update·set 등)이 섞이면 승인함으로 간다. 다른 꼴(node 스크립트 등)이나 바꾸는 쿼리는 승인함으로 간다.`;
 }

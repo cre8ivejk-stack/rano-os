@@ -50,7 +50,8 @@ export function createMissionMcpServer(
   config: RanoConfig,
   userText?: () => Promise<string>,
   terminalText?: (missionId?: string) => string,
-  works?: { store: WorkStore; turn: WorkTurn },
+  works?: { store: WorkStore; turn: WorkTurn; lead?: (turnIds: string[]) => Promise<string[]> },
+  peek?: { cards: (missionId?: string) => string; file: (taskId: string, name?: string) => { ok: boolean; text: string } },
 ) {
   const list = config.missions.map((m) => `- ${m.id}: ${m.name} (${zoneText(config)[m.zone].label} 구역)`).join('\n') || '- (등록된 미션 없음)';
 
@@ -100,8 +101,18 @@ export function createMissionMcpServer(
           if (!works.store.get(workId?.trim()) && !cleanWorkName(workName) && !works.store.get(works.turn.workId))
             return text('아직 맡기지 않았어요. 이 일이 달릴 업무를 정해서 다시 불러 주세요: 새 일이면 workName 에 사용자가 한눈에 알아볼 짧은 이름(12자 안팎의 명사구, 예: "메뉴 문서 정리")을, 앞서 하던 일에 이어지면 workId 에 그 업무 id 를 넣으세요.', true);
           work = works.store.resolve({ workId, workName, missionId, fallbackId: works.turn.workId, title: taskTitle(task) });
+          const made = works.store.get(work.id);
+          const fresh = !!made && !made.taskIds.length && !made.msgIds.length; // 방금 생긴 업무
           if (!works.turn.assigned.includes(work.id)) works.turn.assigned.push(work.id);
           works.store.linkMsgs(work.id, works.turn.userIds); // 이 일을 시킨 내 말도 그 업무 방에 보이게
+          // 새 업무면 맡기기 직전에 나눈 배경 설명도 그 방에 보이게 한다
+          if (fresh && works.lead) {
+            try {
+              works.store.linkMsgs(work.id, await works.lead(works.turn.userIds));
+            } catch {
+              // 못 찾아도 맡기는 일은 그대로
+            }
+          }
         }
         const said = await dispatcher.assign(missionId, body, todoId, planFirst, preSync, work?.id);
         return text(work ? `${said}\n(업무 「${work.name}」 · workId ${work.id} 에 달았어요. 이 일에 이어지는 과제는 같은 workId 로 맡기세요.)` : said);
@@ -163,5 +174,32 @@ export function createMissionMcpServer(
     },
   );
 
-  return createSdkMcpServer({ name: MISSION_MCP_NAME, version: '0.1.0', tools: [assign, status, terminal, tell] });
+  const cards = tool(
+    'get_pending_cards',
+    [
+      '사용자의 답을 기다리는 승인·결정 카드의 내용을 읽습니다: 제목, 무엇을·왜, 리더 권장, 결정 카드면 항목마다 안(A·B·C)의 설명과 권장안.',
+      '사용자가 카드에 대해 물으면("A안과 C안이 뭐가 달라?", "이 카드 승인해도 돼?") 리더에게 다시 묻지 말고 이 도구로 읽어 바로 답하세요. 카드를 대신 승인하거나 고르지는 못합니다.',
+    ].join('\n'),
+    { missionId: z.string().optional().describe('미션 id. 비우면 전체') },
+    async ({ missionId }) => text(peek ? peek.cards(missionId) : '(카드를 읽을 수 없어요)'),
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const taskFile = tool(
+    'read_task_file',
+    [
+      '리더가 과제 결과 폴더에 만들어 둔 글 파일(메일 초안, 기획서, 문의 글 등)을 읽습니다. name 을 비우면 파일 목록을 돌려줍니다.',
+      '사용자가 "메일 내용 보여 줘", "기획서에 뭐라고 썼어?"처럼 이미 만들어진 글을 보고 싶어 하면 새 과제를 맡기지 말고 이 도구로 읽어 그대로(요약하지 말고) 보여 주세요.',
+      'taskId 는 리더 보고 알림에 적힌 과제 id 입니다(앞 8자만 줘도 됨).',
+    ].join('\n'),
+    { taskId: z.string().describe('과제 id (앞 8자 이상)'), name: z.string().optional().describe('읽을 파일 이름. 비우면 목록') },
+    async ({ taskId, name }) => {
+      if (!peek) return text('(과제 파일을 읽을 수 없어요)', true);
+      const r = peek.file(taskId, name);
+      return text(r.text, !r.ok);
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  return createSdkMcpServer({ name: MISSION_MCP_NAME, version: '0.1.0', tools: [assign, status, terminal, tell, cards, taskFile] });
 }

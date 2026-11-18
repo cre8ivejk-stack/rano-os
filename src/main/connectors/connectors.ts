@@ -6,6 +6,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { safeStorage } from 'electron';
 import type { ConnectorCandidate, ConnectorInfo, MissionConfig, RanoConfig } from '../../shared/types.js';
 import { readRaw, writeRaw } from '../admin/paths.js';
@@ -200,6 +201,37 @@ export async function setMissionConnectors(missionId: string, names: string[]): 
   return { ok: true, message: clean.length ? `이 미션이 쓰는 외부 연결: ${clean.map((n) => have[n].label).join(', ')} (다음 과제부터)` : '이 미션은 외부 연결을 쓰지 않아요' };
 }
 
+let wrapperPath: string | null | undefined;
+/** 도구 설명을 늘 같은 글자로 넘겨주는 중간 프로그램(stableStdio)을 데이터 폴더에 꺼내 둔다(포장된 앱 안의 파일은 바깥 프로그램이 못 읽으므로). 못 꺼내면 null */
+function stableWrapper(config: RanoConfig): string | null {
+  if (wrapperPath !== undefined) return wrapperPath;
+  try {
+    const dir = path.join(config.runsDir, 'connector-cache');
+    mkdirSync(dir, { recursive: true });
+    const dest = path.join(dir, 'stable-stdio.mjs');
+    const src = readFileSync(fileURLToPath(new URL('./stableStdio.js', import.meta.url)), 'utf-8');
+    let same = false;
+    try {
+      same = readFileSync(dest, 'utf-8') === src;
+    } catch {
+      same = false;
+    }
+    if (!same) writeFileSync(dest, src);
+    wrapperPath = dest;
+  } catch {
+    wrapperPath = null;
+  }
+  return wrapperPath;
+}
+
+/** 이 맥에서 띄우는 연결을 중간 프로그램으로 감싼다: 켤 때마다 도구 설명 순서가 달라지는 서버 때문에 과제마다 큰 값을 다시 치르지 않게 (0.9.16) */
+export function stableStdio<T extends { type: 'stdio'; command: string; args: string[]; env: Record<string, string> }>(config: RanoConfig, name: string, s: T): T {
+  const w = stableWrapper(config);
+  if (!w) return s;
+  const cache = path.join(config.runsDir, 'connector-cache', `${name}.tools.json`);
+  return { ...s, command: process.execPath, args: [w, cache, s.command, ...s.args], env: { ...s.env, ELECTRON_RUN_AS_NODE: '1' } };
+}
+
 /** 리더 세션에 넘길 MCP 서버 설정 */
 type ServerCfg = { type: 'stdio'; command: string; args: string[]; env: Record<string, string> } | { type: 'http' | 'sse'; url: string; headers: Record<string, string> };
 export function mcpServersFor(config: RanoConfig, mission: MissionConfig): Record<string, ServerCfg> {
@@ -208,7 +240,7 @@ export function mcpServersFor(config: RanoConfig, mission: MissionConfig): Recor
     const c = config.connectors?.[n];
     if (!c) continue;
     const secrets = cfg ? readSecrets(n) : {};
-    if (c.transport === 'stdio') out[n] = { type: 'stdio', command: c.command, args: c.args, env: { ...c.env, ...secrets } };
+    if (c.transport === 'stdio') out[n] = stableStdio(config, n, { type: 'stdio', command: c.command, args: c.args, env: { ...c.env, ...secrets } });
     else if (c.url) out[n] = { type: c.transport, url: c.url, headers: secrets };
   }
   return out;

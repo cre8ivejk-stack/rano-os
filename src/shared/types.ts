@@ -530,9 +530,9 @@ export interface RanoApi {
 }
 
 // ---------- 할 일 목록 (사용자와 라노가 함께 보는 굵직한 일) ----------
-// 상태: waiting 대기 · active 진행 중(리더에게 넘김) · review 확인 요청(리더 보고 도착, 사용자가 볼 차례) · done 완료
+// 상태: waiting 대기(나중에 할 일) · active 진행 중(리더에게 넘김) · review 확인 요청(리더 보고 도착, 사용자가 볼 차례) · hold 기다리는 중(앱 밖의 답·일을 기다림) · done 완료
 // 규칙: 완료(done)는 사용자만 표시한다. 라노는 waiting/active/review 까지만 바꾼다.
-export type TodoStatus = 'waiting' | 'active' | 'review' | 'done';
+export type TodoStatus = 'waiting' | 'active' | 'review' | 'hold' | 'done';
 export interface TodoItem {
   id: string;
   missionId: string | null; // null = 미션 밖의 일
@@ -541,6 +541,7 @@ export interface TodoItem {
   queued?: boolean; // active 인데 리더가 앞 과제를 하느라 아직 시작 못 함
   note?: string; // 짧은 메모 (예: "리더 보고 도착 11/04 23:10", "중단됨")
   taskId?: string; // 이 할 일로 돌린 마지막 과제(결과물함 카드와 잇는다)
+  workId?: string; // 이 할 일이 진행되는 업무 방(왼쪽 업무 목록). 업무 하나가 곧 할 일 하나 (0.9.16)
   steps?: TodoStep[]; // 마일스톤(단계). 순서대로, 많아야 6개
   createdAt: string;
   updatedAt: string;
@@ -556,7 +557,7 @@ export interface TodoStoreApi {
   list(): TodoItem[];
   get(id: string): TodoItem | undefined;
   add(missionId: string | null, title: string, by: 'user' | 'rano'): TodoItem;
-  update(id: string, patch: { title?: string; status?: TodoStatus; queued?: boolean; note?: string; taskId?: string; steps?: string[]; doneSteps?: number[]; undoneSteps?: number[] }, by: 'user' | 'rano' | 'app'): TodoItem;
+  update(id: string, patch: { title?: string; status?: TodoStatus; queued?: boolean; note?: string; taskId?: string; workId?: string; steps?: string[]; doneSteps?: number[]; undoneSteps?: number[] }, by: 'user' | 'rano' | 'app'): TodoItem;
   move(id: string, dir: -1 | 1): void;
   remove(id: string, by: 'user' | 'rano'): void;
   describe(): string; // 라노 프롬프트용 글

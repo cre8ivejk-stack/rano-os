@@ -473,7 +473,7 @@ interface RanoApi {
   todosRemove(id: string): Promise<TodoItem[]>;
 }
 
-type TodoStatus = 'waiting' | 'active' | 'review' | 'done';
+type TodoStatus = 'waiting' | 'active' | 'review' | 'hold' | 'done';
 
 interface TodoItem {
   id: string;
@@ -483,6 +483,7 @@ interface TodoItem {
   queued?: boolean;
   note?: string;
   taskId?: string; // 이 할 일로 돌린 마지막 과제(결과물함 카드와 잇는다)
+  workId?: string; // 이 할 일이 진행되는 업무 방
   steps?: { title: string; done: boolean }[]; // 마일스톤(단계)
   createdAt: string;
   updatedAt: string;

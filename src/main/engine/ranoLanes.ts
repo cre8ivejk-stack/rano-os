@@ -165,6 +165,8 @@ const TOOL_LABELS: Record<string, string> = {
   get_mission_status: '미션 상황 보는 중',
   get_terminal_sessions: '터미널 세션 보는 중',
   tell_running_task: '진행 중인 리더에게 전하는 중',
+  get_pending_cards: '기다리는 카드 읽는 중',
+  read_task_file: '과제 결과 파일 읽는 중',
   org_overview: '조직 살펴보는 중',
   propose_mission: '미션 구성안 만드는 중',
   open_mission_proposal: '구성안 여는 중',

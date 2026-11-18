@@ -6,15 +6,17 @@ import path from 'node:path';
 import type { Emit, RanoConfig, TodoItem, TodoStatus, TodoStoreApi } from '../../shared/types.js';
 import { autoCommit } from '../memory/autoCommit.js';
 
-const STATUSES: TodoStatus[] = ['waiting', 'active', 'review', 'done'];
+const STATUSES: TodoStatus[] = ['waiting', 'active', 'review', 'hold', 'done'];
 export const TODO_STATUS_LABEL: Record<TodoStatus, string> = {
   waiting: '대기',
   active: '진행 중',
   review: '확인 요청',
+  hold: '기다리는 중',
   done: '완료',
 };
 const MAX_ITEMS = 200;
 const MAX_TITLE = 120;
+const DESCRIBE_DONE = 5;
 
 function cleanTitle(t: unknown): string {
   const s = String(t ?? '').replace(/\s+/g, ' ').trim();
@@ -86,7 +88,7 @@ export class TodoStore implements TodoStoreApi {
     return { ...item };
   }
 
-  update(id: string, patch: { title?: string; status?: TodoStatus; queued?: boolean; note?: string; taskId?: string; steps?: string[]; doneSteps?: number[]; undoneSteps?: number[] }, by: 'user' | 'rano' | 'app'): TodoItem {
+  update(id: string, patch: { title?: string; status?: TodoStatus; queued?: boolean; note?: string; taskId?: string; workId?: string; steps?: string[]; doneSteps?: number[]; undoneSteps?: number[] }, by: 'user' | 'rano' | 'app'): TodoItem {
     const item = this.items.find((i) => i.id === id);
     if (!item) throw new Error(`할 일 "${id}" 을(를) 찾지 못했어요`);
     const parts: string[] = [];
@@ -131,6 +133,7 @@ export class TodoStore implements TodoStoreApi {
     if (patch.queued !== undefined) item.queued = patch.queued && item.status === 'active';
     if (patch.note !== undefined) item.note = cleanTitle(patch.note) || undefined;
     if (patch.taskId !== undefined && by === 'app') item.taskId = patch.taskId || undefined; // 결과물 카드와 잇기(앱만)
+    if (patch.workId !== undefined && by === 'app') item.workId = patch.workId || undefined; // 업무 방과 잇기(앱만)
     item.updatedAt = new Date().toISOString();
     const who = by === 'user' ? '사용자' : by === 'rano' ? '라노' : '앱';
     this.changed(parts.length ? `${who}: ${item.title} — ${parts.join(', ')}` : '', parts.length > 0);
@@ -159,7 +162,11 @@ export class TodoStore implements TodoStoreApi {
   describe(): string {
     if (!this.items.length) return '(아직 할 일이 없음)';
     const groups = new Map<string, TodoItem[]>();
+    // 끝난 일은 최근 것 몇 개만 싣는다(라노가 매번 읽는 글이라 오래된 완료 항목으로 길어지지 않게, 0.9.16)
+    const doneAll = this.items.filter((x) => x.status === 'done').sort((a, b) => (b.doneAt ?? b.updatedAt).localeCompare(a.doneAt ?? a.updatedAt));
+    const keepDone = new Set(doneAll.slice(0, DESCRIBE_DONE).map((x) => x.id));
     for (const x of this.items) {
+      if (x.status === 'done' && !keepDone.has(x.id)) continue;
       const key = x.missionId ?? '';
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key)!.push(x);
@@ -170,10 +177,11 @@ export class TodoStore implements TodoStoreApi {
       out.push(`### ${name}${key ? ` (missionId: ${key})` : ''}`);
       for (const x of list) {
         const st = TODO_STATUS_LABEL[x.status] + (x.queued ? '·앞 과제 대기' : '');
-        out.push(`- [${st}] ${x.title} (id: ${x.id})${x.note ? ` — ${x.note}` : ''}`);
+        out.push(`- [${st}] ${x.title} (id: ${x.id}${x.workId ? `, 업무 방 workId: ${x.workId}` : ''})${x.note ? ` — ${x.note}` : ''}`);
         if (x.steps?.length) out.push(`    단계: ${x.steps.map((s, i) => `${i + 1}.${s.done ? '✓' : ''}${s.title}`).join(' → ')}`);
       }
     }
+    if (doneAll.length > DESCRIBE_DONE) out.push(`(그 밖에 끝난 일 ${doneAll.length - DESCRIBE_DONE}개는 줄였어요)`);
     return out.join('\n');
   }
 

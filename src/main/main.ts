@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { defaultRootDir, loadConfig, modelKindOf } from './config.js';
 import { defaultsDir, ensureDataHome } from './dataHome.js';
 import { randomUUID } from 'node:crypto';
-import { nameFromTask, roomNoteText, WorkStore, WorkTurn } from './engine/works.js';
+import { leadMsgIds, nameFromTask, roomNoteText, WorkStore, WorkTurn } from './engine/works.js';
 import { taskTitle } from './mission/taskText.js';
 import { IPC, type ChatMessage, type NewAttachment, type MissionConfig, type MissionLeaderApi, type MissionTrackerApi, type RanoUiEvent } from '../shared/types.js';
 import { MemoryService } from './memory/memoryService.js';
@@ -19,6 +19,7 @@ import { MissionLeaderPool } from './mission/leaderPool.js';
 import { MissionLeader } from './mission/leaderSession.js';
 import { MissionDispatcher } from './mission/dispatcher.js';
 import { createMissionMcpServer } from './mission/missionTools.js';
+import { describePendingCards, readTaskFile } from './mission/ranoPeek.js';
 import { ApprovalQueue } from './approvals/approvalQueue.js';
 import { OutputsStore } from './approvals/outputs.js';
 import { checkPreviewFile, taskDraftsDir, type PreviewCheck } from './approvals/previewSafety.js';
@@ -143,6 +144,24 @@ async function boot() {
 
   // 업무(대화 방): 과제·말을 일 단위로 묶는다. 바뀔 때마다 화면에 알린다
   const works = new WorkStore(config.runsDir, (items) => emit({ kind: 'works', items }));
+  // 전에 만든 할 일을 업무 방과 잇는다: 그 할 일로 돌린 과제가 달린 업무가 있으면 그 업무의 할 일로 (0.9.16)
+  for (const t of todos.list()) {
+    if (t.workId && !works.get(t.workId)) {
+      try {
+        todos.update(t.id, { workId: '' }, 'app');
+      } catch {
+        // 다음에 다시 맞춘다
+      }
+      continue;
+    }
+    const w = !t.workId && t.taskId ? works.byTask(t.taskId) : undefined;
+    if (!w || todos.list().some((x) => x.workId === w.id)) continue;
+    try {
+      todos.update(t.id, { workId: w.id }, 'app');
+    } catch {
+      // 잇지 못해도 앱은 그대로 쓴다
+    }
+  }
   const workTurn = new WorkTurn();
   // 라노 세션과 디스패처는 서로를 참조하므로 notifyRano 는 나중에 묶는다
   let session: RanoSession | null = null;
@@ -190,7 +209,10 @@ async function boot() {
       const out: string[] = [];
       for (let i = msgs.length - 1; i >= 0 && msgs[i].role === 'user'; i--) out.unshift(msgs[i].text);
       return out.join('\n');
-    }, terminalText, { store: works, turn: workTurn }),
+    }, terminalText, { store: works, turn: workTurn, lead: async (turnIds) => leadMsgIds((await store.load()).messages, turnIds, (id) => !!works.ofMsg(id)) }, {
+      cards: (missionId) => describePendingCards(approvals.list(), { missionId, workOf: (t) => (t ? works.byTask(t)?.name : undefined), missionName: (id) => config.missions.find((m) => m.id === id)?.name ?? id }),
+      file: (taskId, name) => readTaskFile(config.runsDir, taskId, name),
+    }),
     works,
     workTurn,
     roomNote: (workId) => {
@@ -225,7 +247,21 @@ async function boot() {
   // 보내기: 내 말을 저장·화면에 띄우면 바로 돌아간다(라노 답은 이벤트로 온다). 라노가 바빠도 보낼 수 있다
   ipcMain.handle(IPC.worksList, async () => works.list());
   ipcMain.handle(IPC.workRename, async (_e, id: unknown, name: unknown) => ({ ok: typeof id === 'string' && typeof name === 'string' && works.rename(id, name) }));
-  ipcMain.handle(IPC.workArchive, async (_e, id: unknown, on: unknown) => ({ ok: typeof id === 'string' && works.archive(id, on === true) }));
+  ipcMain.handle(IPC.workArchive, async (_e, id: unknown, on: unknown) => {
+    const ok = typeof id === 'string' && works.archive(id, on === true);
+    // 업무를 끝난 것으로 정리하면 그 업무의 할 일도 완료로(화면에서 온 요청이라 사용자가 한 일)
+    if (ok && on === true) {
+      for (const t of todos.list()) {
+        if (t.workId !== id || t.status === 'done') continue;
+        try {
+          todos.update(t.id, { status: 'done' }, 'user');
+        } catch {
+          // 할 일을 못 바꿔도 업무 정리는 그대로
+        }
+      }
+    }
+    return { ok };
+  });
   ipcMain.handle(IPC.send, async (_e, text: unknown, attachments: unknown, workId: unknown) => {
     const t = typeof text === 'string' ? text.trim() : '';
     const list = Array.isArray(attachments) ? (attachments as NewAttachment[]) : [];
@@ -302,7 +338,7 @@ async function boot() {
     }
     return todos.list();
   };
-  const STATUS_OK = ['waiting', 'active', 'review', 'done'];
+  const STATUS_OK = ['waiting', 'active', 'review', 'hold', 'done'];
   ipcMain.handle(IPC.todosList, async () => todos.list());
   ipcMain.handle(IPC.todosAdd, async (_e, missionId: unknown, title: unknown) =>
     todoAct(() => {
@@ -324,6 +360,9 @@ async function boot() {
         },
         'user',
       );
+      // 할 일을 끝내면 그 업무 방도 지난 업무로 접는다(업무 하나가 곧 할 일 하나)
+      const after = todos.get(id);
+      if (patch.status === 'done' && after?.status === 'done' && after.workId) works.archive(after.workId, true);
     }),
   );
   ipcMain.handle(IPC.todosMove, async (_e, id: unknown, dir: unknown) =>
@@ -558,7 +597,9 @@ async function boot() {
     // 라노 대화 화면에서 리더에게 바로 보낸 말은 그 대화에도 내 말로 남긴다(라노가 답할 말은 아님)
     // 리더에게 바로 시킨 일도 업무에 단다: 업무 방에서 보냈으면 그 업무, 아니면 지시문으로 이름을 지어 새 업무
     const body = t || '(그림만 보냈어요)';
-    const work = works.get(typeof workId === 'string' ? workId : undefined) ?? works.create(nameFromTask(taskTitle(body)), missionId);
+    // 업무 방 밖에서 보냈는데 그 미션에 내 답을 기다리는 카드가 한 업무에만 있으면, 그 카드에 대한 말로 보고 그 업무에 단다 (0.9.16)
+    const waitingWorks = [...new Set(approvals.list().filter((a) => a.status === 'pending' && a.missionId === missionId).map((a) => works.byTask(a.taskId)?.id).filter((x): x is string => !!x))];
+    const work = works.get(typeof workId === 'string' ? workId : undefined) ?? (waitingWorks.length === 1 ? works.get(waitingWorks[0]) : undefined) ?? works.create(nameFromTask(taskTitle(body)), missionId);
     if (fromChat === true) {
       const mine: ChatMessage = { id: randomUUID(), role: 'user', text: t || '(그림만 보냈어요)', at: new Date().toISOString(), toMission: missionId, ...(saved.saved.length ? { attachments: saved.saved } : {}) };
       try {

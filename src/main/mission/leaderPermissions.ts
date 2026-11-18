@@ -867,6 +867,9 @@ const BASH_WHAT: Record<string, (m: MissionConfig) => string> = {
  * 외부 연결(MCP) 도구 판단. 연결 도구가 아니면 null.
  * - 이 미션에 켜진 연결만 쓴다. 읽기(검색·조회)는 바로, 그 밖은 승인함(external)
  */
+/** 서버 안에서 뒤에서 계속 도는 명령으로 보이는 글자: nohup·disown·setsid, 끝이나 괄호 앞의 & */
+export const BACKGROUND_RUN = /\bnohup\b|\bdisown\b|\bsetsid\b|(^|[^&|>])&\s*(\)|;|$)/m;
+
 export function decideConnectorTool(
   config: RanoConfig,
   mission: MissionConfig,
@@ -889,13 +892,17 @@ export function decideConnectorTool(
   } catch {
     shown = String(input);
   }
+  // 서버 안에서 뒤에서 계속 도는 명령(nohup·끝의 &)은 카드에서 따로 알린다: 사용자들이 쓰는 서버가 느려질 수 있다 (0.9.16)
+  const background = Object.values(input).some((v) => typeof v === 'string' && BACKGROUND_RUN.test(v));
   return {
     type: 'ask',
     reason: `${conn.label} 쓰기 승인 필요: ${tool}`,
     ask: {
       kind: 'external',
-      title: `${conn.label}에 쓰기: ${tool.replace(/_/g, ' ')}`,
-      what: `${conn.label}에서 '${tool}' 작업을 하려고 해요 (다른 사람도 보는 곳이 바뀔 수 있어요)`,
+      title: background ? `${conn.label}에서 뒤에서 계속 돌리기: ${tool.replace(/_/g, ' ')}` : `${conn.label}에 쓰기: ${tool.replace(/_/g, ' ')}`,
+      what: background
+        ? `${conn.label}에서 '${tool}' 작업으로 서버 안에 뒤에서 계속 도는 명령을 띄우려고 해요. 사용자들이 쓰는 서버라면 도는 동안 느려질 수 있어요`
+        : `${conn.label}에서 '${tool}' 작업을 하려고 해요 (다른 사람도 보는 곳이 바뀔 수 있어요)`,
       detail: `연결: ${conn.label} (${server})\n작업: ${tool}\n\n보낼 내용(앞부분):\n${redactPreview(shown, 40, 3000)}`,
     },
   };
@@ -2042,8 +2049,8 @@ export class LeaderGuard {
     if (ext) {
       // 믿는 미션: 정해진 꼴의 운영 DB 읽기 조회는 바로 (기획 결정 전에도 읽기는 됨)
       if (ext.type === 'ask' && trustedDbRead(mission, toolName, input)) return { type: 'allow', reason: '믿는 미션, 운영 DB 읽기 조회' };
-      if (ext.type === 'ask' && (mission.stagePolicy === 'readOnly' || this.planBlocked()))
-        return { type: 'deny', reason: `${mission.stagePolicy === 'readOnly' ? '읽기 전용 미션' : '기획 결정 전'} 외부 쓰기: ${toolName}`, message: mission.stagePolicy === 'readOnly' ? '이 미션은 읽기만 해요. 외부 서비스에 쓰는 일은 보고에 적어 주세요.' : MSG_PLAN };
+      // 기획 결정 전의 외부 연결 호출은 막지 않고 승인함으로 보낸다: 안을 만들려면 운영 자료를 먼저 읽어야 할 때가 많고, 사용자가 카드에서 내용을 보고 정한다 (0.9.16)
+      if (ext.type === 'ask' && mission.stagePolicy === 'readOnly') return { type: 'deny', reason: `읽기 전용 미션 외부 쓰기: ${toolName}`, message: '이 미션은 읽기만 해요. 외부 서비스에 쓰는 일은 보고에 적어 주세요.' };
       if (ext.type === 'ask' && this.isReadOnlyTask()) return { type: 'deny', reason: `읽기만 하는 과제에서 외부 쓰기: ${toolName}`, message: MSG_READ_TASK };
       return ext;
     }

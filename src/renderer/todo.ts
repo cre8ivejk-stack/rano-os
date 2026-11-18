@@ -1,4 +1,5 @@
-// 할 일 패널: 라노 대화 화면 오른쪽에 미션별 굵직한 일과 상태를 보여 준다.
+// "내 차례" 패널(대화 화면 오른쪽, 0.9.16): 사용자가 지금 해야 할 것만 모은다.
+// 답할 카드 → 확인할 보고 → 기다리는 일 → 나중에 할 일 → 끝난 일. 진행 중인 일은 왼쪽 업무 목록에 있다(업무 하나가 곧 할 일 하나).
 // 사용자는 추가·제목 고치기·순서 바꾸기·삭제·상태 바꾸기(완료 포함)를 할 수 있다. 라노는 완료를 표시하지 못한다.
 import { el, mustGet } from './dom.js';
 
@@ -6,9 +7,18 @@ const STATUS_LABEL: Record<TodoStatus, string> = {
   waiting: '대기',
   active: '진행 중',
   review: '확인 요청',
+  hold: '기다리는 중',
   done: '완료',
 };
-const STATUS_ORDER: TodoStatus[] = ['waiting', 'active', 'review', 'done'];
+const STATUS_ORDER: TodoStatus[] = ['waiting', 'active', 'review', 'hold', 'done'];
+
+function waited(iso: string): string {
+  const m = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+  if (m < 1) return '방금';
+  if (m < 60) return `${m}분째`;
+  if (m < 60 * 24) return `${Math.floor(m / 60)}시간째`;
+  return `${Math.floor(m / (60 * 24))}일째`;
+}
 const NO_MISSION = '';
 
 export class TodoView {
@@ -23,6 +33,10 @@ export class TodoView {
   private talkId: string | null = null; // 그 일에 관한 대화만 보는 중인 할 일
   private stepsEditing: string | null = null; // 단계를 고치는 중인 할 일
   private menuOpen: string | null = null; // ⋯ 를 눌러 도구 줄을 편 할 일
+  private pending: ApprovalRequest[] = []; // 내 답을 기다리는 카드
+  private doneOpen = false;
+  private works = new Map<string, Work>();
+  private workByTask = new Map<string, Work>();
 
   private readonly groupsEl = mustGet<HTMLDivElement>('todo-groups');
   private readonly countEl = mustGet<HTMLSpanElement>('todo-count');
@@ -36,6 +50,33 @@ export class TodoView {
   onTalk: (id: string | null) => number = () => 0;
   /** [시작]: 라노에게 그 할 일을 시작하라고 말한다 */
   onStart: (item: TodoItem) => void = () => {};
+  /** 카드를 눌렀을 때: 승인함에서 그 카드를 연다 */
+  onOpenCard: (id: string) => void = () => {};
+  /** 업무 방 열기 */
+  onOpenRoom: (workId: string) => void = () => {};
+
+  setApprovals(items: ApprovalRequest[]): void {
+    if (!Array.isArray(items)) return;
+    this.pending = items.filter((a) => a.status === 'pending').sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    this.render();
+  }
+
+  setWorks(items: Work[]): void {
+    if (!Array.isArray(items)) return;
+    this.works.clear();
+    this.workByTask.clear();
+    for (const w of items) {
+      this.works.set(w.id, w);
+      for (const t of w.taskIds ?? []) this.workByTask.set(t, w);
+    }
+    this.render();
+  }
+
+  /** 그 업무에 달린 할 일(끝나지 않은 것 먼저) */
+  ofWork(workId: string): TodoItem | undefined {
+    const list = this.items.filter((x) => x.workId === workId);
+    return list.find((x) => x.status !== 'done') ?? list[0];
+  }
 
   /** 그 할 일의 지금 상태(없으면 undefined) */
   statusOf(id: string): TodoStatus | undefined {
@@ -171,49 +212,95 @@ export class TodoView {
     return parts.join(' · ');
   }
 
+  /** 묶음 하나(제목 + 줄들) */
+  private section(title: string, n: number, cls = ''): { box: HTMLElement; ul: HTMLUListElement } {
+    const box = el('section', `todo-group turn-sec ${cls}`.trim());
+    const h = el('h3', 'todo-group-title', title);
+    if (n) h.appendChild(el('span', 'turn-n', String(n)));
+    box.appendChild(h);
+    const ul = el('ul', 'todo-list');
+    box.appendChild(ul);
+    return { box, ul };
+  }
+
+  /** 답을 기다리는 카드 한 줄: 누르면 승인함에서 그 카드를 연다 */
+  private cardRow(a: ApprovalRequest): HTMLLIElement {
+    const li = el('li', `turn-card${a.kind === 'decision' ? ' turn-card-pick' : ''}`);
+    const main = el('button', 'turn-card-main');
+    main.type = 'button';
+    main.title = '승인함에서 이 카드를 열어요';
+    main.appendChild(el('span', 'turn-card-kind', a.kind === 'decision' ? '고르기' : '승인'));
+    main.appendChild(el('span', 'turn-card-title', a.title));
+    main.addEventListener('click', () => this.onOpenCard(a.id));
+    li.appendChild(main);
+    const sub = el('div', 'todo-sub');
+    const w = a.taskId ? this.workByTask.get(a.taskId) : undefined;
+    sub.appendChild(el('span', undefined, `${w ? `「${w.name}」` : this.missionName(a.missionId)} · ${waited(a.createdAt)} 기다려요`));
+    if (w) {
+      const room = el('button', 'todo-link', '업무 방');
+      room.type = 'button';
+      room.addEventListener('click', () => this.onOpenRoom(w.id));
+      sub.appendChild(room);
+    }
+    li.appendChild(sub);
+    return li;
+  }
+
   private render() {
-    const open = this.items.filter((x) => x.status !== 'done').length;
-    this.countEl.textContent = this.items.length ? `${open}개 남음` : '';
+    const live = (x: TodoItem) => !!x.workId && this.works.has(x.workId) && !this.works.get(x.workId)!.archived;
+    const review = this.items.filter((x) => x.status === 'review');
+    const hold = this.items.filter((x) => x.status === 'hold');
+    // 진행 중인데 업무 방이 없는 일(전에 만든 것 등)은 여기 "나중에 할 일"에서라도 보이게 한다
+    const later = this.items.filter((x) => x.status === 'waiting' || (x.status === 'active' && !live(x)));
+    const running = this.items.filter((x) => x.status === 'active' && live(x));
+    const done = this.items.filter((x) => x.status === 'done');
+    const mine = this.pending.length + review.length;
+    this.countEl.textContent = mine ? `${mine}건` : '';
     this.groupsEl.replaceChildren();
 
     if (!this.loaded) {
       this.groupsEl.appendChild(el('p', 'todo-empty', '할 일 목록을 불러오지 못했어요.'));
       return;
     }
-    if (!this.items.length) {
-      const box = el('div', 'todo-empty');
-      box.appendChild(el('p', undefined, '아직 할 일이 없어요.'));
-      box.appendChild(el('p', 'todo-empty-ex', '아래에 직접 적거나, 라노에게 "할 일에 넣어줘"라고 말해 보세요.'));
+    if (!mine) {
+      const box = el('div', 'todo-empty turn-clear');
+      box.appendChild(el('p', undefined, '지금 답하거나 확인할 것이 없어요.'));
+      if (running.length) box.appendChild(el('p', 'todo-empty-ex', `진행 중인 일 ${running.length}건은 왼쪽 업무에서 볼 수 있어요.`));
       this.groupsEl.appendChild(box);
-      return;
     }
-
-    const keys = [...this.missionOrder];
-    for (const x of this.items) {
-      const k = x.missionId ?? NO_MISSION;
-      if (!keys.includes(k)) keys.push(k);
+    if (this.pending.length) {
+      const sec = this.section('답할 카드', this.pending.length, 'turn-cards');
+      for (const a of this.pending.slice(0, 8)) sec.ul.appendChild(this.cardRow(a));
+      if (this.pending.length > 8) sec.box.appendChild(el('p', 'todo-empty-ex', `그 밖에 ${this.pending.length - 8}장은 승인함에 있어요.`));
+      this.groupsEl.appendChild(sec.box);
     }
-    if (keys.includes(NO_MISSION)) keys.push(keys.splice(keys.indexOf(NO_MISSION), 1)[0]);
-
-    for (const key of keys) {
-      const list = this.items.filter((x) => (x.missionId ?? NO_MISSION) === key);
-      if (!list.length) continue;
-      const group = el('section', 'todo-group');
-      group.appendChild(el('h3', 'todo-group-title', this.missionName(key || null)));
-      const ul = el('ul', 'todo-list');
-      const notDone = list.filter((x) => x.status !== 'done');
-      for (const x of notDone) ul.appendChild(this.row(x, notDone));
-      group.appendChild(ul);
-      const done = list.filter((x) => x.status === 'done');
-      if (done.length) {
-        const det = el('details', 'todo-done');
-        det.appendChild(el('summary', undefined, `완료 ${done.length}개`));
-        const dl = el('ul', 'todo-list');
-        for (const x of done) dl.appendChild(this.row(x, done));
-        det.appendChild(dl);
-        group.appendChild(det);
-      }
-      this.groupsEl.appendChild(group);
+    if (review.length) {
+      const sec = this.section('확인할 보고', review.length, 'turn-review');
+      for (const x of review) sec.ul.appendChild(this.row(x, review));
+      this.groupsEl.appendChild(sec.box);
+    }
+    if (hold.length) {
+      const sec = this.section('기다리는 일', hold.length, 'turn-hold');
+      for (const x of hold) sec.ul.appendChild(this.row(x, hold));
+      this.groupsEl.appendChild(sec.box);
+    }
+    {
+      const sec = this.section('나중에 할 일', later.length, 'turn-later');
+      for (const x of later) sec.ul.appendChild(this.row(x, later));
+      if (!later.length) sec.box.appendChild(el('p', 'todo-empty-ex', '아래에 적어 두거나, 라노에게 "할 일에 넣어줘"라고 말해 보세요.'));
+      this.groupsEl.appendChild(sec.box);
+    }
+    if (done.length) {
+      const det = el('details', 'todo-done');
+      // 다시 그려도 펴 둔 상태를 지킨다
+      det.open = this.doneOpen;
+      det.addEventListener('toggle', () => (this.doneOpen = det.open));
+      det.appendChild(el('summary', undefined, `끝난 일 ${done.length}개`));
+      const dl = el('ul', 'todo-list');
+      const recent = [...done].sort((a, b) => (b.doneAt ?? b.updatedAt).localeCompare(a.doneAt ?? a.updatedAt));
+      for (const x of recent.slice(0, 30)) dl.appendChild(this.row(x, recent));
+      det.appendChild(dl);
+      this.groupsEl.appendChild(det);
     }
   }
 
@@ -387,6 +474,14 @@ export class TodoView {
       });
       top.appendChild(go);
     }
+    // 확인할 보고·기다리는 일은 한 번에 끝낼 수 있다(업무 방도 지난 업무로 접힌다)
+    if ((x.status === 'review' || x.status === 'hold') && this.editing !== x.id) {
+      const fin = el('button', 'todo-start todo-finish', '끝내기');
+      fin.type = 'button';
+      fin.title = '확인했어요. 이 일을 완료로 표시해요';
+      fin.addEventListener('click', () => void this.act(this.rano.todosUpdate(x.id, { status: 'done' })));
+      top.appendChild(fin);
+    }
     // 그 밖의 일(순서·고치기·대화 보기·단계·지우기)은 ⋯ 안에
     const menu = el('button', 'todo-menu', '⋯');
     menu.type = 'button';
@@ -404,9 +499,17 @@ export class TodoView {
     if (stepsEl) li.appendChild(stepsEl);
 
     const line = this.progressLine(x);
-    if (line || (x.status === 'review' && x.missionId)) {
+    {
       const sub = el('div', 'todo-sub');
-      if (line) sub.appendChild(el('span', undefined, line));
+      const w = x.workId ? this.works.get(x.workId) : undefined;
+      sub.appendChild(el('span', undefined, [this.missionName(x.missionId), line].filter(Boolean).join(' · ')));
+      if (w) {
+        const room = el('button', 'todo-link', '업무 방');
+        room.type = 'button';
+        room.title = `「${w.name}」 업무 방 열기`;
+        room.addEventListener('click', () => this.onOpenRoom(w.id));
+        sub.appendChild(room);
+      }
       if (x.status === 'review' && x.missionId) {
         const look = el('button', 'todo-link', '결과물 보기');
         look.type = 'button';

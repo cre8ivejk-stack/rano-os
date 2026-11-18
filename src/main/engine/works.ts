@@ -215,6 +215,36 @@ export class WorkTurn {
 }
 
 /** 업무 방에서 한 말 앞에 붙이는 안내(라노가 그 업무의 일로 다루게) */
+/**
+ * 새 업무가 생길 때, 그 일을 맡기기 직전에 나눈 말(배경 설명과 라노의 답)을 찾아 준다 (0.9.16).
+ * 맨 끝에서 거슬러 올라가며 아직 어느 업무에도 달리지 않은 사용자·라노의 말만 모은다.
+ * 이미 다른 업무에 달린 말, 리더 보고·접수 알림, 20분 넘게 벌어진 틈을 만나면 멈춘다. 많아야 6개.
+ */
+export function leadMsgIds(
+  msgs: { id: string; role: string; at: string; form?: string }[],
+  turnIds: string[],
+  linked: (id: string) => boolean,
+  max = 6,
+  gapMs = 20 * 60_000,
+): string[] {
+  const out: string[] = [];
+  let later: number | null = null;
+  for (let i = msgs.length - 1; i >= 0 && out.length < max; i--) {
+    const m = msgs[i];
+    const at = Date.parse(m.at);
+    if (turnIds.includes(m.id)) {
+      later = at;
+      continue;
+    }
+    if (m.role !== 'user' && m.role !== 'rano') break;
+    if (m.form || linked(m.id)) break;
+    if (later !== null && Number.isFinite(at) && later - at > gapMs) break;
+    out.unshift(m.id);
+    later = at;
+  }
+  return out;
+}
+
 export function roomNoteText(w: Work, running: { id: string; title: string }[], missionName?: string): string {
   const run = running.length ? ` 지금 이 업무에서 진행 중인 과제: ${running.map((t) => `「${t.title}」(taskId ${t.id})`).join(', ')}.` : ' 지금 이 업무에서 진행 중인 과제는 없어요.';
   return `[앱 안내] 사용자가 「${w.name}」 업무 방(workId ${w.id}${w.missionId ? `, 미션 ${missionName ?? w.missionId} = ${w.missionId}` : ''})에서 한 말이에요. 이 업무에 이어지는 말로 다루세요: 리더에게 맡길 때 assign_to_mission 의 workId 에 ${w.id} 를 넣고, 진행 중인 과제에 덧붙이는 말이면 tell_running_task 에 그 taskId 를 넣어 그 과제에만 전하세요. 다른 업무 이야기와 섞지 마세요.${run}`;

@@ -60,14 +60,14 @@ export function createTodoMcpServer(todos: TodoStoreApi, config: RanoConfig) {
   const update = tool(
     'todo_update',
     [
-      '할 일의 제목·상태·메모·단계(마일스톤)를 바꿉니다. 상태는 waiting(대기), active(진행 중), review(확인 요청)만 쓸 수 있습니다.',
+      '할 일의 제목·상태·메모·단계(마일스톤)를 바꿉니다. 상태는 waiting(나중에 할 일), active(진행 중), review(확인 요청), hold(기다리는 중: 앱 밖의 답·일을 기다림. note 에 무엇을 기다리는지 적음)만 쓸 수 있습니다.',
       '완료(done)는 사용자만 표시합니다. 일이 끝난 것 같으면 review 로 두고 사용자에게 확인해 달라고 말하세요.',
       '리더에게 배정할 때는 assign_to_mission 에 todoId 를 넘기면 앱이 진행 중·확인 요청을 알아서 바꾸므로 이 도구를 따로 쓸 필요가 없습니다.',
     ].join('\n'),
     {
       id: z.string().describe('할 일 id (todo_list 로 확인)'),
       title: z.string().optional(),
-      status: z.enum(['waiting', 'active', 'review']).optional(),
+      status: z.enum(['waiting', 'active', 'review', 'hold']).optional(),
       note: z.string().optional().describe('짧은 메모. 빈 글자면 메모를 지움. 단계(마일스톤)는 여기 적지 말고 steps 에 넣음'),
       steps: z.array(z.string()).optional().describe('단계(마일스톤) 목록을 새로 정함. 3~5개, 순서대로. 같은 이름의 단계는 끝남 표시가 이어짐. 빈 목록이면 단계를 지움'),
       doneSteps: z.array(z.number().int()).optional().describe('끝난 단계 번호(1부터). 마지막 단계는 사용자만 표시할 수 있음'),
