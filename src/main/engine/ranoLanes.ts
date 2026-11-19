@@ -157,6 +157,7 @@ export function findUnanswered(messages: ChatMessage[]): string[] {
 const TOOL_LABELS: Record<string, string> = {
   read_memory: '기억 확인 중',
   update_memory: '기억에 적는 중',
+  edit_memory: '기억에 적는 중',
   todo_list: '할 일 목록 보는 중',
   todo_add: '할 일에 넣는 중',
   todo_update: '할 일 고치는 중',

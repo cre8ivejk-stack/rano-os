@@ -407,6 +407,9 @@ interface RanoApi {
   outputsList(): Promise<TaskOutput[]>;
   openFile(absPath: string): Promise<{ ok: boolean; message?: string }>;
   revealFile(absPath: string): Promise<{ ok: boolean; message?: string }>;
+  peekFile(absPath: string): Promise<{ ok: boolean; message?: string }>;
+  taskFiles(taskId: string): Promise<TaskFile[]>;
+  taskFileAct(taskId: string, rel: string, act: TaskFileAct): Promise<{ ok: boolean; message?: string }>;
   orgMissions(): Promise<MissionSummary[]>;
   orgPickFolder(purpose: 'target' | 'ref', zone: Zone): Promise<string | null>;
   orgInspect(absPath: string, purpose: 'target' | 'ref', zone: Zone, editingId?: string): Promise<FolderInspection>;
@@ -473,6 +476,14 @@ interface RanoApi {
   todosRemove(id: string): Promise<TodoItem[]>;
 }
 
+interface TaskFile {
+  rel: string;
+  name: string;
+  size: number;
+  at: string;
+  kind: 'sheet' | 'doc' | 'web' | 'image' | 'text' | 'other';
+}
+type TaskFileAct = 'peek' | 'open' | 'save' | 'reveal' | 'folder';
 type TodoStatus = 'waiting' | 'active' | 'review' | 'hold' | 'done';
 
 interface TodoItem {

@@ -1392,6 +1392,12 @@ const TRUST_INLINE_REASON = /^(sed|awk) \(쓰기·실행이 섞였을 수 있음
  */
 const TRUST_WRAP_REASON = /^(env|nice|exec|command) 로 감싼 명령$|^(env|nice|nohup|exec|command|time) 뒤에 설정값을 붙여 실행$/;
 
+/** 앱에 딸린 프로그램(문서용 파이썬)의 경로들. 설치돼 있을 때만 */
+function appPrograms(config: RanoConfig): string[] {
+  const bin = path.join(config.rootDir, 'tools', 'python', 'bin');
+  return ['python3', 'python'].map((n) => path.join(bin, n)).filter((p) => existsSync(p));
+}
+
 /** 믿는 미션에서 이 명령을 바로 하지 않는 이유. 바로 해도 되면 null */
 export function trustedBashProblem(
   mission: MissionConfig,
@@ -1401,6 +1407,7 @@ export function trustedBashProblem(
   command = '',
   okHosts?: ReadonlySet<string>,
   readRoots: string[] = [],
+  appTools: string[] = [],
 ): string | null {
   if (kind !== 'write' && kind !== 'command') return '커밋·삭제·DB·배포·작업 폴더 밖 쓰기'; // 그대로 승인함
   if (b.modeChange || (b.linkSources ?? []).length) return '권한 바꾸기·바로가기 만들기';
@@ -1416,7 +1423,10 @@ export function trustedBashProblem(
   if (r4) return `감싸는 명령으로 실행 방식을 바꿀 수 있음: ${r4}`;
   const roots = [...mission.targets.map((t) => path.resolve(t)), ...scratch];
   for (const run of b.runs ?? []) {
-    const p = trustedRunProblem(run, roots, [...roots, ...readRoots]);
+    // 앱에 딸린 문서용 파이썬(데이터 폴더 tools/python)은 작업 폴더 밖에 있어도 아는 프로그램으로 본다 (2026-11-19 사용자 결정).
+    // 이름(python3)으로 하는 나머지 검사는 그대로: 돌릴 스크립트는 작업 폴더·시안·임시 폴더 안이어야 하고, -c 로 넣은 코드는 묻는다
+    const viaApp = run.word.includes('/') && appTools.includes(path.resolve(run.cwd, expandHome(run.word)));
+    const p = trustedRunProblem(viaApp ? { ...run, word: run.name } : run, roots, [...roots, ...readRoots]);
     if (p) return p;
   }
   if (!b.writePaths.every((p) => trustedRepoPath(mission, p) || scratch.some((s) => insideBoth(p, s)))) return '작업 폴더 밖 쓰기';
@@ -1616,7 +1626,7 @@ export function decideApprovalStage(
         hasLinksUnder,
       });
       if (bt.decision === 'allow') return { type: 'allow', reason: `믿는 미션, 읽기·확인 명령: ${bt.reasons.join('; ')}` };
-      const why = bt.decision === 'ask' ? trustedBashProblem(mission, bt.kind ?? 'command', bt, scratch, judged, actor.netHosts, roots) : null;
+      const why = bt.decision === 'ask' ? trustedBashProblem(mission, bt.kind ?? 'command', bt, scratch, judged, actor.netHosts, roots, appPrograms(config)) : null;
       if (bt.decision === 'ask' && why === null)
         return { type: 'allow', reason: `믿는 미션, 작업 폴더 안 명령(${bt.kind ?? 'command'}): ${bt.reasons.join('; ')}` };
       if (why) trustNote = `\n믿는 미션이지만 묻는 이유: ${redactCommand(why)}`;

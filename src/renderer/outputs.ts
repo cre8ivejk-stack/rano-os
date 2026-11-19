@@ -1,4 +1,5 @@
 // 결과물함: 과제별 결과물. 결과 요약 → 정하실 것·다음 할 일 → 확인 완료 → 보고서 전체 → 바뀐 파일 → 검수 보고 순서로 보여 준다.
+import { taskFilesBox } from './taskFiles.js';
 import { el, foldable, formatWhen, mustGet, renderRich, roleLabel, splitWorkPath, toDate } from './dom.js';
 
 const STATUS_LABEL: Record<TaskOutput['status'], string> = {
@@ -357,6 +358,9 @@ export class OutputsView {
       );
     }
 
+    // ---- 결과 파일(과제 결과 폴더의 엑셀·문서 등): 바로 보기·저장·열기 ----
+    if (o.status !== 'running') card.appendChild(taskFilesBox(o.taskId));
+
     // ---- 검수 보고 ----
     const reviews = Array.isArray(o.reviewReports) ? o.reviewReports : [];
     if (reviews.length) {
@@ -404,7 +408,9 @@ export class OutputsView {
       const btns = el('span', 'file-btns');
       const openBtn = el('button', 'btn btn-small', '열기');
       const revealBtn = el('button', 'btn btn-small', 'Finder에서 보기');
-      openBtn.type = revealBtn.type = 'button';
+      const peekBtn = el('button', 'btn btn-small', '바로 보기');
+      peekBtn.title = '앱 안에서 바로 봐요';
+      openBtn.type = revealBtn.type = peekBtn.type = 'button';
       const run = async (btn: HTMLButtonElement, action: (path: string) => Promise<{ ok: boolean; message?: string }>, fail: string) => {
         btn.disabled = true;
         try {
@@ -423,7 +429,8 @@ export class OutputsView {
       };
       openBtn.addEventListener('click', () => void run(openBtn, (x) => this.rano.openFile(x), '파일을 열지 못했어요.'));
       revealBtn.addEventListener('click', () => void run(revealBtn, (x) => this.rano.revealFile(x), 'Finder에서 보여 드리지 못했어요.'));
-      btns.append(openBtn, revealBtn);
+      peekBtn.addEventListener('click', () => void run(peekBtn, (x) => this.rano.peekFile(x), '보여 드리지 못했어요.'));
+      btns.append(peekBtn, openBtn, revealBtn);
       row.appendChild(btns);
     }
 

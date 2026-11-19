@@ -2,6 +2,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from 'electron';
 import { homedir } from 'node:os';
 import { existsSync, readFileSync } from 'node:fs';
+import { copyFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defaultRootDir, loadConfig, modelKindOf } from './config.js';
@@ -23,6 +24,7 @@ import { describePendingCards, readTaskFile } from './mission/ranoPeek.js';
 import { ApprovalQueue } from './approvals/approvalQueue.js';
 import { OutputsStore } from './approvals/outputs.js';
 import { checkPreviewFile, taskDraftsDir, type PreviewCheck } from './approvals/previewSafety.js';
+import { findTaskDir, listTaskFiles, taskFilePath } from './approvals/taskFiles.js';
 import { isBlockedPath } from './engine/permissions.js';
 import { TodoStore } from './todo/todoStore.js';
 import { createTodoMcpServer } from './todo/todoTools.js';
@@ -322,6 +324,54 @@ async function boot() {
     if (!abs) return { ok: false, message: '이 파일은 열 수 없어요 (작업 폴더 밖이거나 지워진 파일이에요)' };
     const err = await shell.openPath(abs);
     return err ? { ok: false, message: '파일을 여는 프로그램을 찾지 못했어요' } : { ok: true };
+  });
+  // 앱 안에서 바로 보기(맥의 훑어보기 창). 엑셀·워드·PDF·그림·글을 다른 프로그램을 띄우지 않고 본다
+  const peek = (abs: string): { ok: boolean; message?: string } => {
+    if (!win || win.isDestroyed()) return { ok: false, message: '창을 찾지 못했어요' };
+    if (process.platform !== 'darwin') return { ok: false, message: '바로 보기는 맥에서만 돼요. [열기]를 눌러 주세요' };
+    win.previewFile(abs, path.basename(abs));
+    return { ok: true };
+  };
+  ipcMain.handle(IPC.peekFile, async (_e, p: unknown) => {
+    const abs = canOpen(p);
+    if (!abs) return { ok: false, message: '이 파일은 보여 드릴 수 없어요 (작업 폴더 밖이거나 지워진 파일이에요)' };
+    return peek(abs);
+  });
+  // 과제 결과 파일: 그 과제의 결과 폴더 안 문서·표·그림·글만 다룬다
+  ipcMain.handle(IPC.taskFiles, async (_e, taskId: unknown) => listTaskFiles(findTaskDir(config.runsDir, taskId)));
+  ipcMain.handle(IPC.taskFileAct, async (_e, taskId: unknown, rel: unknown, act: unknown) => {
+    const dir = findTaskDir(config.runsDir, taskId);
+    if (!dir) return { ok: false, message: '이 과제의 결과 폴더를 찾지 못했어요' };
+    if (act === 'folder') {
+      const err = await shell.openPath(dir);
+      return err ? { ok: false, message: '폴더를 열지 못했어요' } : { ok: true };
+    }
+    const file = taskFilePath(dir, rel);
+    if (!file) return { ok: false, message: '파일을 찾지 못했어요 (지워졌거나 이름이 바뀌었어요)' };
+    if (act === 'reveal') {
+      shell.showItemInFolder(file);
+      return { ok: true };
+    }
+    if (act === 'save') {
+      // 다른 곳에 저장: 사용자가 고른 자리에 사본을 만든다(기본은 다운로드 폴더). 원본은 그대로 둔다
+      const picked = await dialog.showSaveDialog(win!, { title: '다른 곳에 저장', defaultPath: path.join(app.getPath('downloads'), path.basename(file)), buttonLabel: '저장' });
+      if (picked.canceled || !picked.filePath) return { ok: false };
+      try {
+        await copyFile(file, picked.filePath);
+      } catch {
+        return { ok: false, message: '그 자리에 저장하지 못했어요' };
+      }
+      return { ok: true, message: `${path.basename(picked.filePath)} 로 저장했어요` };
+    }
+    // 바로 보기·열기는 맥의 다른 프로그램에 넘기므로 형식·실행 권한·바로가기를 다시 확인한다
+    const check = checkPreviewFile(file, dir);
+    if (!check.ok) return { ok: false, message: check.message.replace(/시안/g, '파일') };
+    if (act === 'peek') return peek(check.path);
+    if (act === 'open') {
+      const err = await shell.openPath(check.path);
+      return err ? { ok: false, message: '파일을 여는 프로그램을 찾지 못했어요' } : { ok: true };
+    }
+    return { ok: false, message: '알 수 없는 요청이에요' };
   });
   ipcMain.handle(IPC.revealFile, async (_e, p: unknown) => {
     const abs = canOpen(p);

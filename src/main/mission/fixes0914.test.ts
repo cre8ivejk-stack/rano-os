@@ -141,3 +141,28 @@ test('리더 시스템 프롬프트는 미션 기억이 바뀌어도 같고, 미
   assert.ok(m.startsWith(MATERIAL_HEAD) && m.includes('src/a.ts — 가') && m.includes('### 진행업무.md\n어제 한 일'), m);
   assert.ok(buildLeaderMaterial({ memory: [] }).includes('(아직 없음'));
 });
+
+test('0.9.18: 앱에 딸린 문서용 파이썬으로 시안 폴더 안 스크립트 돌리기는 바로, 코드 넣기·폴더 밖 스크립트는 그대로', () => {
+  const py = path.join(config.rootDir, 'tools', 'python', 'bin', 'python3');
+  mkdirSync(path.dirname(py), { recursive: true });
+  writeFileSync(py, '');
+  const TID = '0a1b2c3d-1111-4222-8333-444455556666';
+  const drafts = path.join(runsDir, 'drafts', trusted.id, TID);
+  mkdirSync(drafts, { recursive: true });
+  writeFileSync(path.join(drafts, 'build.py'), 'print(1)');
+  writeFileSync(path.join(TARGET, 'make.py'), 'print(1)');
+  const a = { ...actor, draftsDir: drafts };
+  assert.equal(stage(trusted, `${py} ${path.join(drafts, 'build.py')}`, a), 'allow');
+  assert.equal(stage(trusted, `${py} make.py`, a), 'allow');
+  assert.notEqual(stage(trusted, `${py} -c "import os"`, a), 'allow');
+  assert.notEqual(stage(trusted, `${py} ${path.join(ROOT, 'elsewhere.py')}`, a), 'allow');
+  // 다른 곳의 파이썬은 그대로 묻는다
+  assert.notEqual(stage(trusted, `${path.join(ROOT, 'other', 'bin', 'python3')} ${path.join(drafts, 'build.py')}`, a), 'allow');
+  // 믿는 미션이 아니면 그대로
+  assert.notEqual(stage(base, `${py} ${path.join(drafts, 'build.py')}`, a), 'allow');
+  // 같은 미션의 다른 과제 결과 폴더 읽기는 전부터 바로 됨
+  const prev = path.join(runsDir, 'drafts', trusted.id, '99999999-1111-4222-8333-444455556666');
+  mkdirSync(prev, { recursive: true });
+  writeFileSync(path.join(prev, '목록.txt'), 'x');
+  assert.equal(stage(trusted, `head -15 ${path.join(prev, '목록.txt')}`, a), 'allow');
+});

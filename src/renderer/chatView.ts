@@ -1,4 +1,5 @@
 // 대화 목록 하나를 그리는 부품. 라노 대화와 리포 리더 대화가 함께 쓴다.
+import { taskFilesBox } from './taskFiles.js';
 import { dayKey, el, formatDay, formatTime, renderRich } from './dom.js';
 import { messageImages } from './attach.js';
 import { workChip } from './workRooms.js';
@@ -188,7 +189,8 @@ export class ChatView {
         });
         acts.appendChild(ok);
       }
-      bubble.append(head, body, acts);
+      // 리더가 만든 결과 파일(엑셀·문서·메일 초안 등): 여기서 바로 보고 저장한다
+      bubble.append(head, body, taskFilesBox(m.report.taskId), acts);
     } else {
       bubble = el('div', 'bubble');
       const short = this.shortOf(m);

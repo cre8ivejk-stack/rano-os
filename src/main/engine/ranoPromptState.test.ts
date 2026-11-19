@@ -123,11 +123,13 @@ test('저장 파일: 없거나 깨졌으면 null, 저장한 것은 그대로 읽
   assert.equal(PromptStateFile.at(dir).load(), null);
 });
 
-test('라노 지침 문구: 파일마다 그 파일이 실린 가장 최근 [앱 안내]를 근거로, 기억 고치기 전에는 늘 read_memory', () => {
+test('라노 지침 문구: 파일마다 그 파일이 실린 가장 최근 [앱 안내]를 근거로, 기억은 바뀐 부분만 고치기', () => {
   const p = buildRanoSystemPrompt(mem(), [], '- a');
   assert.ok(p.includes('기억 파일마다 그 파일이 실린 가장 최근 "[앱 안내] 바뀐 내용"(어디에도 없으면 아래 "현재 기억")을 근거로 답한다'));
   assert.ok(p.includes('할 일 목록이 실린 가장 최근 "[앱 안내] 바뀐 내용"(어디에도 없으면 아래 "현재 할 일 목록")을 근거로 답한다'));
-  assert.ok(p.includes('고치기 전에 늘 read_memory 로 지금 내용을 읽고, 그 내용을 바탕으로 고친다'));
+  // 0.9.18: 바뀐 부분만 고친다(old 가 지금 파일과 다르면 앱이 거절하므로 낡은 판으로 덮어쓸 일이 없다)
+  assert.ok(p.includes('edit_memory 도구로 해당 파일의 바뀐 부분만 고친다'));
+  assert.ok(p.includes('긴 파일을 거의 그대로 다시 쓰면 앱이 받지 않는다'));
   assert.ok(!p.includes('판이 확실하지 않으면 read_memory 로 먼저 읽는다'));
   assert.ok(!p.includes('"[앱 안내] 바뀐 내용"의 기억 판'));
   assert.ok(!p.includes('아래 "현재 기억"에 적힌 내용을 근거로 답한다'));

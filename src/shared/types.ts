@@ -387,6 +387,9 @@ export const IPC = {
   outputsList: 'outputs:list', // invoke → TaskOutput[]
   openFile: 'outputs:open', // invoke(absPath) → { ok: boolean; message?: string } (작업 대상 폴더 안 파일만)
   revealFile: 'outputs:reveal', // invoke(absPath) → { ok: boolean; message?: string } (Finder 에서 보기)
+  peekFile: 'outputs:peek', // invoke(absPath) → { ok, message? } (앱 안에서 바로 보기. 작업 대상 폴더 안 파일만)
+  taskFiles: 'task:files', // invoke(taskId) → TaskFile[] (그 과제 결과 폴더의 문서·표·그림·글)
+  taskFileAct: 'task:file-act', // invoke(taskId, rel, act) → { ok, message? } (바로 보기·열기·저장·Finder)
   // ---- 조직(미션 관리·인재풀) ----
   orgMissions: 'org:missions', // invoke → MissionSummary[] (보관한 미션 포함)
   orgPickFolder: 'org:pick-folder', // invoke(purpose: 'target'|'ref', zone) → string | null (맥 폴더 선택 창, 구역 루트에서 시작)
@@ -461,6 +464,9 @@ export interface RanoApi {
   outputsList(): Promise<TaskOutput[]>;
   openFile(absPath: string): Promise<{ ok: boolean; message?: string }>;
   revealFile(absPath: string): Promise<{ ok: boolean; message?: string }>;
+  peekFile(absPath: string): Promise<{ ok: boolean; message?: string }>;
+  taskFiles(taskId: string): Promise<TaskFile[]>;
+  taskFileAct(taskId: string, rel: string, act: TaskFileAct): Promise<{ ok: boolean; message?: string }>;
   // ---- 조직 ----
   orgMissions(): Promise<MissionSummary[]>;
   orgPickFolder(purpose: 'target' | 'ref', zone: Zone): Promise<string | null>;
@@ -547,6 +553,15 @@ export interface TodoItem {
   updatedAt: string;
   doneAt?: string;
 }
+/** 과제 결과 폴더의 파일 하나 (0.9.18) */
+export interface TaskFile {
+  rel: string; // 결과 폴더 기준 경로
+  name: string;
+  size: number;
+  at: string;
+  kind: 'sheet' | 'doc' | 'web' | 'image' | 'text' | 'other';
+}
+export type TaskFileAct = 'peek' | 'open' | 'save' | 'reveal' | 'folder';
 /** 할 일의 단계(마일스톤) 하나 */
 export interface TodoStep {
   title: string;
