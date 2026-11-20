@@ -632,11 +632,25 @@ const LONG_RANDOM = /[A-Za-z0-9+/_\-]{32,}/;
 
 const CHANGE_MAX_CHARS = 200_000; // 승인함에 담을 전·후 내용 한도(각각)
 
+const JSON_SECRET = /("[^"\n]{0,40}(?:secret|token|passw(?:or)?d|api[_-]?key|private[_-]?key|authorization|aws_access)[^"\n]{0,40}"\s*:\s*)("(?:[^"\\]|\\.)*"|[^\s,}\]]+)/gi;
+const SHORT_LINE = 300; // 이보다 긴 줄(본문이 한 줄로 온 글 등)은 통째로 가리지 않고 비밀로 보이는 값만 가린다
+
+/**
+ * 한 줄 가리기 (0.9.19): 비밀스러운 이름이 든 짧은 줄은 통째로 가린다(설정 파일의 "이름=값" 줄).
+ * 긴 영문·숫자 덩어리만 든 줄, 아주 긴 줄은 그 값만 가리고 나머지 글은 보인다
+ * (전에는 줄 통째로 가려서 주소 하나가 든 Confluence 본문·명령이 카드에서 안 보였다).
+ */
+export function maskLineSoft(l: string): string {
+  if (SECRET_LINE.test(l)) {
+    if (l.length <= SHORT_LINE || /PRIVATE KEY/.test(l)) return '(비밀로 보여 가림)';
+    // 긴 줄: "이름": "값" 꼴(JSON)의 비밀스러운 이름 값도 가린다
+    return redactCommand(l.replace(JSON_SECRET, '$1"(가림)"'));
+  }
+  return LONG_RANDOM.test(l) ? redactCommand(l) : l;
+}
+
 function maskSecrets(text: string): string {
-  return text
-    .split('\n')
-    .map((l) => (SECRET_LINE.test(l) || LONG_RANDOM.test(l) ? '(비밀로 보여 가림)' : l))
-    .join('\n');
+  return text.split('\n').map(maskLineSoft).join('\n');
 }
 
 /** Write·Edit 가 파일을 어떻게 바꾸는지 전·후 내용을 만든다. 알 수 없으면 undefined */
@@ -673,7 +687,7 @@ export function fileChangeFor(toolName: string, input: Record<string, unknown>, 
 /** 미리보기용: 비밀로 보이는 줄은 가리고 앞부분만 남긴다. */
 export function redactPreview(text: string, maxLines = 30, maxChars = 1500): string {
   const lines = String(text ?? '').split('\n').slice(0, maxLines);
-  const masked = lines.map((l) => (SECRET_LINE.test(l) || LONG_RANDOM.test(l) ? '(비밀로 보여 가림)' : l));
+  const masked = lines.map(maskLineSoft);
   let out = masked.join('\n');
   if (out.length > maxChars) out = `${out.slice(0, maxChars)}…`;
   const total = String(text ?? '').split('\n').length;
@@ -685,6 +699,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // 이름만 봐도 토큰인 글(GitHub·GitLab·Slack·OpenAI/Anthropic·Stripe·AWS·Google·npm·Hugging Face)
 const TOKEN_PREFIX = /\b(?:gh[pousr]_|github_pat_|glpat-|xox[abposr]-|sk-(?:ant-|proj-|live-)?|sk_(?:live|test)_|rk_(?:live|test)_|AKIA|ASIA|AIza|npm_|hf_|ya29\.)[A-Za-z0-9_\-.]{8,}/g;
 const LONG_RUN = /[A-Za-z0-9+/_\-]{32,}/g;
+// -p<비번> 꼴을 쓰는 프로그램. 이 프로그램이 든 명령에서만 -p 뒤를 가린다(find -path · perl -pe 같은 옵션은 그대로 보이게, 0.9.19)
+const MYSQL_LIKE = /\b(?:mysql\w*|mariadb[\w-]*|mycli)\b/;
 
 /**
  * 명령 글에서 비밀로 보이는 값을 가린다(승인 카드 자세히·권한 기록·제목에 쓴다).
@@ -698,9 +714,10 @@ export function redactCommand(cmd: string): string {
     .replace(/\b(bearer)\s+(?!\(가림\))[A-Za-z0-9._~+\/=-]{4,}/gi, '$1 (가림)')
     .replace(/(^|\s)(-u\s*|--user[= ]\s*|--proxy-user[= ]\s*|-U\s*)("[^"]*:[^"]*"|'[^']*:[^']*'|[^\s'"]*:[^\s'"]*)/g, '$1$2(가림)') // curl -u 아이디:비번
     .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\/\s@'"]+@/gi, '$1(가림)@') // https://아이디:비번@호스트
-    .replace(/((?:secret|token|passw(?:or)?d|api[_-]?key|auth)[A-Za-z0-9_-]*\s*[=:]\s*)(?!\(가림\)|(?:bearer|basic|token|digest|negotiate)\s)("[^"]*"|'[^']*'|[^\s'"]+)/gi, '$1(가림)')
+    .replace(/((?!author(?:ed|s)?\b)(?:secret|token|passw(?:or)?d|api[_-]?key|auth)[A-Za-z0-9_-]*\s*[=:]\s*)(?!\(가림\)|(?:bearer|basic|token|digest|negotiate)\s)("[^"]*"|'[^']*'|[^\s'"]+)/gi, '$1(가림)')
     .replace(/(--(?:token|api[-_]?key|secret|client[-_]?secret|access[-_]?token|auth[-_]?token|password|passwd|pass)[ =])(?!\(가림\))("[^"]*"|'[^']*'|\S+)/gi, '$1(가림)')
-    .replace(/(^|\s)(--password[= ]|-p(?=[^\s-]))(?!\(가림\))\S+/g, '$1$2(가림)') // mysql -pXXXX, --password=XXXX 만 가린다 (--porcelain 같은 옵션은 그대로)
+    .replace(/(^|\s)(--password[= ])(?!\(가림\))\S+/g, '$1$2(가림)')
+    .replace(/(^|\s)(-p(?=[^\s-]))(?!\(가림\))\S+/g, (m0: string, a: string, b: string, _at: number, all: string) => (MYSQL_LIKE.test(all) ? `${a}${b}(가림)` : m0)) // mysql -pXXXX, --password=XXXX 만 가린다 (--porcelain 같은 옵션은 그대로)
     .replace(TOKEN_PREFIX, '(가림)')
     .replace(LONG_RUN, (m: string, at: number, all: string) => {
       if (UUID.test(m)) return m;
@@ -870,6 +887,46 @@ const BASH_WHAT: Record<string, (m: MissionConfig) => string> = {
 /** 서버 안에서 뒤에서 계속 도는 명령으로 보이는 글자: nohup·disown·setsid, 끝이나 괄호 앞의 & */
 export const BACKGROUND_RUN = /\bnohup\b|\bdisown\b|\bsetsid\b|(^|[^&|>])&\s*(\)|;|$)/m;
 
+/** 글 속 꼬리표(HTML·Confluence 저장 형식)를 걷어 읽을 수 있는 글로 만든다. 표 칸은 " | ", 문단·줄·항목은 줄바꿈 */
+function tagsToText(v: string): string {
+  return v
+    .replace(/<(br|hr)\s*\/?>/gi, '\n')
+    .replace(/<\/(td|th)>/gi, ' | ')
+    .replace(/<li[^>]*>/gi, '- ')
+    .replace(/<\/(p|h[1-6]|li|tr|div|ul|ol|table|blockquote|pre)>/gi, '\n')
+    .replace(/<[^>]{1,2000}>/g, '')
+    .replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
+ * 외부 연결에 보낼 내용을 카드에서 읽기 좋게 만든다 (0.9.19).
+ * 짧은 값은 JSON 그대로, 긴 글(본문·명령)은 따로 꺼내 줄바꿈을 살리고 꼬리표를 걷어 보여 준다
+ * (전에는 본문 전체가 JSON 한 줄이라 읽기 어렵고, 비밀 가리기에 통째로 가려졌다).
+ */
+export function connectorPreview(input: Record<string, unknown>): string {
+  const small: Record<string, unknown> = {};
+  const big: [string, string][] = [];
+  for (const [k, v] of Object.entries(input ?? {})) {
+    if (typeof v === 'string' && (v.length > 200 || v.includes('\n'))) big.push([k, v]);
+    else small[k] = v;
+  }
+  let head = '';
+  try {
+    head = JSON.stringify(small, null, 2);
+  } catch {
+    head = String(small);
+  }
+  const blocks = big.map(([k, v]) => {
+    const tagged = /<\/?[a-z][^>]*>/i.test(v) && (v.match(/<\/?[a-z][^>]*>/gi)?.length ?? 0) >= 3;
+    const body = tagged ? tagsToText(v) : v;
+    return `\n[${k}]${tagged ? ' (꼬리표를 걷어 글만 보여요)' : ''} ${v.length.toLocaleString()}자\n${body}`;
+  });
+  return head + blocks.join('\n');
+}
+
 export function decideConnectorTool(
   config: RanoConfig,
   mission: MissionConfig,
@@ -886,12 +943,7 @@ export function decideConnectorTool(
   }
   if (mcpServer && mcpServer.name !== server) return { type: 'deny', reason: '도구 서버 이름이 맞지 않음', message: MSG_UNKNOWN };
   if (isConnectorReadTool(tool)) return { type: 'allow', reason: `${conn.label} 읽기: ${tool}` };
-  let shown = '';
-  try {
-    shown = JSON.stringify(input, null, 2);
-  } catch {
-    shown = String(input);
-  }
+  const shown = connectorPreview(input);
   // 서버 안에서 뒤에서 계속 도는 명령(nohup·끝의 &)은 카드에서 따로 알린다: 사용자들이 쓰는 서버가 느려질 수 있다 (0.9.16)
   const background = Object.values(input).some((v) => typeof v === 'string' && BACKGROUND_RUN.test(v));
   return {
@@ -903,7 +955,7 @@ export function decideConnectorTool(
       what: background
         ? `${conn.label}에서 '${tool}' 작업으로 서버 안에 뒤에서 계속 도는 명령을 띄우려고 해요. 사용자들이 쓰는 서버라면 도는 동안 느려질 수 있어요`
         : `${conn.label}에서 '${tool}' 작업을 하려고 해요 (다른 사람도 보는 곳이 바뀔 수 있어요)`,
-      detail: `연결: ${conn.label} (${server})\n작업: ${tool}\n\n보낼 내용(앞부분):\n${redactPreview(shown, 40, 3000)}`,
+      detail: `연결: ${conn.label} (${server})\n작업: ${tool}\n\n보낼 내용(앞부분):\n${redactPreview(shown, 160, 8000)}`,
     },
   };
 }

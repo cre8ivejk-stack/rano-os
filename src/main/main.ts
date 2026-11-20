@@ -9,7 +9,7 @@ import { defaultRootDir, loadConfig, modelKindOf } from './config.js';
 import { defaultsDir, ensureDataHome } from './dataHome.js';
 import { randomUUID } from 'node:crypto';
 import { leadMsgIds, nameFromTask, roomNoteText, WorkStore, WorkTurn } from './engine/works.js';
-import { taskTitle } from './mission/taskText.js';
+import { taskTitle, todayLine } from './mission/taskText.js';
 import { IPC, type ChatMessage, type NewAttachment, type MissionConfig, type MissionLeaderApi, type MissionTrackerApi, type RanoUiEvent } from '../shared/types.js';
 import { MemoryService } from './memory/memoryService.js';
 import { createMemoryMcpServer } from './memory/memoryTools.js';
@@ -142,7 +142,48 @@ async function boot() {
   }
 
   // 조직(미션 관리·인재풀): 화면과 라노의 조직 도구가 함께 쓴다
-  const org = createOrgAdmin({ config, memory, activeMissionIds: config.missions.map((m) => m.id) });
+  // 조직 탭에서 고친 미션 설정(쓰기 방식·목표·참고 폴더·팀)을 앱을 켜 둔 채 반영한다 (0.9.19).
+  // 그 미션에 도는 과제가 없을 때만 바꾼다: 리더·현황판이 같은 미션 설정 객체를 보고 있어 그 객체의 값을 새로 읽은 값으로 갈아 끼운다.
+  // 과제가 도는 중이면 적어 두었다가 끝난 뒤에 반영한다(진행 중 과제는 시작할 때의 규칙 그대로 끝까지 간다).
+  const pendingApply = new Set<string>();
+  const applyMissionEdit = (id: string): 'applied' | 'waiting' | 'no' => {
+    const mission = config.missions.find((m) => m.id === id);
+    const pool = pools.find((p) => p.mission.id === id)?.pool;
+    if (!mission || !pool) return 'no'; // 이번 실행에 없는 미션(새로 만든 것)은 다시 시작해야 방이 생긴다
+    if (pool.tasks().length > 0) {
+      pendingApply.add(id);
+      return 'waiting';
+    }
+    let fresh;
+    try {
+      fresh = loadConfig(config.rootDir);
+    } catch {
+      return 'no';
+    }
+    const next = fresh.missions.find((m) => m.id === id);
+    if (!next) return 'no';
+    Object.assign(mission, next);
+    config.blocked = fresh.blocked;
+    config.raw = fresh.raw;
+    pendingApply.delete(id);
+    try {
+      trackers.get(id)?.activity('앱', '조직 탭에서 고친 설정을 반영했어요. 다음 과제부터 새 설정으로 일해요');
+    } catch {
+      // 현황판에 못 적어도 반영은 됐다
+    }
+    return 'applied';
+  };
+  const org = createOrgAdmin({ config, memory, activeMissionIds: config.missions.map((m) => m.id), hotApply: applyMissionEdit });
+  const applyTimer = setInterval(() => {
+    for (const id of [...pendingApply]) {
+      try {
+        if (applyMissionEdit(id) === 'applied') org.applied(id);
+      } catch {
+        // 다음 번에 다시 본다
+      }
+    }
+  }, 4000);
+  applyTimer.unref?.();
 
   // 업무(대화 방): 과제·말을 일 단위로 묶는다. 바뀔 때마다 화면에 알린다
   const works = new WorkStore(config.runsDir, (items) => emit({ kind: 'works', items }));
@@ -226,6 +267,7 @@ async function boot() {
     todoMcp: createTodoMcpServer(todos, config),
     todoText: () => todos.describe(),
     todoItems: () => todos.list().map((x) => ({ id: x.id, title: x.title, status: x.status })),
+    dateNote: () => todayLine(),
     statusNote: () =>
       [
         works.describe(
@@ -307,6 +349,8 @@ async function boot() {
   ipcMain.handle(IPC.approvalOpenPreview, async (_e, id: unknown, itemId: unknown, key: unknown) => {
     const c = previewCheck(id, itemId, key);
     if (!c.ok) return { ok: false, message: c.message, ...(c.reveal ? { reveal: true } : {}) };
+    const doc = viewDoc(c.path);
+    if (doc) return doc;
     const err = await shell.openPath(c.path);
     return err ? { ok: false, message: '시안을 여는 프로그램을 찾지 못했어요', reveal: true } : { ok: true };
   });
@@ -322,11 +366,60 @@ async function boot() {
   ipcMain.handle(IPC.openFile, async (_e, p: unknown) => {
     const abs = canOpen(p);
     if (!abs) return { ok: false, message: '이 파일은 열 수 없어요 (작업 폴더 밖이거나 지워진 파일이에요)' };
+    const doc = viewDoc(abs);
+    if (doc) return doc;
     const err = await shell.openPath(abs);
     return err ? { ok: false, message: '파일을 여는 프로그램을 찾지 못했어요' } : { ok: true };
   });
+  // 글 문서(.md·.txt)는 다른 프로그램으로 넘기지 않고 앱 안 보기 창에 띄운다 (0.9.19). 보기 창의 [저장]·[다른 앱으로 열기]는 여기서 내준 표로만 한다
+  const DOC_EXTS = new Set(['.md', '.markdown', '.txt']);
+  const DOC_MAX = 1_500_000;
+  const shownDocs = new Map<string, string>();
+  const viewDoc = (abs: string): { ok: boolean; message?: string } | null => {
+    if (!DOC_EXTS.has(path.extname(abs).toLowerCase()) || !win || win.isDestroyed()) return null;
+    let text = '';
+    let truncated = false;
+    try {
+      const buf = readFileSync(abs);
+      if (buf.subarray(0, 4096).includes(0)) return null; // 글이 아닌 파일
+      truncated = buf.length > DOC_MAX;
+      text = buf.subarray(0, DOC_MAX).toString('utf-8');
+    } catch {
+      return { ok: false, message: '파일을 읽지 못했어요' };
+    }
+    const token = randomUUID();
+    shownDocs.set(token, abs);
+    for (const k of [...shownDocs.keys()].slice(0, Math.max(0, shownDocs.size - 30))) shownDocs.delete(k);
+    emit({ kind: 'viewDoc', token, name: path.basename(abs), text, ...(truncated ? { truncated: true } : {}) });
+    return { ok: true };
+  };
+  ipcMain.handle(IPC.docAct, async (_e, token: unknown, act: unknown) => {
+    const abs = typeof token === 'string' ? shownDocs.get(token) : undefined;
+    if (!abs || !existsSync(abs)) return { ok: false, message: '파일을 찾지 못했어요 (지워졌거나 이름이 바뀌었어요)' };
+    if (act === 'reveal') {
+      shell.showItemInFolder(abs);
+      return { ok: true };
+    }
+    if (act === 'open') {
+      const err = await shell.openPath(abs);
+      return err ? { ok: false, message: '파일을 여는 프로그램을 찾지 못했어요' } : { ok: true };
+    }
+    if (act === 'save') {
+      const picked = await dialog.showSaveDialog(win!, { title: '다른 곳에 저장', defaultPath: path.join(app.getPath('downloads'), path.basename(abs)), buttonLabel: '저장' });
+      if (picked.canceled || !picked.filePath) return { ok: false };
+      try {
+        await copyFile(abs, picked.filePath);
+      } catch {
+        return { ok: false, message: '그 자리에 저장하지 못했어요' };
+      }
+      return { ok: true, message: `${path.basename(picked.filePath)} 로 저장했어요` };
+    }
+    return { ok: false, message: '알 수 없는 요청이에요' };
+  });
   // 앱 안에서 바로 보기(맥의 훑어보기 창). 엑셀·워드·PDF·그림·글을 다른 프로그램을 띄우지 않고 본다
   const peek = (abs: string): { ok: boolean; message?: string } => {
+    const doc = viewDoc(abs);
+    if (doc) return doc;
     if (!win || win.isDestroyed()) return { ok: false, message: '창을 찾지 못했어요' };
     if (process.platform !== 'darwin') return { ok: false, message: '바로 보기는 맥에서만 돼요. [열기]를 눌러 주세요' };
     win.previewFile(abs, path.basename(abs));
@@ -368,6 +461,8 @@ async function boot() {
     if (!check.ok) return { ok: false, message: check.message.replace(/시안/g, '파일') };
     if (act === 'peek') return peek(check.path);
     if (act === 'open') {
+      const doc = viewDoc(check.path);
+      if (doc) return doc;
       const err = await shell.openPath(check.path);
       return err ? { ok: false, message: '파일을 여는 프로그램을 찾지 못했어요' } : { ok: true };
     }

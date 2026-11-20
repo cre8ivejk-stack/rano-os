@@ -54,6 +54,7 @@ const CH_REVEAL_FILE = 'outputs:reveal';
 const CH_PEEK_FILE = 'outputs:peek';
 const CH_TASK_FILES = 'task:files';
 const CH_TASK_FILE_ACT = 'task:file-act';
+const CH_DOC_ACT = 'doc:act';
 const CH_ORG_MISSIONS = 'org:missions';
 const CH_ORG_PICK_FOLDER = 'org:pick-folder';
 const CH_ORG_INSPECT = 'org:inspect';
@@ -214,6 +215,9 @@ const api: RanoApi = {
   },
   taskFileAct(taskId: string, rel: string, act: TaskFileAct): Promise<{ ok: boolean; message?: string }> {
     return ipcRenderer.invoke(CH_TASK_FILE_ACT, String(taskId), String(rel), String(act));
+  },
+  docAct(token: string, act: 'save' | 'open' | 'reveal'): Promise<{ ok: boolean; message?: string }> {
+    return ipcRenderer.invoke(CH_DOC_ACT, String(token), String(act));
   },
   orgMissions(): Promise<MissionSummary[]> {
     return ipcRenderer.invoke(CH_ORG_MISSIONS);

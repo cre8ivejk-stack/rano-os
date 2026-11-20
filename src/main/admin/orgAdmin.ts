@@ -27,6 +27,8 @@ export interface OrgAdminDeps {
   config: RanoConfig;
   memory: MemoryServiceApi;
   activeMissionIds: string[];
+  /** 고친 미션 설정을 켜 둔 앱에 바로 반영해 본다: applied 반영함 · waiting 진행 중 과제가 끝나면 반영 · no 다시 시작해야 함 (0.9.19) */
+  hotApply?: (id: string) => 'applied' | 'waiting' | 'no';
 }
 
 export interface OrgAdminApi {
@@ -39,6 +41,8 @@ export interface OrgAdminApi {
   role(name: string): RoleInfo | null;
   saveRole(draft: RoleDraft, originalName?: string): Promise<AdminResult>;
   missionDocs(id: string): MissionDoc[];
+  /** 기다리던 설정이 반영됐다고 알린다(본체가 부름) */
+  applied(id: string): void;
 }
 
 /** rano.json 미션 → 쓰기 방식 */
@@ -52,6 +56,7 @@ export function createOrgAdmin(deps: OrgAdminDeps): OrgAdminApi {
   const rootDir = config.rootDir;
   const resolve = (p: string) => resolveIn(rootDir, p);
   const changed = new Set<string>(); // 이번 실행에서 바꾼 미션 (다시 시작해야 반영)
+  const waitingApply = new Set<string>(); // 고쳤고, 진행 중 과제가 끝나면 반영될 미션
 
   // 쓰기는 하나씩 차례로 한다(rano.json 을 동시에 고치지 않게)
   let chain: Promise<unknown> = Promise.resolve();
@@ -110,6 +115,7 @@ export function createOrgAdmin(deps: OrgAdminDeps): OrgAdminApi {
       archived,
       home,
       active: !archived && deps.activeMissionIds.includes(String(m.id)) && !changed.has(String(m.id)),
+      ...(waitingApply.has(String(m.id)) ? { applyWhenIdle: true } : {}),
     };
   };
 
@@ -461,6 +467,27 @@ export function createOrgAdmin(deps: OrgAdminDeps): OrgAdminApi {
           logNote = ' (결정로그에 쓰기 방식 변경을 남기지는 못했어요)';
         }
       }
+      // 켜 둔 앱에 바로 반영해 본다: 그 미션에 도는 과제가 없으면 바로, 있으면 끝난 뒤에 (0.9.19)
+      let how: 'applied' | 'waiting' | 'no' = 'no';
+      try {
+        how = deps.hotApply?.(id) ?? 'no';
+      } catch {
+        how = 'no';
+      }
+      if (how !== 'no') {
+        changed.delete(id);
+        if (how === 'waiting') waitingApply.add(id);
+        else waitingApply.delete(id);
+        return {
+          ok: true,
+          id,
+          needsRestart: false,
+          message:
+            how === 'applied'
+              ? `「${name}」을(를) 고쳤고 바로 반영했어요. 다음 과제부터 새 설정으로 일해요${homeNote}${logNote}`
+              : `「${name}」을(를) 고쳤어요. 지금 진행 중인 과제는 그대로 가고, 끝나면 앱을 다시 켜지 않아도 반영돼요${homeNote}${logNote}`,
+        };
+      }
       return {
         ok: true,
         id,
@@ -542,5 +569,8 @@ export function createOrgAdmin(deps: OrgAdminDeps): OrgAdminApi {
       return out;
     },
     saveRole: (draft, originalName) => serial(() => savePoolRole(rootDir, rawSync(), draft, originalName)),
+    applied: (id) => {
+      waitingApply.delete(id);
+    },
   };
 }

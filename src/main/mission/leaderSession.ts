@@ -25,9 +25,9 @@ import { appendJsonl, buildSdkEnv, friendlyError, looksLikeMissingSession } from
 import { LeaderGuard, MORE_REVIEW_RE, SUBAGENT_TOOL } from './leaderPermissions.js';
 import { missionTmpDir } from './missionTmp.js';
 import { behindNotes } from './gitBehind.js';
-import { interruptedReport, taskTitle } from './taskText.js';
+import { interruptedReport, taskTitle, todayLine } from './taskText.js';
 import { PREVIEW_EXTS } from '../approvals/previewSafety.js';
-import { createLeaderMcpServer } from './leaderTools.js';
+import { createLeaderMcpServer, describePastReports } from './leaderTools.js';
 import { buildLeaderMaterial, buildLeaderSystemPrompt, CODE_MAP_FILE, codeMapText, HANDOFF_FILE, readLeaderContext } from './leaderPrompt.js';
 import { APPROVAL_STAGE_TOOLS, loadRoles, READ_ONLY_TOOLS } from './roles.js';
 import { shareWithMission } from '../engine/attachments.js';
@@ -296,6 +296,7 @@ export class MissionLeader implements MissionLeaderApi {
       '',
       '---',
       '[앱 안내]',
+      `- ${todayLine().replace('[앱 안내] ', '')} 날짜·요일은 이 안내를 따르세요.`,
       `- 이 과제의 시안 폴더: ${drafts} (작업 리포 밖, 승인 없이 쓸 수 있음). 안마다 비교용 시안(HTML 와이어프레임 등)이 필요하면 여기에 만들고, 결정 카드의 options[].preview 에 파일 이름을 넣으세요. [시안 열기]로 열 수 있는 형식: ${[...PREVIEW_EXTS].join(' ')} (실행 권한이 붙은 파일·폴더·바로가기로 밖을 가리키는 파일은 열리지 않음).`,
       ...(task.preSync
         ? ['- 사용자가 직접 원격 최신 받아오기를 시켰어요. 이번 과제의 받아오기 명령(git fetch, git pull --ff-only, git merge --ff-only, git stash, git stash pop)은 승인 없이 돼요. 다른 명령을 섞지 말고 따로 실행하세요. 받아오기 옵션은 --ff-only·-q·-v·--prune·--tags·--no-tags·--no-rebase, 원격은 이름(origin 등)만 써요(그 밖이면 승인함). 같은 작업 폴더에서 다른 과제가 진행 중이면 보관·pull·merge 는 "다른 과제 진행 중" 경고 카드로 물어요. 커밋·푸시는 그대로 승인함을 거쳐요.']
@@ -306,6 +307,7 @@ export class MissionLeader implements MissionLeaderApi {
           ]
         : []),
       ...behind.map((n) => `- ${n}`),
+      ...(this.mission.stagePolicy === 'approval' ? ['- 이 미션의 지난 과제 보고는 past_reports 도구로 읽어요(목록 → 과제 id 로 전문). 앱 기록 파일(runs 아래 outputs.json·conversation.json)은 직접 읽지 않아요.'] : []),
       `- 이 미션의 임시 폴더: ${tmpDir} (명령 결과 담기·읽기용, Bash 로만 승인 없이). 경로를 글자 그대로 적으세요(예: npm test > ${path.join(tmpDir, 'test.txt')} 2>&1). /tmp, $TMPDIR, mktemp 를 쓰면 승인함으로 가요.`,
       task.planFirst
         ? '- 이 과제는 "기획 먼저"예요. 안 2~3개와 권장안을 request_approval(kind: decision, planGate: true, items …)로 올려 사용자가 고르기 전에는 작업 폴더를 고칠 수 없어요(앱이 막음). 고른 뒤 그 안대로 구현하세요.'
@@ -480,6 +482,7 @@ export class MissionLeader implements MissionLeaderApi {
           guard,
           signal: abort.signal,
           emitActivity: (t) => this.emitActivity(t),
+          pastReports: (taskId, query) => describePastReports(this.outputs?.list(mission.id) ?? [], this.currentTask?.id, taskId, query),
         })
       : null;
     const env = buildSdkEnv(config);

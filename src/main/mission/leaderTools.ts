@@ -5,8 +5,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { LEADER_MCP_NAME, MEMBER_MODEL_LABEL, type MemberModel, type ApprovalQueueApi, type BundleFile, type DecisionItem, type MissionConfig, type MissionTrackerApi } from '../../shared/types.js';
-import { fileChangeFor, fileFingerprint, grantInfoFor, releaseCommandProblem, RUN_PLAN_KINDS, redactCommand, type CommandGrant, type LeaderGuard } from './leaderPermissions.js';
+import { LEADER_MCP_NAME, MEMBER_MODEL_LABEL, type MemberModel, type ApprovalQueueApi, type BundleFile, type DecisionItem, type MissionConfig, type MissionTrackerApi, type TaskOutput } from '../../shared/types.js';
+import { fileChangeFor, fileFingerprint, grantInfoFor, releaseCommandProblem, RUN_PLAN_KINDS, redactCommand, maskLineSoft, type CommandGrant, type LeaderGuard } from './leaderPermissions.js';
 import { checkPreviewFile, PREVIEW_EXTS } from '../approvals/previewSafety.js';
 
 export const LEADER_APPROVAL_KINDS = ['teamPlan', 'decision', 'numbers', 'reverseDecision', 'estimate', 'external', 'other'] as const;
@@ -18,6 +18,32 @@ export interface LeaderToolsDeps {
   guard: LeaderGuard;
   signal?: AbortSignal; // 앱이 꺼지거나 과제가 중단되면 대기를 정리
   emitActivity?: (text: string) => void;
+  pastReports?: (taskId?: string, query?: string) => string; // 이 미션의 지난 과제 보고 읽기
+}
+
+/**
+ * 이 미션의 지난 과제 보고를 글로 만든다 (0.9.19): taskId 를 주면 그 과제의 보고 전문, 아니면 최근 과제 목록(query 가 있으면 제목·보고에 그 말이 든 것만).
+ * 전에는 리더가 지난 보고를 모으려고 앱 기록 파일을 직접 읽으려다 승인 카드가 떴다.
+ */
+export function describePastReports(all: TaskOutput[], currentId: string | undefined, taskId?: string, query?: string): string {
+  const items = all.filter((o) => o.taskId !== currentId && o.status !== 'running').sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
+  const when = (iso?: string) => {
+    const d = new Date(iso ?? '');
+    return Number.isNaN(d.getTime()) ? '' : `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  };
+  const id = (taskId ?? '').trim();
+  if (id) {
+    const hits = id.length >= 8 ? items.filter((o) => o.taskId.startsWith(id)) : [];
+    if (hits.length !== 1) return `과제 "${id}" 를 찾지 못했어요. taskId 없이 불러 목록에서 과제 id 를 확인하세요.`;
+    const o = hits[0];
+    const report = (o.leaderReport ?? '').trim() || '(보고가 남아 있지 않아요)';
+    return `과제 ${o.taskId} · ${when(o.startedAt)} · ${o.title} · ${o.status === 'done' ? '완료' : '중단'}\n결과 폴더 이름: ${o.taskId}\n\n${maskText(report.length > 30000 ? `${report.slice(0, 30000)}\n… (뒤는 잘렸어요)` : report)}`;
+  }
+  const q = (query ?? '').trim().toLowerCase();
+  const picked = (q ? items.filter((o) => `${o.title}\n${o.leaderReport ?? ''}`.toLowerCase().includes(q)) : items).slice(0, 40);
+  if (!picked.length) return q ? `"${query}" 가 든 지난 과제가 없어요.` : '지난 과제가 없어요.';
+  const first = (t?: string) => (t ?? '').split('\n').map((l) => l.trim()).find((l) => l && !/^#+\s*$/.test(l))?.slice(0, 90) ?? '';
+  return `이 미션의 지난 과제 ${picked.length}건(최신순). 보고 전문은 taskId 를 넣어 다시 부르세요:\n${picked.map((o) => `- ${o.taskId.slice(0, 8)} · ${when(o.startedAt)} · ${o.title} · ${o.status === 'done' ? '완료' : '중단'}${first(o.leaderReport) ? ` · ${first(o.leaderReport)}` : ''}`).join('\n')}`;
 }
 
 function text(t: string, isError = false) {
@@ -76,7 +102,7 @@ export async function updateTeamFile(home: string, plan: { title: string; what: 
 function maskText(t: string): string {
   return t
     .split('\n')
-    .map((l) => (/(secret|token|passw(or)?d|api[_-]?key|private[_-]?key|authorization|bearer\s|client_secret)/i.test(l) || /[A-Za-z0-9+/_\-]{32,}/.test(l) ? '(비밀로 보여 가림)' : l))
+    .map(maskLineSoft)
     .join('\n');
 }
 
@@ -765,5 +791,18 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
     },
   );
 
-  return createSdkMcpServer({ name: LEADER_MCP_NAME, version: '0.1.0', tools: [requestApproval, proposeChanges, proposeCommands, proposeRelease, workSolo] });
+  // 이 미션의 지난 과제 보고 읽기(읽기만)
+  const pastReports = tool(
+    'past_reports',
+    [
+      '이 미션에서 전에 한 과제의 보고를 읽습니다(읽기만). taskId 를 비우면 최근 과제 목록(과제 id 앞 8자·시각·제목·보고 첫 줄), taskId 를 넣으면 그 과제의 보고 전문을 돌려줍니다.',
+      'query 를 넣으면 제목·보고에 그 말이 든 과제만 목록으로 추립니다(예: "로그인", "가격표").',
+      '지난 일을 모아 정리하거나 앞 과제의 결정·숫자를 확인할 때 씁니다. 앱 기록 파일(runs 아래 outputs.json·conversation.json)을 직접 읽지 말고 이 도구를 쓰세요. 다른 미션의 보고는 읽지 못합니다(필요하면 보고에 적어 라노에게 부탁).',
+    ].join('\n'),
+    { taskId: z.string().optional().describe('과제 id (앞 8자 이상). 비우면 목록'), query: z.string().optional().describe('목록을 추릴 말') },
+    async (args) => text(deps.pastReports ? deps.pastReports(args.taskId, args.query) : '(지난 보고를 읽을 수 없어요)'),
+    { annotations: { readOnlyHint: true } },
+  );
+
+  return createSdkMcpServer({ name: LEADER_MCP_NAME, version: '0.1.0', tools: [requestApproval, proposeChanges, proposeCommands, proposeRelease, workSolo, pastReports] });
 }

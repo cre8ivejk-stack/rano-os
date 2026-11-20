@@ -32,7 +32,7 @@ export interface MissionDispatcherDeps {
   notifyRano: (text: string, kind?: 'report' | 'direct', workId?: string) => Promise<void>;
   onReport?: (card: ReportCard) => void; // 리더 보고가 오면 바로 (첫 줄 카드)
   todos?: TodoStoreApi; // 할 일 목록: 배정·보고에 맞춰 상태를 바꾼다
-  works?: { linkTask(workId: string, taskId: string): void; byTask(taskId: string): { id: string } | undefined }; // 업무(대화 방): 과제를 업무에 단다
+  works?: { linkTask(workId: string, taskId: string): void; byTask(taskId: string): { id: string } | undefined; get?(id: string | undefined | null): { id: string; name: string } | undefined }; // 업무(대화 방): 과제를 업무에 단다
 }
 
 const PROGRESS_FILE = '진행업무.md';
@@ -196,6 +196,25 @@ export class MissionDispatcher implements MissionDispatcherApi {
     this.runInBackground(mission, leader, text, 'user', undefined, false, false, attachments, userAskedSync(text), workId); // 사용자가 직접 쓴 말
   }
 
+  /** 그 업무의 끝나지 않은 할 일을 찾거나 새로 만들어 진행 중으로 둔다. 업무를 모르면 undefined */
+  private ensureTodo(mission: MissionConfig, workId: string): string | undefined {
+    const todos = this.deps.todos;
+    const work = this.deps.works?.get?.(workId);
+    if (!todos || !work) return undefined;
+    try {
+      let t = todos.list().find((x) => x.workId === workId && x.status !== 'done' && (!x.missionId || x.missionId === mission.id));
+      if (!t) {
+        t = todos.add(mission.id, work.name, 'rano');
+        todos.update(t.id, { workId }, 'app');
+      }
+      todos.update(t.id, { status: 'active', queued: false, note: '' }, 'app');
+      return t.id;
+    } catch (e) {
+      console.error('[dispatcher] 업무의 할 일 만들기 실패:', e);
+      return undefined;
+    }
+  }
+
   private safeTodo(fn: () => void) {
     try {
       fn();
@@ -211,6 +230,8 @@ export class MissionDispatcher implements MissionDispatcherApi {
   private runInBackground(mission: MissionConfig, leader: MissionLeaderApi, text: string, from: 'rano' | 'user', todoId?: string, resumed = false, planFirst = false, attachments: ChatAttachment[] = [], preSync = false, workId?: string) {
     const todos = this.deps.todos;
     const queue = this.queues.get(mission.id);
+    // 업무 하나가 곧 할 일 하나: 이 업무에 살아 있는 할 일이 없으면 앱이 만든다(끝낸 업무에 새 일이 붙어도 "확인할 보고"에 뜨게, 0.9.19)
+    if (!todoId && workId && !resumed) todoId = this.ensureTodo(mission, workId);
     const entry = queue?.add({ text, from, todoId, resumed, planFirst, preSync, attachments, ...(workId ? { workId } : {}) });
     const onTask = (taskId: string) => {
       if (workId) this.deps.works?.linkTask(workId, taskId);

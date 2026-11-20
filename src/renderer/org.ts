@@ -268,6 +268,7 @@ export class OrgView {
     card.appendChild(rows);
 
     if (!m.active && !m.archived) card.appendChild(el('p', 'org-warning', '다시 시작하면 반영돼요'));
+    if (m.applyWhenIdle && !m.archived) card.appendChild(el('p', 'org-hint', '고친 설정은 진행 중인 과제가 끝나면 반영돼요(앱을 다시 켜지 않아도 돼요).'));
     if (!m.active && m.archived) card.appendChild(el('p', 'org-hint', '보관한 미션이에요. 다시 시작하면 현황판에서 빠져요.'));
 
     const actions = el('div', 'appr-actions');

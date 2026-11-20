@@ -636,6 +636,7 @@ const WRITE_CMDS = new Set(['mv', 'cp', 'tee', 'touch', 'mkdir', 'ln', 'chmod', 
 const READ_CMDS = new Set([
   'grep', 'egrep', 'fgrep', 'rg', 'tr', 'cut', 'diff', 'cmp', 'comm', 'file', 'stat', 'du', 'nl', 'column',
   'basename', 'dirname', 'realpath', 'readlink', 'jq', 'tree', 'xxd', 'od', 'printf', 'test', '[', 'rev', 'fold', 'expand',
+  'paste', 'join', 'tac', // 줄 이어 붙이기·맞붙이기·거꾸로 보기 (0.9.19)
 ]);
 // 파일을 읽지 않고 상태만 보여 주는 명령(인자는 경로가 아님)
 const INFO_CMDS = new Set(['which', 'date', 'uname', 'lsof', 'whereis', 'type', 'sleep', 'read']); // read: 앞 명령의 출력을 변수에 담기만 한다 // ps 는 다른 프로세스의 환경 변수를 보여 줄 수 있어 뺀다

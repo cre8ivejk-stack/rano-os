@@ -6,7 +6,8 @@ import { zoneText } from '../admin/paths.js';
 import { shareWithMission } from '../engine/attachments.js';
 import { userAskedSync } from './syncIntent.js';
 import { withUserWords } from './userWords.js';
-import { taskTitle } from './taskText.js';
+import { taskTitle, withTitle } from './taskText.js';
+import { shareTaskFiles } from '../approvals/taskFiles.js';
 import { cleanWorkName, type WorkStore, type WorkTurn } from '../engine/works.js';
 
 const STATE_LABEL: Record<MemberState, string> = { idle: '대기', working: '작업 중', reviewing: '검수 중', done: '완료' };
@@ -67,16 +68,29 @@ export function createMissionMcpServer(
     ].join('\n'),
     {
       missionId: z.string().describe('미션 id (예: homepage)'),
+      title: z.string().describe('과제 제목: 화면·알림·결과물함에 보이는 짧은 이름. 20자 안팎의 명사구로 무엇을 하는 일인지만(예: "주간 업무 페이지 갱신", "로그인 화면 구현"). "목적:"·"○○님이…" 같은 머리말이나 문장을 쓰지 않는다'),
       task: z.string().describe('리포 리더에게 넘길 지시: 목적·범위·결과물 형태 포함'),
+      shareFrom: z.array(z.string()).optional().describe('함께 넘길 앞 과제의 id 들(리더 보고에 적힌 과제 id, 앞 8자도 됨). 다른 미션이 만든 결과 파일(보고서·엑셀·그림)이 이 과제에 필요할 때 넣는다. 앱이 그 결과 파일을 받는 미션이 읽을 수 있는 곳으로 복사해 경로를 지시에 붙인다(미션끼리는 서로의 결과 폴더를 읽지 못한다)'),
       todoId: z.string().optional().describe('이 과제와 연결할 할 일 id (할 일 목록에 있는 일이면 넘김)'),
       planFirst: z.boolean().optional().describe('화면·기능 개편처럼 "기획 후 구현"인 과제면 true: 리더가 안 2~3개와 권장안을 먼저 올려 사용자가 고른 뒤에 구현한다'),
       attachments: z.array(z.string()).optional().describe('사용자가 대화에 붙인 그림 id (앱 안내에 나온 id). 리더와 팀원이 그 그림을 열어 볼 수 있게 함께 넘긴다'),
       workId: z.string().optional().describe('이어지는 일이면 그 업무의 id (앱 안내·업무 목록에 나온 w_… 값). 같은 일의 다음 단계·고치기·되묻기는 반드시 같은 업무로'),
-      workName: z.string().optional().describe('새 일이면 업무 이름: 사용자가 한눈에 알아볼 짧은 이름, 12자 안팎의 명사구(예: "메뉴 문서 정리", "로그인 오류", "○○님 답장"). 문장·지시문·"정규님이…" 같은 머리말을 쓰지 않는다'),
+      workName: z.string().optional().describe('새 일이면 업무 이름: 사용자가 한눈에 알아볼 짧은 이름, 12자 안팎의 명사구(예: "메뉴 문서 정리", "로그인 오류", "○○님 답장"). 문장·지시문·"○○님이…" 같은 머리말을 쓰지 않는다'),
     },
-    async ({ missionId, task, todoId, planFirst, attachments, workId, workName }) => {
+    async ({ missionId, title, task, todoId, planFirst, attachments, workId, workName, shareFrom }) => {
       try {
         let body = task;
+        if (shareFrom?.length) {
+          if (!config.missions.some((m) => m.id === missionId)) return text(`"${missionId}" 미션을 찾지 못했어요.`, true);
+          const got: string[] = [];
+          for (const id of shareFrom.slice(0, 5)) {
+            const r = shareTaskFiles(config.runsDir, missionId, id.trim());
+            if (!r.ok) return text(`아직 맡기지 않았어요. ${r.note}`, true);
+            got.push(...r.paths);
+          }
+          if (got.length)
+            body += `\n\n[앞 과제 결과 파일] 앱이 이 미션이 읽을 수 있는 곳으로 복사해 둔 파일이에요. Read 도구로 열어 보세요(원본은 다른 미션의 결과 폴더라 읽지 못해요. 이 복사본을 쓰세요):\n${got.map((p) => `- ${p}`).join('\n')}`;
+        }
         if (attachments?.length) {
           if (!config.missions.some((m) => m.id === missionId)) return text(`"${missionId}" 미션을 찾지 못했어요.`, true);
           const shared = shareWithMission(config.runsDir, missionId, attachments);
@@ -100,7 +114,7 @@ export function createMissionMcpServer(
           // 업무를 정하지 않고 맡기면 한 번 되돌려 이름을 받는다(지시문 앞머리로 지은 이름은 사용자가 알아보기 어렵다)
           if (!works.store.get(workId?.trim()) && !cleanWorkName(workName) && !works.store.get(works.turn.workId))
             return text('아직 맡기지 않았어요. 이 일이 달릴 업무를 정해서 다시 불러 주세요: 새 일이면 workName 에 사용자가 한눈에 알아볼 짧은 이름(12자 안팎의 명사구, 예: "메뉴 문서 정리")을, 앞서 하던 일에 이어지면 workId 에 그 업무 id 를 넣으세요.', true);
-          work = works.store.resolve({ workId, workName, missionId, fallbackId: works.turn.workId, title: taskTitle(task) });
+          work = works.store.resolve({ workId, workName, missionId, fallbackId: works.turn.workId, title: taskTitle(withTitle(task, title)) });
           const made = works.store.get(work.id);
           const fresh = !!made && !made.taskIds.length && !made.msgIds.length; // 방금 생긴 업무
           if (!works.turn.assigned.includes(work.id)) works.turn.assigned.push(work.id);
@@ -114,7 +128,7 @@ export function createMissionMcpServer(
             }
           }
         }
-        const said = await dispatcher.assign(missionId, body, todoId, planFirst, preSync, work?.id);
+        const said = await dispatcher.assign(missionId, withTitle(body, title), todoId, planFirst, preSync, work?.id);
         return text(work ? `${said}\n(업무 「${work.name}」 · workId ${work.id} 에 달았어요. 이 일에 이어지는 과제는 같은 workId 로 맡기세요.)` : said);
       } catch (e) {
         return text(`배정하지 못했어요: ${e instanceof Error ? e.message : String(e)}`, true);

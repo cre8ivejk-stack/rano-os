@@ -18,6 +18,7 @@ import { AccountButton } from './account.js';
 import { SettingsButton } from './settings.js';
 import { SearchButton } from './search.js';
 import { startUpdateNotice } from './update.js';
+import { showDoc } from './mdDoc.js';
 
 const rano = window.rano;
 
@@ -528,6 +529,8 @@ function handleEvent(e: RanoUiEvent): void {
     keepOutputs(e.items);
     board.office.setOutputs(e.items);
     board.office.setOutputsCount(Array.isArray(e.items) ? e.items.filter((x) => x.status === 'done').length : 0);
+  } else if (e.kind === 'viewDoc') {
+    showDoc(e);
   } else if (e.kind === 'navigate') {
     if (TAB_NAMES.includes(e.tab)) showTab(e.tab);
   } else if (e.kind === 'orgOpenProposal') {

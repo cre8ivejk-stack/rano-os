@@ -1,6 +1,6 @@
 // 과제 결과 파일(runs/drafts/<미션>/<과제>): 리더가 만든 엑셀·문서·메일 초안 등을 화면에서 바로 보고, 저장하고, 열 수 있게 한다 (0.9.18).
 // 전에는 라노가 폴더 경로를 알려 주고 사용자가 Finder 에서 찾아 들어가야 했다.
-import { readdirSync, statSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import type { TaskFile } from '../../shared/types.js';
 
@@ -79,4 +79,53 @@ export function taskFilePath(dir: string | null, rel: unknown): string | null {
   if (!dir || typeof rel !== 'string') return null;
   const hit = listTaskFiles(dir).find((f) => f.rel === rel);
   return hit ? path.join(dir, hit.rel) : null;
+}
+
+/** 과제 id 앞 8자 이상으로 결과 폴더를 찾는다(온전한 id 도 됨). 둘 이상 걸리면 null */
+export function findTaskDirByPrefix(runsDir: string, idOrPrefix: unknown): { dir: string; taskId: string; missionId: string } | null {
+  if (typeof idOrPrefix !== 'string' || !/^[0-9a-f-]{8,36}$/.test(idOrPrefix)) return null;
+  const root = path.join(runsDir, 'drafts');
+  const hits: { dir: string; taskId: string; missionId: string }[] = [];
+  let missions: string[] = [];
+  try {
+    missions = readdirSync(root);
+  } catch {
+    return null;
+  }
+  for (const m of missions) {
+    let names: string[] = [];
+    try {
+      names = readdirSync(path.join(root, m));
+    } catch {
+      continue;
+    }
+    for (const n of names) if (UUID.test(n) && n.startsWith(idOrPrefix)) hits.push({ dir: path.join(root, m, n), taskId: n, missionId: m });
+  }
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/**
+ * 다른 과제의 결과 파일을 받는 미션의 시안 폴더(runs/drafts/<미션>/_received/<과제 앞 8자>)로 복사한다 (0.9.19).
+ * 미션끼리는 서로의 결과 폴더를 읽지 못해서, 라노가 맡길 때 앱이 넘겨 준다. 화면의 "결과 파일" 목록에 보이는 파일만(스크립트·인수 메모·숨김 파일 제외).
+ */
+export function shareTaskFiles(runsDir: string, toMissionId: string, idOrPrefix: string): { ok: boolean; paths: string[]; note: string } {
+  const src = findTaskDirByPrefix(runsDir, idOrPrefix);
+  if (!src) return { ok: false, paths: [], note: `과제 "${idOrPrefix}" 의 결과 폴더를 찾지 못했어요. 리더 보고에 적힌 과제 id 를 확인하세요.` };
+  const files = listTaskFiles(src.dir);
+  if (!files.length) return { ok: false, paths: [], note: `과제 ${src.taskId.slice(0, 8)} 의 결과 폴더에 넘길 파일이 없어요.` };
+  if (src.missionId === toMissionId) return { ok: true, paths: files.map((f) => path.join(src.dir, f.rel)), note: '' }; // 같은 미션은 그대로 읽을 수 있다
+  const target = path.join(runsDir, 'drafts', toMissionId, '_received', src.taskId.slice(0, 8));
+  const paths: string[] = [];
+  for (const f of files) {
+    if (f.size > 50 * 1024 * 1024) continue;
+    const dst = path.join(target, f.rel);
+    try {
+      mkdirSync(path.dirname(dst), { recursive: true });
+      copyFileSync(path.join(src.dir, f.rel), dst);
+      paths.push(dst);
+    } catch {
+      // 못 옮긴 파일은 건너뛴다
+    }
+  }
+  return paths.length ? { ok: true, paths, note: '' } : { ok: false, paths: [], note: '결과 파일을 복사하지 못했어요.' };
 }

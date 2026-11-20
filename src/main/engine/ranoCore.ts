@@ -44,6 +44,7 @@ export interface RanoSessionDeps {
   works?: WorkStore; // 업무(대화 방): 말과 과제를 업무에 단다
   workTurn?: WorkTurn; // 이번 차례의 업무(맡기기 도구와 함께 봄)
   roomNote?: (workId: string) => string; // 업무 방에서 한 말 앞에 붙일 안내
+  dateNote?: () => string; // 차례마다 맨 앞에 붙일 오늘 날짜·요일 안내 (0.9.19)
   statusNote?: () => string; // 사용자 말 차례마다 앞에 붙일 "지금 현황"(미션 진행·승인 대기·터미널 세션). 실패하면 붙이지 않는다
   orgMcp?: unknown; // 조직 도구 서버 (org_overview, propose_mission, open_mission_proposal)
 }
@@ -251,6 +252,7 @@ export class RanoCore implements RanoSessionApi {
   private readonly orgMcp: McpServerConfig | undefined;
   private readonly todoText: (() => string) | undefined;
   private readonly statusNote: (() => string) | undefined;
+  private readonly dateNote: (() => string) | undefined;
   private readonly works: WorkStore | undefined;
   private readonly workTurn: WorkTurn | undefined;
   private readonly roomNote: ((workId: string) => string) | undefined;
@@ -294,6 +296,7 @@ export class RanoCore implements RanoSessionApi {
     this.orgMcp = deps.orgMcp as McpServerConfig | undefined;
     this.todoText = deps.todoText;
     this.statusNote = deps.statusNote;
+    this.dateNote = deps.dateNote;
     this.works = deps.works;
     this.workTurn = deps.workTurn;
     this.roomNote = deps.roomNote;
@@ -487,7 +490,15 @@ export class RanoCore implements RanoSessionApi {
         return '';
       }
     };
-    const prompt = plan.kind === 'user' ? `${statusNote ? `${statusNote}\n\n[사용자 말]\n` : ''}${userTurnPrompt(users, plan.notices, roomNote)}` : noticePrompt(plan.notice);
+    const body = plan.kind === 'user' ? `${statusNote ? `${statusNote}\n\n[사용자 말]\n` : ''}${userTurnPrompt(users, plan.notices, roomNote)}` : noticePrompt(plan.notice);
+    // 오늘 날짜·요일을 차례마다 알려 준다(요일을 짐작해 "이번 주" 날짜를 틀리지 않게, 0.9.19)
+    let dateNote = '';
+    try {
+      dateNote = this.dateNote?.() ?? '';
+    } catch {
+      dateNote = '';
+    }
+    const prompt = dateNote ? `${dateNote}\n\n${body}` : body;
     const attachments = users.flatMap((u) => u.attachments);
     const extra = { turn, ...(mobile ? { mobile: true } : {}) };
     this.emit({ kind: 'status', status: 'thinking', turn, ...(label ? { label } : {}), ...(ids.length ? { users: ids } : {}), ...(mobile ? { mobile: true } : {}) });

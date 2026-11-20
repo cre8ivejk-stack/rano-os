@@ -94,6 +94,7 @@ type RanoUiEvent =
   | { kind: 'leaderMessage'; missionId: string; message: ChatMessage }
   | { kind: 'approvals'; items: ApprovalRequest[] }
   | { kind: 'outputs'; items: TaskOutput[] }
+  | { kind: 'viewDoc'; token: string; name: string; text: string; truncated?: boolean }
   | { kind: 'navigate'; tab: 'chat' | 'board' | 'approvals' | 'outputs' }
   | { kind: 'todos'; items: TodoItem[] }
   | { kind: 'works'; items: Work[] }
@@ -410,6 +411,7 @@ interface RanoApi {
   peekFile(absPath: string): Promise<{ ok: boolean; message?: string }>;
   taskFiles(taskId: string): Promise<TaskFile[]>;
   taskFileAct(taskId: string, rel: string, act: TaskFileAct): Promise<{ ok: boolean; message?: string }>;
+  docAct(token: string, act: 'save' | 'open' | 'reveal'): Promise<{ ok: boolean; message?: string }>;
   orgMissions(): Promise<MissionSummary[]>;
   orgPickFolder(purpose: 'target' | 'ref', zone: Zone): Promise<string | null>;
   orgInspect(absPath: string, purpose: 'target' | 'ref', zone: Zone, editingId?: string): Promise<FolderInspection>;
@@ -570,6 +572,7 @@ interface MissionSummary {
   archived: boolean;
   home: string;
   active: boolean;
+  applyWhenIdle?: boolean;
 }
 
 interface AdminResult {

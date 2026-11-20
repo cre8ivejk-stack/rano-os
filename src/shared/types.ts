@@ -355,6 +355,7 @@ export type RanoUiEvent =
   // ---- 3단계 ----
   | { kind: 'approvals'; items: ApprovalRequest[] } // 승인함 전체 목록 (바뀔 때마다)
   | { kind: 'outputs'; items: TaskOutput[] } // 결과물함 전체 목록 (바뀔 때마다)
+  | { kind: 'viewDoc'; token: string; name: string; text: string; truncated?: boolean } // 글 문서(.md 등)를 앱 안 보기 창으로 띄운다 (0.9.19)
   | { kind: 'navigate'; tab: 'chat' | 'board' | 'approvals' | 'outputs' } // 맥 알림을 눌렀을 때 해당 탭으로
   // ---- 할 일 목록 ----
   | { kind: 'todos'; items: TodoItem[] } // 할 일 전체 목록 (바뀔 때마다)
@@ -389,6 +390,7 @@ export const IPC = {
   revealFile: 'outputs:reveal', // invoke(absPath) → { ok: boolean; message?: string } (Finder 에서 보기)
   peekFile: 'outputs:peek', // invoke(absPath) → { ok, message? } (앱 안에서 바로 보기. 작업 대상 폴더 안 파일만)
   taskFiles: 'task:files', // invoke(taskId) → TaskFile[] (그 과제 결과 폴더의 문서·표·그림·글)
+  docAct: 'doc:act', // invoke(token, 'save'|'open'|'reveal') → { ok, message? } (보기 창에 띄운 문서를 저장·다른 앱으로 열기·Finder)
   taskFileAct: 'task:file-act', // invoke(taskId, rel, act) → { ok, message? } (바로 보기·열기·저장·Finder)
   // ---- 조직(미션 관리·인재풀) ----
   orgMissions: 'org:missions', // invoke → MissionSummary[] (보관한 미션 포함)
@@ -467,6 +469,7 @@ export interface RanoApi {
   peekFile(absPath: string): Promise<{ ok: boolean; message?: string }>;
   taskFiles(taskId: string): Promise<TaskFile[]>;
   taskFileAct(taskId: string, rel: string, act: TaskFileAct): Promise<{ ok: boolean; message?: string }>;
+  docAct(token: string, act: 'save' | 'open' | 'reveal'): Promise<{ ok: boolean; message?: string }>;
   // ---- 조직 ----
   orgMissions(): Promise<MissionSummary[]>;
   orgPickFolder(purpose: 'target' | 'ref', zone: Zone): Promise<string | null>;
@@ -903,6 +906,7 @@ export interface MissionSummary {
   archived: boolean;
   home: string;
   active: boolean; // 지금 실행 중인 앱에 반영돼 있는지 (false 면 다시 시작해야 반영)
+  applyWhenIdle?: boolean; // 고친 설정이 진행 중 과제가 끝나면 반영됨(앱을 다시 켜지 않아도 됨, 0.9.19)
 }
 
 export interface AdminResult {
