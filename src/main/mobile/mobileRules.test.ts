@@ -113,3 +113,12 @@ test('보고 첫 줄: 제목은 건너뛰고 첫 본문 줄, 꾸밈 기호 없�
   assert.ok(long.endsWith('…'));
   assert.equal(reportFirstLine(''), '(보고 없음)');
 });
+
+test('휴대폰 글: 굵은 글·코드·제목·목록 점이 보이고 꺾쇠는 글자로 남는다', async () => {
+  const { phoneHtml } = await import('./mobileRules.js');
+  const out = phoneHtml('## 바뀐 모습\n- **단추**는 `a<b`로 둠\n\n| 가 | 나 |\n|---|---|\n| 1 | 2 |\n```\nx < 1\n');
+  assert.ok(out.includes('<b>■ 바뀐 모습</b>'));
+  assert.ok(out.includes('• <b>단추</b>는 <code>a&lt;b</code>로 둠'));
+  assert.ok(!out.includes('|---|'));
+  assert.ok(out.endsWith('<pre>x &lt; 1</pre>'));
+});

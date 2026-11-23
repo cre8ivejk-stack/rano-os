@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import path from 'node:path';
 import { powerSaveBlocker, safeStorage } from 'electron';
 import type { ApprovalQueueApi, ApprovalRequest, MobileStatus, NewAttachment, RanoConfig, RanoUiEvent } from '../../shared/types.js';
-import { approvalPhoneText, MobileReplyTracker, TypingGate } from './mobileRules.js';
+import { phoneHtml, approvalPhoneText, MobileReplyTracker, TypingGate } from './mobileRules.js';
 
 // 시험할 때만 가짜 텔레그램 주소(이 맥 안)로 바꿀 수 있다. 평소에는 늘 텔레그램 공식 주소
 const API = process.env.RANO_TELEGRAM_TEST_API && /^http:\/\/127\.0\.0\.1:\d+$/.test(process.env.RANO_TELEGRAM_TEST_API) ? process.env.RANO_TELEGRAM_TEST_API : 'https://api.telegram.org';
@@ -66,6 +66,7 @@ export class TelegramBridge {
   private typingGate = new TypingGate(TYPING_MAX_MS); // 10분 상한: 닿으면 목록·차례가 바뀔 때까지 다시 켜지 않음
   private sentApprovals = new Map<string, number>(); // 승인 요청 id → 텔레그램 메시지 id
   private seenAtStart = new Set<string>();
+  private earlyCards: { name: string; id: number }[] = []; // 먼저 보낸 "보고 도착" 알림(미션 이름, 텔레그램 메시지 id)
   private blockerId: number | null = null;
 
   /** 잠자기 막기: 짝지은 연결이 있고 켜 두었을 때만. 화면은 꺼져도 되고 맥만 깨어 있게 한다 */
@@ -118,9 +119,11 @@ export class TelegramBridge {
   private async say(text: string, extra: Record<string, unknown> = {}): Promise<number | undefined> {
     if (!this.saved?.chatId) return undefined;
     let id: number | undefined;
-    for (const part of chunks(plain(text))) {
+    for (const part of chunks(text.trim())) {
+      const base = { chat_id: this.saved.chatId, disable_web_page_preview: true, ...extra };
       try {
-        const r = await this.call('sendMessage', { chat_id: this.saved.chatId, text: part, disable_web_page_preview: true, ...extra });
+        // 굵은 글·코드가 보이는 꼴로 먼저 보내고, 텔레그램이 그 꼴을 받지 않으면 꾸밈 없는 글로 다시 보낸다
+        const r = await this.call('sendMessage', { ...base, text: phoneHtml(part), parse_mode: 'HTML' }).catch(() => this.call('sendMessage', { ...base, text: plain(part) }));
         id = r?.message_id;
       } catch (e) {
         this.lastError = e instanceof Error ? e.message : String(e);
@@ -333,7 +336,25 @@ export class TelegramBridge {
   onEvent(e: RanoUiEvent): void {
     if (!this.saved?.chatId) return;
     const out = this.replies.decide(e, this.saved.allRano !== false);
-    if (out) void this.say(out);
+    if (out && e.kind === 'report') {
+      const name = e.missionName;
+      void this.say(out).then((id) => {
+        if (id) this.earlyCards.push({ name, id });
+      });
+    } else if (out && e.kind === 'message' && e.message.form === 'report') {
+      // 라노가 정리한 보고가 가면 먼저 보낸 "보고 도착" 알림은 지운다(맥 화면과 같게, 같은 보고를 두 번 보이지 않게)
+      const mission = e.message.mission;
+      void this.say(out).then((id) => {
+        if (!id) return;
+        let at = -1;
+        this.earlyCards.forEach((c, i) => {
+          if (c.name === mission) at = i;
+        });
+        if (at < 0) at = this.earlyCards.length - 1;
+        const [card] = at >= 0 ? this.earlyCards.splice(at, 1) : [];
+        if (card) void this.call('deleteMessage', { chat_id: this.saved?.chatId, message_id: card.id }).catch(() => undefined);
+      });
+    } else if (out) void this.say(out);
     this.syncTyping();
   }
 

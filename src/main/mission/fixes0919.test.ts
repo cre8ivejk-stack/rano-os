@@ -175,3 +175,10 @@ test('할 일 자동 만들기: 업무에 살아 있는 할 일이 없으면 앱
   finish({ ok: true, report: '끝', taskId: 't-2' });
   await new Promise((r) => setTimeout(r, 50));
 });
+
+test('보고 첫 줄: 번호만 붙은 절 머리는 건너뛰고 내용을 쓴다', async () => {
+  const { reportFirstLine } = await import('./dispatcher.js');
+  assert.equal(reportFirstLine('**1. 한 일**\n- 단추 두 개를 작은 그림으로 바꿨어요.\n\n2. 결과\n잘 됨'), '단추 두 개를 작은 그림으로 바꿨어요.');
+  assert.equal(reportFirstLine('1. 한 일: 단추를 바꿨어요'), '1. 한 일: 단추를 바꿨어요');
+  assert.equal(reportFirstLine('1. 한 일'), '1. 한 일');
+});

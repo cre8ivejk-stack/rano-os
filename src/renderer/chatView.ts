@@ -126,29 +126,14 @@ export class ChatView {
       m = { ...m, text: (m.text ?? '').replace(oldMobile, '') || '(사진)' };
     }
     if (m.role === 'user' && typeof m.toMission === 'string' && m.toMission) meta.appendChild(el('span', 'msg-to', `→ ${this.missionName(m.toMission)} 리더에게`));
+    // 접수 말: 글은 그대로 보이고(휴대폰과 같게), 어느 리더에게 맡겼는지 꼬리표만 붙인다
+    if (m.role === 'rano' && m.form === 'ack') meta.appendChild(el('span', 'msg-to', `→ ${m.mission ?? '미션'} 리더에게 맡김`));
     meta.appendChild(el('span', 'msg-time', formatTime(m.at)));
 
     const text = typeof m.text === 'string' ? m.text : '';
     const form = m.role === 'rano' ? m.form : undefined;
     let bubble: HTMLElement;
-    if (form === 'ack') {
-      // 접수 말: 한 줄로 접고, 누르면 맡긴 내용을 펼친다
-      row.classList.add('msg-ack');
-      bubble = el('div', 'ack');
-      const line = el('div', 'ack-line');
-      line.appendChild(el('span', 'ack-text', `↳ ${m.mission ?? '미션'} 리더에게 맡김 · ${formatTime(m.at)}`));
-      const more = el('button', 'ack-more', '맡긴 내용 보기');
-      more.type = 'button';
-      const body = el('div', 'bubble ack-body');
-      body.hidden = true;
-      renderRich(body, text);
-      more.addEventListener('click', () => {
-        body.hidden = !body.hidden;
-        more.textContent = body.hidden ? '맡긴 내용 보기' : '접기';
-      });
-      line.appendChild(more);
-      bubble.append(line, body);
-    } else if (form === 'report' && m.report) {
+    if (form === 'report' && m.report) {
       // 리더 보고: 카드. 요약 앞부분만 먼저 보이고 펼칠 수 있다
       row.classList.add('msg-report');
       bubble = el('div', `bubble report-card${m.report.ok ? '' : ' report-stopped'}`);
@@ -225,7 +210,7 @@ export class ChatView {
       }
     }
 
-    if (form !== 'ack') row.appendChild(meta);
+    row.appendChild(meta);
     // 답이 질문 바로 아래가 아니면(그 사이 보고·다른 말이 끼었으면) 답 위에 인용 한 줄
     const replyTo = Array.isArray(m.replyTo) ? m.replyTo.filter((id) => typeof id === 'string') : [];
     if (replyTo.length) {
@@ -319,9 +304,7 @@ export class ChatView {
       const chip = workChip(w, (id) => this.onOpenRoom(id));
       if (old) old.replaceWith(chip);
       else {
-        const host = row.querySelector<HTMLElement>('.ack-line') ?? row.querySelector<HTMLElement>('.msg-meta');
-        if (host?.classList.contains('ack-line')) host.prepend(chip);
-        else host?.appendChild(chip);
+        row.querySelector<HTMLElement>('.msg-meta')?.appendChild(chip);
       }
     }
     row.classList.toggle('msg-off', this.room !== null && w?.id !== this.room);

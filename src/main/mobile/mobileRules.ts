@@ -37,6 +37,34 @@ export function approvalPhoneText(
   return text.length > PHONE_APPROVAL_MAX ? `${text.slice(0, PHONE_APPROVAL_MAX - 30)}…\n(나머지는 맥 승인함에서 봐 주세요)` : text;
 }
 
+/**
+ * 텔레그램에 보낼 글(HTML 꼴): 맥 화면처럼 굵은 글·코드·제목·목록 점이 보이게 바꾼다.
+ * 글 조각 하나씩 바꾼다(코드 묶음이 조각 끝에서 열려 있으면 닫는다). 표의 구분 줄은 뺀다.
+ */
+export function phoneHtml(text: string): string {
+  const esc = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const out: string[] = [];
+  let fence = false;
+  for (const raw of text.split('\n')) {
+    if (/^\s*```/.test(raw)) {
+      fence = !fence;
+      out.push(fence ? '<pre>' : '</pre>');
+      continue;
+    }
+    if (fence) {
+      out.push(esc(raw));
+      continue;
+    }
+    if (/^\s*\|?\s*:?-{2,}[\s|:-]*$/.test(raw)) continue;
+    const head = /^#{1,6}\s+(.*)$/.exec(raw);
+    let line = esc(head ? head[1].replace(/\*\*/g, '') : raw.replace(/^(\s*)[-*]\s+/, '$1• '));
+    line = line.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`<]+)`/g, '<code>$1</code>');
+    out.push(head ? `<b>■ ${line}</b>` : line);
+  }
+  if (fence) out.push('</pre>');
+  return out.join('\n').replace(/<pre>\n/g, '<pre>').replace(/\n+<\/pre>/g, '</pre>').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 /** 휴대폰에 보낼 보고 카드 한 줄: 비밀처럼 보이는 글은 가린다 */
 export function reportCardText(e: { missionName: string; ok: boolean; firstLine: string }): string {
   return `📋 ${e.missionName} 리더 보고 · ${e.ok ? '완료' : '중단'}\n${redactCommand(e.firstLine)}\n(라노가 정리해서 곧 알려 드려요)`;

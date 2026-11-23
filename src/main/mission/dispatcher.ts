@@ -45,9 +45,14 @@ function stamp(d = new Date()): string {
 /** 보고 첫 줄: 제목(# …)은 건너뛰고 첫 본문 줄을 쓴다. 본문이 없으면 제목이라도 쓴다. 120자까지 */
 export function firstLine(text: string): string {
   const lines = String(text ?? '').split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
-  const line = lines.find((l) => !l.startsWith('#')) ?? lines[0] ?? '(보고 없음)';
+  const body = lines.filter((l) => !l.startsWith('#'));
+  // "1. 한 일" 처럼 번호와 짧은 이름만 있는 절 머리는 건너뛰고 그 아래 내용을 쓴다
+  const line = body.find((l) => !SECTION_HEAD.test(l)) ?? body[0] ?? lines[0] ?? '(보고 없음)';
   return oneLine(line.replace(/^#+\s*/, '').replace(/^[-*]\s+/, ''), 120);
 }
+
+/** 번호와 짧은 이름만 있는 절 머리 줄 (예: "1. 한 일", "**2) 결과**", "3. 남은 일:") */
+const SECTION_HEAD = /^(?:[-*]\s+)?\**\d+\s*[.)]\s*[^:：.!?]{1,12}?\**\s*[:：]?\**$/;
 
 /**
  * 미션 기억(진행업무)에 남길 한 줄: 보고의 "4. 결과" 절 첫 내용(없으면 첫 줄).
