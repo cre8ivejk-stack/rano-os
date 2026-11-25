@@ -42,7 +42,7 @@ import { searchAll } from './engine/search.js';
 import { TelegramBridge } from './mobile/telegram.js';
 import { candidates as connectorCandidates, importConnector, initConnectors, listConnectors, removeConnector, setConnectorSecret, setMissionConnectors } from './connectors/connectors.js';
 import { registryList, autoSkills, setAutoSkills, initSkills, installSkill, installTools, listSkills, previewSkill, readSkill, removeSkill, roleSkills, setRoleSkills, toolsStatus } from './skills/skills.js';
-import { attachmentDataUrl, saveAttachments } from './engine/attachments.js';
+import { attachmentDataUrl, attachmentFile, isImage, saveAttachments } from './engine/attachments.js';
 import { buildStatusNote } from './engine/ranoStatus.js';
 import { describeTerminalSessions, listTerminalSessions, type TerminalSession } from './mission/terminalSessions.js';
 
@@ -135,7 +135,7 @@ async function boot() {
     // 같은 미션 동시 작업: 과제가 겹치면 리더를 한 명 더 붙인다(같은 작업 폴더, 개수 제한 없음)
     // 다른 미션이 같은(또는 겹치는) 작업 폴더를 쓰면 그 미션의 진행 중 과제도 "다른 과제"로 본다(폴더 전체 git 명령 경고)
     const sameFolder = () => pools.filter((p) => p.mission.id !== mission.id && foldersOverlap(p.mission.targets, mission.targets)).flatMap((p) => p.pool.tasks());
-    const leader = new MissionLeaderPool((slot, others) => new MissionLeader({ config, mission, tracker, store: leaderStore, emit, approvals, outputs, slot, others: () => [...others(), ...sameFolder()] }));
+    const leader = new MissionLeaderPool((slot, others) => new MissionLeader({ config, mission, tracker, store: leaderStore, emit, approvals, outputs, slot, others: () => [...others(), ...sameFolder()], followUp: (taskId, minutes, what) => dispatcher.scheduleFollowUp(mission.id, taskId, minutes, what) }));
     pools.push({ mission, pool: leader });
     leaders.set(mission.id, leader);
     leadersForQuit.push(leader);
@@ -312,13 +312,22 @@ async function boot() {
     if (!t && !list.length) return { ok: false, message: '보낼 내용이 없어요' };
     const saved = saveAttachments(config.runsDir, list);
     if (!saved.ok) return { ok: false, message: saved.message };
-    await rano.send(t || '(그림만 보냈어요)', saved.saved, undefined, typeof workId === 'string' ? workId : undefined);
+    await rano.send(t || (saved.saved.some((x) => !isImage(x)) ? '(파일만 보냈어요)' : '(그림만 보냈어요)'), saved.saved, undefined, typeof workId === 'string' ? workId : undefined);
     return { ok: true };
   });
   // 앱이 꺼져 답하지 못한 내 말(자동으로 다시 실행하지 않음) · 그 말 다시 보내기
   ipcMain.handle(IPC.unanswered, async () => rano.unanswered().catch(() => []));
   ipcMain.handle(IPC.resend, async (_e, id: unknown) => (typeof id === 'string' && id ? rano.resend(id) : { ok: false, message: '다시 보낼 말을 찾지 못했어요' }));
   ipcMain.handle(IPC.attachmentData, (_e, a: any) => attachmentDataUrl(config.runsDir, { id: String(a?.id ?? ''), mime: String(a?.mime ?? '') }));
+  // 붙인 파일 열기: 글 파일은 앱 안 보기 창, 그 밖은 기본 앱(받을 수 있는 종류만 저장돼 있다)
+  ipcMain.handle(IPC.attachmentOpen, async (_e, a: any) => {
+    const f = attachmentFile(config.runsDir, { id: String(a?.id ?? ''), mime: String(a?.mime ?? ''), ext: String(a?.ext ?? '') });
+    if (!f) return { ok: false, message: '파일을 찾지 못했어요' };
+    const shown = viewDoc(f, typeof a?.name === 'string' ? a.name.slice(0, 80) : undefined);
+    if (shown) return shown;
+    const err = await shell.openPath(f);
+    return err ? { ok: false, message: '이 파일을 열 앱을 찾지 못했어요' } : { ok: true };
+  });
   ipcMain.handle(IPC.missionList, async () => dispatcher.statuses());
   ipcMain.handle(IPC.missionHistory, async (_e, missionId: unknown) => {
     const s = typeof missionId === 'string' ? leaderStores.get(missionId) : undefined;
@@ -375,7 +384,7 @@ async function boot() {
   const DOC_EXTS = new Set(['.md', '.markdown', '.txt']);
   const DOC_MAX = 1_500_000;
   const shownDocs = new Map<string, string>();
-  const viewDoc = (abs: string): { ok: boolean; message?: string } | null => {
+  const viewDoc = (abs: string, shownName?: string): { ok: boolean; message?: string } | null => {
     if (!DOC_EXTS.has(path.extname(abs).toLowerCase()) || !win || win.isDestroyed()) return null;
     let text = '';
     let truncated = false;
@@ -390,7 +399,7 @@ async function boot() {
     const token = randomUUID();
     shownDocs.set(token, abs);
     for (const k of [...shownDocs.keys()].slice(0, Math.max(0, shownDocs.size - 30))) shownDocs.delete(k);
-    emit({ kind: 'viewDoc', token, name: path.basename(abs), text, ...(truncated ? { truncated: true } : {}) });
+    emit({ kind: 'viewDoc', token, name: shownName || path.basename(abs), text, ...(truncated ? { truncated: true } : {}) });
     return { ok: true };
   };
   ipcMain.handle(IPC.docAct, async (_e, token: unknown, act: unknown) => {
@@ -741,12 +750,12 @@ async function boot() {
     if (!config.missions.some((m) => m.id === missionId)) return { ok: false, message: '그 미션을 찾지 못했어요' };
     // 라노 대화 화면에서 리더에게 바로 보낸 말은 그 대화에도 내 말로 남긴다(라노가 답할 말은 아님)
     // 리더에게 바로 시킨 일도 업무에 단다: 업무 방에서 보냈으면 그 업무, 아니면 지시문으로 이름을 지어 새 업무
-    const body = t || '(그림만 보냈어요)';
+    const body = t || (saved.saved.some((x) => !isImage(x)) ? '(파일만 보냈어요)' : '(그림만 보냈어요)');
     // 업무 방 밖에서 보냈는데 그 미션에 내 답을 기다리는 카드가 한 업무에만 있으면, 그 카드에 대한 말로 보고 그 업무에 단다 (0.9.16)
     const waitingWorks = [...new Set(approvals.list().filter((a) => a.status === 'pending' && a.missionId === missionId).map((a) => works.byTask(a.taskId)?.id).filter((x): x is string => !!x))];
     const work = works.get(typeof workId === 'string' ? workId : undefined) ?? (waitingWorks.length === 1 ? works.get(waitingWorks[0]) : undefined) ?? works.create(nameFromTask(taskTitle(body)), missionId);
     if (fromChat === true) {
-      const mine: ChatMessage = { id: randomUUID(), role: 'user', text: t || '(그림만 보냈어요)', at: new Date().toISOString(), toMission: missionId, ...(saved.saved.length ? { attachments: saved.saved } : {}) };
+      const mine: ChatMessage = { id: randomUUID(), role: 'user', text: body, at: new Date().toISOString(), toMission: missionId, ...(saved.saved.length ? { attachments: saved.saved } : {}) };
       try {
         works.linkMsgs(work.id, [mine.id]);
         await store.append(mine);

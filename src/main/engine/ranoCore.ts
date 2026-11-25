@@ -2,7 +2,7 @@
 // Electron 을 불러오지 않으므로 시험에서 가짜 엔진을 넣어 그대로 돌릴 수 있다.
 import type { McpServerConfig, Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import {
   MEMORY_MCP_NAME,
@@ -22,10 +22,13 @@ import {
   type RanoUiEvent,
 } from '../../shared/types.js';
 import type { WorkStore, WorkTurn } from './works.js';
+
+const REPORT_RETRY_MS = 15 * 60_000;
+const REPORT_RETRY_MAX = 8; // 15분 간격 8번(약 2시간)까지 다시 정리해 본다
 import { createPermissionGate } from './permissions.js';
 import { buildRanoSystemPrompt, ranoMissionList, ranoPromptFrame } from './ranoPrompt.js';
 import { zoneText } from '../admin/paths.js';
-import { imageBlocks } from './attachments.js';
+import { inputBlocks } from './attachments.js';
 import { recordLimit, recordResult } from './usage.js';
 import { carryText, RanoContextFile, shouldRotate } from './ranoCarry.js';
 import { findUnanswered, LANE_LIMITS, markPassed, noticePrompt, planNextTurn, toolLabel, userTurnPrompt, type LaneLimits, type LaneNotice, type LaneUser, type TurnPlan } from './ranoLanes.js';
@@ -60,6 +63,7 @@ export interface RanoCoreDeps extends RanoSessionDeps {
   now?: () => number;
   liveThrottleMs?: number; // 흘려 보이기 묶음 간격 (기본 80ms, 시험은 0)
   limits?: LaneLimits;
+  reportRetryMs?: number; // 정리하지 못한 리더 보고를 다시 정리해 보는 간격 (기본 15분)
   engineDrainMs?: number; // 다음 엔진을 켜기 전 앞 엔진 끝나기를 기다리는 시간 (기본 2500ms). 넘으면 close() 로 끈다
 }
 
@@ -279,6 +283,11 @@ export class RanoCore implements RanoSessionApi {
   private users: LaneUser[] = [];
   private notices: LaneNotice[] = [];
   private noticeDone = new Map<string, () => void>();
+  // 한도·오류로 라노가 정리하지 못한 리더 보고: 파일에 보관했다가 나중에 다시 정리한다(앱을 다시 켜도 이어짐, 0.9.21)
+  private retryReports = new Map<string, { notice: LaneNotice; tries: number }>();
+  private retryFile: string;
+  private retryMs: number;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
   private turnNo = 0;
   private currentLabel: string | undefined; // 지금 도는 차례 표시 (예: '보고 정리 중')
@@ -311,6 +320,15 @@ export class RanoCore implements RanoSessionApi {
     this.throttleMs = deps.liveThrottleMs ?? 80;
     this.limits = deps.limits ?? LANE_LIMITS;
     this.drainMs = deps.engineDrainMs ?? ENGINE_DRAIN_MS;
+    this.retryMs = deps.reportRetryMs ?? REPORT_RETRY_MS;
+    this.retryFile = path.join(deps.config.runsDir, 'rano', 'pending-reports.json');
+    try {
+      const saved = JSON.parse(readFileSync(this.retryFile, 'utf-8')) as { notice: LaneNotice; tries: number }[];
+      for (const x of Array.isArray(saved) ? saved : []) if (x?.notice?.id && typeof x.notice.text === 'string') this.retryReports.set(x.notice.id, { notice: x.notice, tries: Number(x.tries) || 1 });
+    } catch {
+      // 보관한 보고가 없음
+    }
+    if (this.retryReports.size) this.scheduleRetry(Math.min(this.retryMs, 60_000));
     this.promptFile = PromptStateFile.at(deps.config.runsDir);
     this.ctxFile = RanoContextFile.at(deps.config.runsDir);
   }
@@ -420,6 +438,57 @@ export class RanoCore implements RanoSessionApi {
     this.emit({ kind: 'error', text, at: new Date().toISOString(), ...extra });
   }
 
+  private saveRetry(): void {
+    try {
+      mkdirSync(path.dirname(this.retryFile), { recursive: true });
+      writeFileSync(this.retryFile, JSON.stringify([...this.retryReports.values()]), 'utf-8');
+    } catch {
+      // 보관에 실패해도 이번 실행 동안은 기억하고 있다
+    }
+  }
+
+  private scheduleRetry(ms: number): void {
+    if (this.retryTimer || !this.retryReports.size) return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      this.requeueReports();
+    }, ms);
+    this.retryTimer.unref?.();
+  }
+
+  /** 보관해 둔 보고를 다시 줄에 세운다(이미 줄에 있는 것은 빼고) */
+  private requeueReports(): void {
+    const waiting = new Set(this.notices.map((n) => n.id));
+    const again = [...this.retryReports.values()].filter((x) => !waiting.has(x.notice.id));
+    if (!again.length) return;
+    for (const x of again) this.notices.push({ ...x.notice, at: this.now(), passed: 0 });
+    this.pump();
+  }
+
+  /** 리더 보고를 다룬 차례가 끝났을 때: 잘 끝났으면 보관에서 지우고, 실패했으면 보관해 두고 나중에 다시 */
+  private settleReports(handled: LaneNotice[], ok: boolean): void {
+    const reports = handled.filter((n) => n.kind === 'report');
+    if (!reports.length) return;
+    let kept = 0;
+    for (const n of reports) {
+      if (ok) {
+        this.retryReports.delete(n.id);
+        continue;
+      }
+      const tries = (this.retryReports.get(n.id)?.tries ?? 0) + 1;
+      if (tries > REPORT_RETRY_MAX) {
+        this.retryReports.delete(n.id);
+        this.emit({ kind: 'activity', text: '리더 보고를 여러 번 정리하지 못했어요. 결과물함에서 그 과제의 보고를 직접 봐 주세요.', at: new Date().toISOString() });
+        continue;
+      }
+      this.retryReports.set(n.id, { notice: n, tries });
+      kept += 1;
+      if (tries === 1) this.emit({ kind: 'activity', text: '라노가 리더 보고를 정리하지 못했어요(사용 한도·오류). 보고는 보관해 두었고, 조금 뒤 자동으로 다시 정리해요. 결과물함에서는 지금도 볼 수 있어요.', at: new Date().toISOString() });
+    }
+    this.saveRetry();
+    if (kept) this.scheduleRetry(this.retryMs);
+  }
+
   private pump(): void {
     if (this.running) return;
     this.running = true;
@@ -439,11 +508,15 @@ export class RanoCore implements RanoSessionApi {
             this.notices = this.notices.filter((n) => n !== plan.notice);
             handled = [plan.notice];
           }
+          let ok = false;
           try {
-            await this.runTurn(plan);
+            ok = await this.runTurn(plan);
           } catch (e) {
             console.error('[rano] 차례 처리 실패:', e);
           }
+          this.settleReports(handled, ok);
+          // 사용자 말에 답이 잘 나갔으면(한도가 풀렸다는 뜻) 보관해 둔 보고를 바로 다시 정리한다
+          if (ok && plan.kind === 'user' && this.retryReports.size) this.requeueReports();
           if (plan.kind === 'user') markPassed(passedOver.filter((n) => this.notices.includes(n)));
           for (const n of handled) {
             this.noticeDone.get(n.id)?.();
@@ -458,7 +531,8 @@ export class RanoCore implements RanoSessionApi {
     })();
   }
 
-  private async runTurn(plan: TurnPlan): Promise<void> {
+  private async runTurn(plan: TurnPlan): Promise<boolean> {
+    let turnOk = false;
     const turn = ++this.turnNo;
     const users = plan.kind === 'user' ? plan.users : [];
     const ids = users.map((u) => u.id);
@@ -566,6 +640,7 @@ export class RanoCore implements RanoSessionApi {
         answeredAt = this.now();
         this.emit({ kind: 'message', message: ranoMsg, ...extra });
       }
+      turnOk = result.errorText === null && !!text;
       if (result.errorText !== null) {
         this.emitError(friendlyError(result.errorText, result.errorKind), extra);
       } else if (!text) {
@@ -600,6 +675,7 @@ export class RanoCore implements RanoSessionApi {
         console.error('[rano] 지침 판 정리 실패:', e);
       }
     }
+    return turnOk;
   }
 
   /**
@@ -675,8 +751,8 @@ export class RanoCore implements RanoSessionApi {
     const toolsShown = new Set<string>(); // 흘려 받기로 이미 진행 줄을 띄운 도구 id
     let streamedText = false; // 이번 assistant 메시지의 글이 조각으로 이미 보였는지
 
-    // 그림이 있으면 그림 + 글을 한 메시지로 보낸다 (입력은 그 한 메시지로 끝)
-    const images = attachments.length ? imageBlocks(this.config.runsDir, attachments) : [];
+    // 그림·PDF·글 파일이 있으면 그 내용 + 글을 한 메시지로 보낸다 (입력은 그 한 메시지로 끝)
+    const images = attachments.length ? inputBlocks(this.config.runsDir, attachments) : [];
     const input: string | AsyncIterable<SDKUserMessage> = images.length
       ? (async function* () {
           yield { type: 'user', message: { role: 'user', content: [...images, { type: 'text', text: prompt }] }, parent_tool_use_id: null } as unknown as SDKUserMessage;

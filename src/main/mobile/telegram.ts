@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import path from 'node:path';
 import { powerSaveBlocker, safeStorage } from 'electron';
 import type { ApprovalQueueApi, ApprovalRequest, MobileStatus, NewAttachment, RanoConfig, RanoUiEvent } from '../../shared/types.js';
+import { extOfName, FILE_EXTS, MAX_FILE_BYTES } from '../engine/attachments.js';
 import { phoneHtml, approvalPhoneText, MobileReplyTracker, TypingGate } from './mobileRules.js';
 
 // 시험할 때만 가짜 텔레그램 주소(이 맥 안)로 바꿀 수 있다. 평소에는 늘 텔레그램 공식 주소
@@ -306,28 +307,32 @@ export class TelegramBridge {
       await this.say('연결돼 있어요. 라노에게 할 말을 보내 주세요.');
       return;
     }
-    // 사진: 가장 큰 것 하나를 받아 라노에게 함께 보낸다
+    // 사진·파일: 사진은 가장 큰 것 하나, 파일은 받을 수 있는 종류만 받아 라노에게 함께 보낸다
     const attachments: NewAttachment[] = [];
     const photo = Array.isArray(m.photo) ? m.photo[m.photo.length - 1] : null;
-    const doc = m.document && /^image\/(png|jpeg|gif|webp)$/.test(m.document.mime_type ?? '') ? m.document : null;
+    const docImage = !!m.document && /^image\/(png|jpeg|gif|webp)$/.test(m.document.mime_type ?? '');
+    const docFile = !!m.document && !docImage && FILE_EXTS.includes(extOfName(m.document.file_name ?? ''));
+    if (m.document && !docImage && !docFile) await this.say('이 종류의 파일은 받을 수 없어요. 그림, PDF, 엑셀, 워드, 한글, 파워포인트, 글 파일, zip 을 보낼 수 있어요.');
+    const doc = docImage || docFile ? m.document : null;
     const fileId = photo?.file_id ?? doc?.file_id;
     if (fileId) {
+      const limit = docFile ? MAX_FILE_BYTES : 5 * 1024 * 1024;
       try {
         const f = await this.call('getFile', { file_id: fileId });
-        if (f?.file_path && (f.file_size ?? 0) <= 5 * 1024 * 1024) {
-          const res = await fetch(`${API}/file/bot${saved.token}/${f.file_path}`, { signal: AbortSignal.timeout(30_000) });
+        if (f?.file_path && (f.file_size ?? 0) <= limit) {
+          const res = await fetch(`${API}/file/bot${saved.token}/${f.file_path}`, { signal: AbortSignal.timeout(60_000) });
           const buf = Buffer.from(await res.arrayBuffer());
-          const mime = doc?.mime_type ?? 'image/jpeg';
+          const mime = docFile ? 'application/octet-stream' : (doc?.mime_type ?? 'image/jpeg');
           attachments.push({ name: doc?.file_name ?? `휴대폰 사진.${mime === 'image/png' ? 'png' : 'jpg'}`, mime, data: buf.toString('base64') });
-        }
+        } else await this.say(docFile ? '파일이 너무 커요. 20MB 까지 받을 수 있어요.' : '사진이 너무 커요. 5MB 까지 받을 수 있어요.');
       } catch {
-        await this.say('사진을 받지 못했어요. 글로 보내 주시거나 다시 보내 주세요.');
+        await this.say(docFile ? '파일을 받지 못했어요. 다시 보내 주세요.' : '사진을 받지 못했어요. 글로 보내 주시거나 다시 보내 주세요.');
       }
     }
     if (!text && !attachments.length) return;
     // 받자마자 "입력 중" 한 번. 이후는 이 말이 저장되면(화면 이벤트) 답이 갈 때까지 이어서 보낸다
     this.sendTyping();
-    const r = await this.deps.sendToRano(text || '(사진)', attachments);
+    const r = await this.deps.sendToRano(text || (docFile ? '(파일)' : '(사진)'), attachments);
     if (!r.ok) await this.say(r.message ?? '라노에게 전하지 못했어요.');
   }
 

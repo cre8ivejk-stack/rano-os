@@ -29,3 +29,10 @@ export function isConnectorReadTool(tool: string): boolean {
   }
   return false;
 }
+
+/** 이름은 읽기 동사로 시작하는데 민감한 것(환경 변수·비밀·주소 등)을 읽어서 묻는 도구인지. 쓰기 단어가 있으면 아니다 */
+export function isConnectorSensitiveRead(tool: string): boolean {
+  const words = tool.toLowerCase().split(/[_\-]+/).filter(Boolean);
+  if (words.some((w) => WRITE_WORDS.has(w)) || !words.some((w) => SENSITIVE_WORDS.has(w))) return false;
+  return words.slice(0, 3).some((w) => READ_WORDS.has(w));
+}

@@ -35,6 +35,11 @@ export function connectorsSection(notice: Notice, missions: () => { id: string; 
       });
       top.appendChild(rm);
       card.appendChild(top);
+      // 리더가 마지막으로 과제를 시작할 때 본 상태: 로그인이 풀렸거나 붙지 못했으면 여기서 알린다
+      if (c.state === 'needsAuth')
+        card.appendChild(el('p', 'org-problem', `로그인이 필요해요. 터미널에서 claude 를 켜고 /mcp 를 입력해 ${c.label} 을(를) 골라 로그인해 주세요. 로그인한 뒤 맡기는 과제부터 쓸 수 있어요.`));
+      else if (c.state === 'failed') card.appendChild(el('p', 'org-problem', '마지막 과제에서 이 연결에 붙지 못했어요. 사내망·VPN 과 연결 프로그램을 확인해 주세요.'));
+      else if (c.state === 'ok') card.appendChild(el('p', 'org-hint', '마지막 과제에서 잘 연결됐어요.'));
       // 사람마다 다른 키: 이 맥 사용자가 직접 넣는다(키체인 암호화, 화면에 다시 보이지 않음)
       const keys = el('div', 'connector-keys');
       const keyHint = c.secretEnv.length

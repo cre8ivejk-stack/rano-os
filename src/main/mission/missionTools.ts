@@ -3,7 +3,7 @@ import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { MISSION_MCP_NAME, type MemberState, type MissionDispatcherApi, type MissionStatus, type RanoConfig } from '../../shared/types.js';
 import { zoneText } from '../admin/paths.js';
-import { shareWithMission } from '../engine/attachments.js';
+import { fileNoteForLeader, shareWithMission } from '../engine/attachments.js';
 import { userAskedSync } from './syncIntent.js';
 import { withUserWords } from './userWords.js';
 import { taskTitle, withTitle } from './taskText.js';
@@ -94,9 +94,10 @@ export function createMissionMcpServer(
         if (attachments?.length) {
           if (!config.missions.some((m) => m.id === missionId)) return text(`"${missionId}" 미션을 찾지 못했어요.`, true);
           const shared = shareWithMission(config.runsDir, missionId, attachments);
-          if (shared.missing.length && !shared.paths.length) return text(`그림 id 를 찾지 못했어요: ${shared.missing.join(', ')}`, true);
-          if (shared.paths.length)
-            body += `\n\n[첨부 그림] 사용자가 붙인 그림이에요. Read 도구로 열어 보세요(팀원에게도 이 경로를 넘기세요). 그림 위의 빨강·파랑·노랑 펜·네모·화살표·번호는 사용자가 고치고 싶은 곳을 직접 표시한 거예요:\n${shared.paths.map((p) => `- ${p}`).join('\n')}`;
+          if (shared.missing.length && !shared.paths.length) return text(`첨부 id 를 찾지 못했어요: ${shared.missing.join(', ')}`, true);
+          body += fileNoteForLeader(shared.files);
+          if (shared.images.length)
+            body += `\n\n[첨부 그림] 사용자가 붙인 그림이에요. Read 도구로 열어 보세요(팀원에게도 이 경로를 넘기세요). 그림 위의 빨강·파랑·노랑 펜·네모·화살표·번호는 사용자가 고치고 싶은 곳을 직접 표시한 거예요:\n${shared.images.map((p) => `- ${p}`).join('\n')}`;
         }
         // 사용자가 직접 받아오기(pull)를 시켰으면 그 과제의 받아오기는 승인 없이(라노가 쓴 지시가 아니라 사용자가 쓴 말로 판단)
         // 사용자가 직접 쓴 말을 지시에 함께 붙인다(리더가 범위를 이 말로 판단)

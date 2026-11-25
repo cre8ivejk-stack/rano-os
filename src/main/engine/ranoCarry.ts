@@ -5,6 +5,7 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { ChatMessage } from '../../shared/types.js';
+import { attachLabel } from './attachments.js';
 
 /** 마지막 차례에 엔진이 읽은 대화 크기 */
 export interface RanoContextInfo {
@@ -13,8 +14,12 @@ export interface RanoContextInfo {
   at: number; // 그 차례가 끝난 시각(ms)
 }
 
-/** 계속 쓰는 중이어도 이보다 크면 새 대화로 */
-export const ROTATE_TOKENS = 150_000;
+/**
+ * 계속 쓰는 중이어도 이보다 크면 새 대화로.
+ * 0.9.21: 150,000 → 195,000. 지침·기억·도구만으로 새 대화가 6만쯤에서 시작해, 15만 기준이면 일하는 날 45~60분마다 갈아탔다(2026-11-24 하루 7번).
+ * 갈아탈 때마다 지난 맥락이 줄고 첫 차례에 전체를 새로 읽는다. 20만을 넘기지는 않는다(긴 대화 요금 구간을 피한다)
+ */
+export const ROTATE_TOKENS = 195_000;
 /** 이만큼 쉬면 엔진의 임시 저장이 식어, 다음 말에서 지난 대화 전체를 제값으로 다시 읽는다 */
 export const COLD_MS = 60 * 60_000;
 /** 식었을 때는 이보다 크면 새 대화로 */
@@ -73,7 +78,7 @@ export function carryText(messages: ChatMessage[], exclude: readonly string[] = 
           : m.form === 'ack'
             ? `라노(${m.mission ?? '미션'} 리더에게 맡김)`
             : '라노';
-    const pics = m.attachments?.length ? ` (그림 ${m.attachments.length}개 첨부: 지금은 다시 볼 수 없음)` : '';
+    const pics = m.attachments?.length ? ` (${attachLabel(m.attachments)} 첨부: 지금은 다시 볼 수 없음. 첨부 id: ${m.attachments.map((a) => a.id).join(', ')})` : '';
     const line = `[${stamp(m.at)} ${who}]${pics}\n${clip(m.text, m.role === 'user' ? USER_MAX : RANO_MAX)}`;
     if (total + line.length > CARRY_CHARS && lines.length) break;
     total += line.length;

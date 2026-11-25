@@ -146,6 +146,9 @@ const api: RanoApi = {
   attachmentData(a: ChatAttachment): Promise<string | null> {
     return ipcRenderer.invoke('rano:attachment-data', { id: String(a?.id ?? ''), mime: String(a?.mime ?? '') });
   },
+  attachmentOpen(a: ChatAttachment): Promise<{ ok: boolean; message?: string }> {
+    return ipcRenderer.invoke('rano:attachment-open', { id: String(a?.id ?? ''), mime: String(a?.mime ?? ''), ext: String(a?.ext ?? ''), name: String(a?.name ?? '') });
+  },
   onEvent(cb: (e: RanoUiEvent) => void): () => void {
     // 화면에 ipcRenderer 이벤트 객체를 넘기지 않고 내용만 넘긴다.
     const listener = (_event: IpcRendererEvent, payload: RanoUiEvent) => cb(payload);

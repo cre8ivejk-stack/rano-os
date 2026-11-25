@@ -735,3 +735,29 @@ test('0.9.12 대화 줄이기: 지난 차례의 대화가 크면 새 대화로 �
   assert.ok(p.startsWith('[앱 안내] 이어 가는 대화') && p.includes('첫 말') && p.includes('둘째 말') && p.endsWith('셋째 말'));
   assert.equal(p.split('셋째 말').length, 2, '이번에 답할 말은 넘기는 글에 다시 넣지 않는다');
 });
+
+test('정리하지 못한 리더 보고: 보관해 두었다가 내 말에 답이 나가면 다시 정리하고, 앱을 다시 켜도 이어진다 (0.9.21)', async () => {
+  const fail: Script = async function* () {
+    yield init;
+    throw new Error("You've hit your usage limit");
+  };
+  const t = setup([fail, simpleAnswer('네'), simpleAnswer('보고를 정리했어요')]);
+  const notice = '[앱 알림] 홈 리더 보고 (과제: 문 고치기, 결과: 완료, 과제 id: abcd1234)\n\n문을 고쳤습니다';
+  await t.core.notify(notice, 'report');
+  await t.core.whenIdle();
+  assert.equal(ranoMsgs(t.events).length, 0);
+  const file = path.join(t.config.runsDir, 'rano', 'pending-reports.json');
+  assert.equal(JSON.parse(readFileSync(file, 'utf-8')).length, 1, '보고를 파일에 보관');
+  assert.ok(t.events.some((e) => e.kind === 'activity' && /보관해 두었고/.test(e.text)));
+  // 앱을 다시 켠 것처럼 새로 만들어도 보관한 보고를 안다
+  const again = new RanoCore({ config: t.config, memory, store: t.store, emit: () => undefined, memoryMcp: {}, queryFn: (() => { throw new Error('쓰지 않음'); }) as QueryFn, sdkEnv: () => ({}), reportRetryMs: 3_600_000 });
+  assert.ok(again);
+  // 내 말에 답이 나가면(한도가 풀림) 보관한 보고를 바로 다시 정리한다
+  await t.core.send('한도 풀렸어');
+  await t.core.whenIdle();
+  const msgs = ranoMsgs(t.events);
+  assert.deepEqual(msgs.map((m) => m.message.text), ['네', '보고를 정리했어요']);
+  assert.equal(msgs[1].message.form, 'report');
+  assert.match(String(t.calls[2].prompt), /문을 고쳤습니다/);
+  assert.equal(JSON.parse(readFileSync(file, 'utf-8')).length, 0, '정리한 보고는 보관에서 지움');
+});

@@ -6,6 +6,7 @@
 import type { ApprovalRequest, RanoUiEvent } from '../../shared/types.js';
 import { carefulLabel, commandOf, filesOf } from '../approvals/approvalSafety.js';
 import { redactCommand } from '../mission/leaderPermissions.js';
+import { attachLabel } from '../engine/attachments.js';
 
 /** 휴대폰 승인 요청 글 한 통의 최대 글자 수(텔레그램 한도 4096 안쪽, 버튼이 붙는 한 통에 다 들어가게) */
 export const PHONE_APPROVAL_MAX = 3500;
@@ -86,7 +87,7 @@ export class MobileReplyTracker {
       // 맥에서 한 말도 함께 보낸다 (라노 답을 모두 받는 설정일 때). 예전 글 모양의 휴대폰 말은 건너뛴다
       const t = e.message.text ?? '';
       if (allRano && !/\(휴대폰에서 (보냄|사진만 보냄)\)\s*$/.test(t)) {
-        const pics = e.message.attachments?.length ? ` (그림 ${e.message.attachments.length}개)` : '';
+        const pics = e.message.attachments?.length ? ` (${attachLabel(e.message.attachments)})` : '';
         return `💻 ${t}${pics}`;
       }
       return null;

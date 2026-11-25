@@ -16,6 +16,8 @@ import type {
 import { autoCommit } from '../memory/autoCommit.js';
 import { oneLine } from './tracker.js';
 import { TaskQueueStore } from './taskQueue.js';
+import { clock, FOLLOW_MAX_MINUTES, FOLLOW_MAX_ROUNDS, FOLLOW_MIN_MINUTES, followUpTask, FollowUpStore, type FollowUp } from './followUps.js';
+import { redactCommand } from './leaderPermissions.js';
 
 /** 리더 보고 도착 카드 (라노 요약을 기다리지 않고 바로 화면에) */
 export interface ReportCard {
@@ -80,9 +82,80 @@ export class MissionDispatcher implements MissionDispatcherApi {
   private fileQueue: Promise<unknown> = Promise.resolve(); // 진행업무.md 쓰기를 하나씩
   private readonly queues = new Map<string, TaskQueueStore>(); // 미션별 대기열 기록 (앱을 다시 켜도 이어 가기)
   private closing = false; // 앱이 꺼지는 중이면 대기열·할 일·미션 기억을 건드리지 않는다
+  private readonly followUps = new Map<string, FollowUpStore>(); // 미션별 "나중에 다시 확인" 예약
+  private readonly followTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly followRounds = new Map<string, number>(); // 업무(없으면 과제)별 지금까지 돈 다시 확인 횟수
 
   constructor(private readonly deps: MissionDispatcherDeps) {
     for (const m of deps.config.missions) this.queues.set(m.id, new TaskQueueStore(deps.config.runsDir, m.id));
+  }
+
+  private followStore(missionId: string): FollowUpStore {
+    let s = this.followUps.get(missionId);
+    if (!s) {
+      s = new FollowUpStore(this.deps.config.runsDir, missionId);
+      this.followUps.set(missionId, s);
+    }
+    return s;
+  }
+
+  /** 리더의 check_later: 몇 분 뒤 같은 미션·같은 업무로 확인 과제를 맡기도록 예약한다. 리더에게 돌려줄 안내 글 */
+  scheduleFollowUp(missionId: string, taskId: string, minutes: number, what: string): string {
+    const mission = this.deps.config.missions.find((m) => m.id === missionId);
+    if (!mission) return '미션을 찾지 못해 예약하지 못했어요. 보고에 "나중에 확인할 일"로 적어 주세요.';
+    const text = String(what ?? '').trim();
+    if (text.length < 10) return '무엇을 어떻게 확인할지 조금 더 자세히 적어 다시 불러 주세요(다음 과제의 리더가 그 글만 보고 확인해요).';
+    if (!Number.isFinite(minutes) || minutes < FOLLOW_MIN_MINUTES || minutes > FOLLOW_MAX_MINUTES) return `${FOLLOW_MIN_MINUTES}분에서 ${FOLLOW_MAX_MINUTES}분 사이로 정해 다시 불러 주세요.`;
+    const workId = this.deps.works?.byTask(taskId)?.id;
+    const todo = workId ? this.deps.todos?.list().find((x) => x.workId === workId && x.status !== 'done') : undefined;
+    const round = (this.followRounds.get(workId ?? taskId) ?? 0) + 1;
+    if (round > FOLLOW_MAX_ROUNDS) return `이 업무에서 다시 확인을 이미 ${FOLLOW_MAX_ROUNDS}번 했어요. 더 예약하지 않아요. 지금 상태와 사용자가 직접 확인할 방법을 보고에 적어 주세요.`;
+    const item = this.followStore(missionId).add({ dueAt: Date.now() + Math.round(minutes) * 60_000, what: redactCommand(text).slice(0, 1500), fromTaskId: taskId, ...(workId ? { workId } : {}), ...(todo ? { todoId: todo.id } : {}), round });
+    this.armFollowUp(missionId, item);
+    this.deps.trackers.get(missionId)?.activity('앱', `${clock(item.dueAt)} 에 다시 확인하도록 예약했어요: ${oneLine(text, 60)}`);
+    return `${clock(item.dueAt)}(${Math.round(minutes)}분 뒤)에 다시 확인하도록 예약했어요. 지금은 기다리지 말고, 지금까지 한 일과 "${clock(item.dueAt)} 에 무엇을 다시 확인하기로 했는지"를 보고에 적고 이 과제를 끝내세요.`;
+  }
+
+  private armFollowUp(missionId: string, item: FollowUp): void {
+    const old = this.followTimers.get(item.id);
+    if (old) clearTimeout(old);
+    const t = setTimeout(() => this.fireFollowUp(missionId, item.id), Math.max(1_000, item.dueAt - Date.now()));
+    t.unref?.();
+    this.followTimers.set(item.id, t);
+  }
+
+  /** 예약한 시각이 됨: 같은 미션·같은 업무로 확인 과제를 맡긴다 (시험에서도 직접 부른다) */
+  fireFollowUp(missionId: string, id: string): void {
+    this.followTimers.delete(id);
+    if (this.closing) return;
+    const store = this.followStore(missionId);
+    const item = store.all().find((x) => x.id === id);
+    if (!item) return; // 새 예약으로 바뀌었거나 지워짐
+    store.remove(id);
+    const found = this.find(missionId);
+    if (typeof found === 'string') return;
+    const { mission, leader } = found;
+    const todos = this.deps.todos;
+    const todo = item.todoId && todos ? todos.get(item.todoId) : undefined;
+    // 사용자가 그 사이 그 일을 끝냈으면 다시 확인하지 않는다
+    if (item.todoId && (!todo || todo.status === 'done')) {
+      this.deps.trackers.get(missionId)?.activity('앱', `예약한 다시 확인은 하지 않았어요(그 일을 이미 끝내셨어요): ${oneLine(item.what, 40)}`);
+      return;
+    }
+    this.followRounds.set(item.workId ?? item.fromTaskId ?? id, item.round);
+    if (todo && todos) this.safeTodo(() => todos.update(todo.id, { status: 'active', queued: leader.busy(), note: '예약한 다시 확인 중' }, 'app'));
+    this.deps.trackers.get(missionId)?.activity('앱', `예약한 다시 확인을 시작해요: ${oneLine(item.what, 60)}`);
+    this.runInBackground(mission, leader, followUpTask(item), 'rano', todo?.id, false, false, [], false, item.workId);
+  }
+
+  /** 예약 목록(시험·화면용) */
+  followUpList(missionId: string): FollowUp[] {
+    return this.followStore(missionId).all();
+  }
+
+  /** 이 할 일(업무)에 걸린 다시 확인 예약(없으면 undefined) */
+  private pendingFollowUp(missionId: string, todoId?: string, taskId?: string): FollowUp | undefined {
+    return this.followStore(missionId).all().find((x) => (!!todoId && x.todoId === todoId) || (!!taskId && x.fromTaskId === taskId));
   }
 
   /** 앱이 꺼질 때 main 이 부른다. 이후 멈추는 과제는 '중단'으로 기록하지 않고 다음 실행 때 이어 간다. */
@@ -120,6 +193,14 @@ export class MissionDispatcher implements MissionDispatcherApi {
       }
       if (waiting.length) tracker?.activity('앱', `앱을 다시 켜서 기다리던 과제 ${waiting.length}건을 이어서 맡겼어요`);
       this.pushQueue(mission.id);
+    }
+    // 예약해 둔 다시 확인: 시각이 지났으면 조금 뒤 바로, 아니면 그 시각에
+    for (const mission of this.deps.config.missions) {
+      for (const item of this.followStore(mission.id).all()) {
+        const key = item.workId ?? item.fromTaskId ?? item.id;
+        this.followRounds.set(key, Math.max(this.followRounds.get(key) ?? 0, item.round - 1));
+        this.armFollowUp(mission.id, item.dueAt < Date.now() + 30_000 ? { ...item, dueAt: Date.now() + 30_000 } : item);
+      }
     }
   }
 
@@ -258,19 +339,25 @@ export class MissionDispatcher implements MissionDispatcherApi {
         if (this.closing) return; // 앱이 꺼지며 멈춘 과제는 다음 실행 때 이어 간다
         if (entry) queue?.remove(entry.id);
         this.pushQueue(mission.id);
-        this.todoAfterRun(todoId, result.ok, 'taskId' in result ? result.taskId : undefined);
+        this.todoAfterRun(todoId, result.ok, 'taskId' in result ? result.taskId : undefined, mission.id);
         return this.afterRun(mission, text, result, todoId, 'taskId' in result ? result.taskId : undefined);
       })
       .catch((e) => console.error('[dispatcher] 마무리 처리 실패:', e));
   }
 
   // 리더 일이 끝나면 연결된 할 일을 확인 요청(성공) 또는 대기(중단)로 돌린다. 사용자가 이미 완료했으면 그대로 둔다.
-  private todoAfterRun(todoId: string | undefined, ok: boolean, taskId?: string) {
+  private todoAfterRun(todoId: string | undefined, ok: boolean, taskId?: string, missionId?: string) {
     const todos = this.deps.todos;
     if (!todoId || !todos) return;
     const t = todos.get(todoId);
     if (!t || t.status === 'done') return;
     const now = stamp().slice(5);
+    // 리더가 다시 확인을 예약하고 끝냈으면 "확인 요청"이 아니라 "기다리는 중"으로 둔다(그 시각에 앱이 확인 과제를 맡긴다)
+    const later = ok && missionId ? this.pendingFollowUp(missionId, todoId, taskId) : undefined;
+    if (later) {
+      this.safeTodo(() => todos.update(todoId, { status: 'hold', note: `${clock(later.dueAt)} 에 리더가 다시 확인해요`, ...(taskId ? { taskId } : {}) }, 'app'));
+      return;
+    }
     this.safeTodo(() =>
       todos.update(todoId, ok ? { status: 'review', note: `리더 보고 도착 ${now}`, ...(taskId ? { taskId } : {}) } : { status: 'waiting', note: `리더 작업이 중단됨 ${now}` }, 'app'),
     );

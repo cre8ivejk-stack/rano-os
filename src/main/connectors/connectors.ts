@@ -69,6 +69,12 @@ export function candidates(): ConnectorCandidate[] {
   }));
 }
 
+// 리더가 과제를 시작할 때 본 연결 상태(가장 최근 것). 조직 탭에 "로그인 필요" 같은 표시로 보인다 (0.9.21)
+const lastState = new Map<string, { state: 'ok' | 'needsAuth' | 'failed'; at: string }>();
+export function noteConnectorState(name: string, state: 'ok' | 'needsAuth' | 'failed'): void {
+  lastState.set(name, { state, at: new Date().toISOString() });
+}
+
 export function listConnectors(): ConnectorInfo[] {
   if (!cfg) return [];
   return Object.values(cfg.connectors ?? {}).map((c) => ({
@@ -83,6 +89,7 @@ export function listConnectors(): ConnectorInfo[] {
     secretEnv: c.secretEnv,
     usedBy: cfg!.missions.filter((m) => m.connectors?.includes(c.name)).map((m) => m.id),
     ...(c.from ? { from: c.from } : {}),
+    ...(lastState.get(c.name) ? { state: lastState.get(c.name)!.state, stateAt: lastState.get(c.name)!.at } : {}),
   }));
 }
 

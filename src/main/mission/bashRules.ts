@@ -1203,6 +1203,11 @@ export function classifyBash(command: string, ctx: BashContext): BashDecision {
         else if (sub === 'stash' && ['list', 'show'].includes(rest[0] ?? '')) {
           // 보관 목록·내용 보기는 읽기
           if (rest.some((a) => /^--(output|ext-diff|textconv)/.test(a))) bump('command', 'git stash show 의 쓰기·실행 옵션');
+        } else if (sub === 'apply' && rest.includes('--cached') && rest.every((a) => !a.startsWith('-') || /^(--cached|--check|--stat|--numstat|--summary|-v|--verbose|-p\d+|--whitespace=(nowarn|warn|fix))$/.test(a)) && nonOptions(rest).length > 0) {
+          // 고친 내용 가운데 일부만 커밋 대기에 담기(git apply --cached 패치 파일): 작업 파일은 안 바뀌고, 커밋은 그대로 승인 (0.9.21)
+          const outsidePatch = nonOptions(rest).map((a) => path.resolve(gitCwd, expandHome(a))).filter((abs) => !ctx.readRoots.some((t) => within(abs, t)));
+          if (outsidePatch.length) bump('command', `작업 폴더 밖을 읽음: ${outsidePatch.join(', ')}`);
+          else bump('command', 'git apply --cached (담기)');
         } else if (GIT_COMMIT.has(sub)) {
           // 원격 최신 받아오기(fast-forward 만)·작업 잠시 보관/되살리기: 새 커밋·푸시가 없는 "받아오기" 일
           // pull·merge 는 허용한 옵션(--ff-only·-q·-v·--prune·--tags·--no-tags·--no-rebase)과 원격 이름·가지 이름만 (H2-B, 2026-11-15).

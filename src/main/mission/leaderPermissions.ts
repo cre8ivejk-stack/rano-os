@@ -33,7 +33,7 @@ import { isBlockedPath } from '../engine/permissions.js';
 import { classifyBash, type BashDecision, type BashKind, type BashRisk, type BashRun } from './bashRules.js';
 import { CODE_MAP_FILE } from './leaderPrompt.js';
 import { fileKey } from '../approvals/approvalQueue.js';
-import { isConnectorReadTool } from '../connectors/readTools.js';
+import { isConnectorSensitiveRead, isConnectorReadTool } from '../connectors/readTools.js';
 import { trustedDbRead } from './dbRead.js';
 import { missionTmpDir } from './missionTmp.js';
 
@@ -613,6 +613,7 @@ export interface ApprovalAsk {
   paths?: string[]; // Bash 명령이 바꾸거나 지울 수 있는 경로(절대 경로)
   fileOpsOnly?: boolean; // Bash 명령이 파일 일(쓰기·지우기)만 하는지
   syncOnly?: boolean; // Bash 명령의 기록 바꾸기가 원격 최신 받아오기·보관/되살리기뿐인지
+  trustedSync?: boolean; // 믿는 미션의 앞으로 감기 받기(git pull·merge --ff-only)뿐인지: 다른 과제 경고를 거친 뒤 바로 허용
   netHosts?: string[]; // Bash 명령이 curl 로 여는 사이트(호스트). 승인되면 이 과제 동안 같은 사이트 읽기(GET)는 다시 묻지 않는다
   logTarget?: string; // Bash 기록용: 프로그램 끄기·지우기·인터넷 전송의 대상(끌 이름·지울 경로·보낼 호스트). 비밀 가림
   gitWide?: string[]; // Bash 명령에 든 작업 폴더 전체를 바꾸는 git 명령(stash·pull·checkout 등). 다른 과제가 돌 때 경고 카드로 (H4-A)
@@ -927,6 +928,16 @@ export function connectorPreview(input: Record<string, unknown>): string {
   return head + blocks.join('\n');
 }
 
+/** 외부 연결 도구에 넘기는 값이 "보내기"인지: method 가 읽기(GET·HEAD·OPTIONS)가 아니거나, 보낼 본문 칸에 값이 있을 때 */
+export function connectorSends(input: Record<string, unknown>): boolean {
+  for (const [k, v] of Object.entries(input ?? {})) {
+    const key = k.toLowerCase();
+    if ((key === 'method' || key === 'http_method') && typeof v === 'string' && v.trim() && !/^(get|head|options)$/i.test(v.trim())) return true;
+    if (/^(request_json|request_body|body|data|payload|json)$/.test(key) && v !== null && v !== undefined && v !== '' && !(typeof v === 'object' && !Object.keys(v as object).length)) return true;
+  }
+  return false;
+}
+
 export function decideConnectorTool(
   config: RanoConfig,
   mission: MissionConfig,
@@ -942,19 +953,25 @@ export function decideConnectorTool(
     return { type: 'deny', reason: `이 미션에 켜지지 않은 외부 연결: ${server}`, message: `이 미션은 '${server}' 연결을 쓸 수 없어요. 필요하면 보고에 적어 주세요(사용자가 조직 탭에서 켤 수 있어요).` };
   }
   if (mcpServer && mcpServer.name !== server) return { type: 'deny', reason: '도구 서버 이름이 맞지 않음', message: MSG_UNKNOWN };
-  if (isConnectorReadTool(tool)) return { type: 'allow', reason: `${conn.label} 읽기: ${tool}` };
+  // 읽기 이름의 도구라도 보내는 방식이 읽기가 아니면(method: POST 등, 보낼 본문이 있으면) 쓰기로 본다: 주소 확인 도구로 앱에 일을 시킬 수 있다 (0.9.21)
+  const sends = connectorSends(input);
+  if (isConnectorReadTool(tool) && !sends) return { type: 'allow', reason: `${conn.label} 읽기: ${tool}` };
+  // 이름은 읽기인데 환경 변수·비밀 같은 민감한 것을 읽는 도구: 쓰기가 아니라 "민감한 정보 읽기"로 묻는다
+  const sensitiveRead = !sends && isConnectorSensitiveRead(tool);
   const shown = connectorPreview(input);
   // 서버 안에서 뒤에서 계속 도는 명령(nohup·끝의 &)은 카드에서 따로 알린다: 사용자들이 쓰는 서버가 느려질 수 있다 (0.9.16)
   const background = Object.values(input).some((v) => typeof v === 'string' && BACKGROUND_RUN.test(v));
   return {
     type: 'ask',
-    reason: `${conn.label} 쓰기 승인 필요: ${tool}`,
+    reason: sensitiveRead ? `${conn.label} 민감한 정보 읽기 승인 필요: ${tool}` : `${conn.label} 쓰기 승인 필요: ${tool}`,
     ask: {
       kind: 'external',
-      title: background ? `${conn.label}에서 뒤에서 계속 돌리기: ${tool.replace(/_/g, ' ')}` : `${conn.label}에 쓰기: ${tool.replace(/_/g, ' ')}`,
+      title: background ? `${conn.label}에서 뒤에서 계속 돌리기: ${tool.replace(/_/g, ' ')}` : sensitiveRead ? `${conn.label}에서 민감한 정보 읽기: ${tool.replace(/_/g, ' ')}` : `${conn.label}에 쓰기: ${tool.replace(/_/g, ' ')}`,
       what: background
         ? `${conn.label}에서 '${tool}' 작업으로 서버 안에 뒤에서 계속 도는 명령을 띄우려고 해요. 사용자들이 쓰는 서버라면 도는 동안 느려질 수 있어요`
-        : `${conn.label}에서 '${tool}' 작업을 하려고 해요 (다른 사람도 보는 곳이 바뀔 수 있어요)`,
+        : sensitiveRead
+          ? `${conn.label}에서 '${tool}' 로 설정·비밀에 가까운 정보를 읽으려고 해요 (바뀌는 것은 없어요. 읽은 내용이 리더에게 보여요)`
+          : `${conn.label}에서 '${tool}' 작업을 하려고 해요 (다른 사람도 보는 곳이 바뀔 수 있어요)`,
       detail: `연결: ${conn.label} (${server})\n작업: ${tool}\n\n보낼 내용(앞부분):\n${redactPreview(shown, 160, 8000)}`,
     },
   };
@@ -996,6 +1013,7 @@ const PIPE_TO_CODE = /\|\s*(sudo\s+)?(env\s+)?(sh|bash|zsh|dash|ksh|fish|python\
 /** 믿는 미션에서 그 위험 표시를 넘어갈 수 있는지: 개발 서버 끄기(pkill -f 패턴), 이 맥 안 주소 읽기(curl GET) */
 function trustedRisk(r: { kind: string; program: string; targets: string[] }, command: string, okHosts?: ReadonlySet<string>): boolean {
   if (r.kind === 'kill') return r.program === 'pkill' && r.targets.length > 0 && r.targets.every((t) => TRUST_DEV_SERVER.test(t)) && /\bpkill\s+-f\s/.test(command);
+  if (r.kind === 'network' && r.program === 'nc') return r.targets.length > 0 && r.targets.every((t) => TRUST_LOCAL_HOST.test(t)) && /\bnc\s+(-\S+\s+|\d+\s+)*-[vn]*z/.test(command) && !/[|<]/.test(command.replace(/\|\|/g, ''));
   if (r.kind === 'network')
     return (
       r.program === 'curl' &&
@@ -1011,7 +1029,7 @@ function trustedRisk(r: { kind: string; program: string; targets: string[] }, co
 }
 
 /** 믿는 미션에서 넘어갈 수 있는 판단 근거: 커밋에 넣을 파일 고르기(git add 파일 이름. 커밋은 그대로 승인. -A·. 은 앞에서 막힘), 원격 최신 이력 받기(git fetch. 작업 파일은 안 바뀜), 개발 서버 끄기·이 맥 안 주소 확인 */
-const TRUST_OK_REASON = /^(git add \(파일 이름\)|git fetch \(받아오기\)|pkill \(판단이 필요한 명령\)|curl \(판단이 필요한 명령\))$/;
+const TRUST_OK_REASON = /^(git add \(파일 이름\)|git fetch \(받아오기\)|git (merge|pull)( \S+)? \(받아오기\)|git apply --cached \(담기\)|pkill \(판단이 필요한 명령\)|curl \(판단이 필요한 명령\))$/;
 
 // ---- 믿는 미션의 "아는 명령"만 바로 (H1-A, 2026-11-15 사용자 결정) ----
 // 믿는 미션이라도 ① 앱이 모르는 프로그램 ② 명령 글에 코드를 넣어 돌리기(node -e, python -c, sh -c, osascript, 파이프로 셸에 넘기기)
@@ -1213,6 +1231,21 @@ function localBin(bin: string, cwd: string, roots: string[]): boolean {
 }
 
 /**
+ * 작업 폴더 안 가상 환경의 파이썬(venv/bin/python)인지: 자리는 허용 폴더 안이고, 바로가기가 가리키는 실제 프로그램도 파이썬일 때.
+ * 가상 환경의 파이썬은 보통 맥에 깔린 파이썬(폴더 밖)을 가리키는 바로가기라서, 실제 경로만 보면 "폴더 밖 프로그램"으로 읽힌다 (0.9.21).
+ * 이름만 python 이고 다른 프로그램을 가리키는 바로가기는 넘어가지 않는다. 뒤의 검사(-c 코드, 스크립트 위치)는 이름으로 그대로 한다
+ */
+const PY_NAME = /^python(\d+(\.\d+)*)?$/;
+function venvPython(abs: string, roots: string[]): boolean {
+  if (!PY_NAME.test(path.basename(abs)) || path.basename(path.dirname(abs)) !== 'bin') return false;
+  if (!roots.some((r) => inAny(abs, [r]))) return false;
+  return PY_NAME.test(path.basename(real(abs)));
+}
+
+/** 이번 명령이 앞에서 직접 만든 파일(cat > 파일 <<EOF). 같은 명령 안에서 그 스크립트를 돌리는 것은 "있는 파일"로 본다 */
+let createdNow: string[] = [];
+
+/**
  * 믿는 미션에서 이 프로그램 실행을 바로 해도 되는지. 괜찮으면 null, 아니면 쉬운 말 이유.
  * roots: 작업 폴더 + 시안·임시 폴더(스크립트·실행 위치가 있어도 되는 곳), allowed: roots + 읽기 허용 폴더(경로 인자가 가리켜도 되는 곳)
  * localTool: npx·pnpm exec 로 이미 설치된 도구를 부른 것(모르는 이름이어도 설치된 개발 도구로 본다)
@@ -1224,7 +1257,8 @@ export function trustedRunProblem(run: BashRun, roots: string[], allowed: string
   // 경로를 붙여 부른 프로그램(./scripts/x.sh, tools/run): 작업 폴더·시안·임시 폴더 안의 스크립트 파일이면 실행, 밖이면 묻는다.
   // 이름이 해석기·npm 류·아는 프로그램이면(.venv/bin/python, node_modules/.bin/tsx) 아래에서 이름으로 같은 검사(코드 옵션 등)를 한 번 더 한다
   if (run.word.includes('/')) {
-    if (!insideRoots(path.resolve(cwd, expandHome(run.word)), roots)) return `작업 폴더 밖 프로그램 실행: ${displayPath(path.resolve(cwd, expandHome(run.word)))}`;
+    const progAbs = path.resolve(cwd, expandHome(run.word));
+    if (!insideRoots(progAbs, roots) && !venvPython(progAbs, roots)) return `작업 폴더 밖 프로그램 실행: ${displayPath(progAbs)}`;
     if (run.viaXargs) return 'xargs 로 받은 인자로 스크립트 실행';
     if (!namedRunRule(name)) return outside();
   }
@@ -1390,7 +1424,7 @@ export function trustedRunProblem(run: BashRun, roots: string[], allowed: string
     if (!insideRoots(scriptAbs, roots)) return `작업 폴더 밖 스크립트 실행: ${displayPath(scriptAbs)}`;
     // 스크립트 자리 낱말은 실제로 있는 보통 파일만(없는 이름은 해석기에 따라 코드·PATH 의 프로그램으로 읽힐 수 있음).
     // node --test·swift build 처럼 스크립트 없이 도는 꼴은 낱말이 시험 파일 글롭·하위 명령이라 위치만 본다
-    if (!spec?.noScriptOk?.(args) && !isRegularFile(scriptAbs)) return `스크립트 파일이 없음(있는 파일만 바로 실행): ${clip(script, 60)}`;
+    if (!spec?.noScriptOk?.(args) && !isRegularFile(scriptAbs) && !createdNow.includes(scriptAbs)) return `스크립트 파일이 없음(있는 파일만 바로 실행): ${clip(script, 60)}`;
     return outside();
   }
   if (TRUST_KNOWN_PROGRAMS.has(name) || localTool) {
@@ -1432,7 +1466,30 @@ export function trustedRunProblem(run: BashRun, roots: string[], allowed: string
     if (name === 'nx' && sub === 'exec') return 'nx exec 로 넘긴 명령 실행';
     return outside();
   }
+  // 맥 파일 이름 찾기(mdfind -name 낱말): 파일 경로만 알려 준다. 내용·속성으로 찾는 질의는 묻는다 (0.9.21)
+  if (name === 'mdfind') {
+    const rest = args.filter((a, k) => !(a === '-name' || args[k - 1] === '-name' || a === '-count' || a === '-0'));
+    return args.includes('-name') && rest.length === 0 ? null : 'mdfind 로 파일 내용·속성 찾기';
+  }
+  // 이 맥 안 포트가 열려 있는지만 보기(nc -z localhost 포트): 아무것도 보내지 않는다 (0.9.21)
+  if (name === 'nc') return localPortCheck(args) ? null : '인터넷으로 보내기·받기';
   return `앱이 모르는 프로그램: ${name}`;
+}
+
+/** nc -z [-w 초] [-v] localhost|127.0.0.1 포트 꼴인지 */
+function localPortCheck(args: string[]): boolean {
+  const words: string[] = [];
+  let z = false;
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k];
+    if (/^-[zvn]+$/.test(a)) {
+      if (a.includes('z')) z = true;
+    } else if (a === '-w' || a === '-G') k++;
+    else if (/^-[wG]\d+$/.test(a)) continue;
+    else if (a.startsWith('-')) return false;
+    else words.push(a);
+  }
+  return z && words.length === 2 && TRUST_LOCAL_HOST.test(words[0]) && /^\d{1,5}$/.test(words[1]);
 }
 
 /** 믿는 미션이라도 승인함으로 보내는 판단 근거 중 "명령 글에 코드를 넣어 돌리기"에 해당하는 것(sed e·awk system·find -exec·heredoc 속 명령 치환 등) */
@@ -1454,14 +1511,18 @@ function appPrograms(config: RanoConfig): string[] {
 export function trustedBashProblem(
   mission: MissionConfig,
   kind: BashKind,
-  b: Pick<BashDecision, 'reasons' | 'writePaths' | 'risks' | 'linkSources' | 'modeChange' | 'runs'>,
+  b: Pick<BashDecision, 'reasons' | 'writePaths' | 'risks' | 'linkSources' | 'modeChange' | 'runs'> & { syncOnly?: boolean },
   scratch: string[] = [],
   command = '',
   okHosts?: ReadonlySet<string>,
   readRoots: string[] = [],
   appTools: string[] = [],
+  allowFf = false,
 ): string | null {
-  if (kind !== 'write' && kind !== 'command') return '커밋·삭제·DB·배포·작업 폴더 밖 쓰기'; // 그대로 승인함
+  // 원격 최신을 앞으로 감기로만 받기(git pull·merge --ff-only, 등록된 원격): 새 커밋·push 가 없고 내 변경과 겹치면 git 이 멈춘다 → 믿는 미션은 바로 (2026-11-25 사용자 결정).
+  // 보관·되살리기(stash)나 다른 기록 바꾸기가 섞이면 그대로 승인함
+  const ffOnly = allowFf && kind === 'commit' && !!b.syncOnly && b.reasons.every((r) => /^git (merge|pull)( \S+)? \(받아오기\)$|^git fetch \(받아오기\)$/.test(r));
+  if (kind !== 'write' && kind !== 'command' && !ffOnly) return '커밋·삭제·DB·배포·작업 폴더 밖 쓰기'; // 그대로 승인함
   if (b.modeChange || (b.linkSources ?? []).length) return '권한 바꾸기·바로가기 만들기';
   const r1 = (b.risks ?? []).find((r) => TRUST_ASK_RISKS.has(r.kind) && !trustedRisk(r, command, okHosts));
   if (r1) return r1.kind === 'network' ? '인터넷으로 보내기·받기' : r1.kind === 'kill' ? '프로그램 끄기' : r1.kind === 'delete' ? '지우기' : '권한 바꾸기';
@@ -1474,12 +1535,18 @@ export function trustedBashProblem(
   const r4 = b.reasons.find((r) => TRUST_WRAP_REASON.test(r));
   if (r4) return `감싸는 명령으로 실행 방식을 바꿀 수 있음: ${r4}`;
   const roots = [...mission.targets.map((t) => path.resolve(t)), ...scratch];
-  for (const run of b.runs ?? []) {
-    // 앱에 딸린 문서용 파이썬(데이터 폴더 tools/python)은 작업 폴더 밖에 있어도 아는 프로그램으로 본다 (2026-11-19 사용자 결정).
-    // 이름(python3)으로 하는 나머지 검사는 그대로: 돌릴 스크립트는 작업 폴더·시안·임시 폴더 안이어야 하고, -c 로 넣은 코드는 묻는다
-    const viaApp = run.word.includes('/') && appTools.includes(path.resolve(run.cwd, expandHome(run.word)));
-    const p = trustedRunProblem(viaApp ? { ...run, word: run.name } : run, roots, [...roots, ...readRoots]);
-    if (p) return p;
+  // 같은 명령에서 시안·임시 폴더에 만든 파일(cat > x.js <<EOF … 뒤 node x.js): 파일 쓰기 도구로 만든 뒤 돌리는 것과 같게 본다 (0.9.21)
+  createdNow = b.writePaths.filter((p) => scratch.some((s) => insideBoth(path.dirname(p), s)));
+  try {
+    for (const run of b.runs ?? []) {
+      // 앱에 딸린 문서용 파이썬(데이터 폴더 tools/python)은 작업 폴더 밖에 있어도 아는 프로그램으로 본다 (2026-11-19 사용자 결정).
+      // 이름(python3)으로 하는 나머지 검사는 그대로: 돌릴 스크립트는 작업 폴더·시안·임시 폴더 안이어야 하고, -c 로 넣은 코드는 묻는다
+      const viaApp = run.word.includes('/') && appTools.includes(path.resolve(run.cwd, expandHome(run.word)));
+      const p = trustedRunProblem(viaApp ? { ...run, word: run.name } : run, roots, [...roots, ...readRoots]);
+      if (p) return p;
+    }
+  } finally {
+    createdNow = [];
   }
   if (!b.writePaths.every((p) => trustedRepoPath(mission, p) || scratch.some((s) => insideBoth(p, s)))) return '작업 폴더 밖 쓰기';
   return null;
@@ -1488,7 +1555,7 @@ export function trustedBashProblem(
 export function trustedBash(
   mission: MissionConfig,
   kind: BashKind,
-  b: Pick<BashDecision, 'reasons' | 'writePaths' | 'risks' | 'linkSources' | 'modeChange' | 'runs'>,
+  b: Pick<BashDecision, 'reasons' | 'writePaths' | 'risks' | 'linkSources' | 'modeChange' | 'runs'> & { syncOnly?: boolean },
   scratch: string[] = [],
   command = '',
   okHosts?: ReadonlySet<string>,
@@ -1515,6 +1582,19 @@ function curlHosts(b: Pick<BashDecision, 'risks'>): string[] {
   const net = (b.risks ?? []).filter((r) => r.kind === 'network');
   if (!net.length || net.some((r) => r.program !== 'curl' || !r.targets.length || r.targets.some((t) => !t))) return [];
   return [...new Set(net.flatMap((r) => r.targets))];
+}
+
+/**
+ * 명령 뒤에 붙은 글이 "결과만 보는 꼬리"인지: 출력 줄이기(2>&1, | tail·head·wc)와 읽기만 하는 git 명령(status·log·diff·rev-parse)뿐일 때.
+ * 따옴표·변수·리다이렉션(파일 쓰기)·다른 프로그램이 하나라도 있으면 아니다
+ */
+export function readTailOnly(rest: string): boolean {
+  if (!rest.trim()) return true;
+  if (/["'`$<>(){}\\]/.test(rest.replace(/ 2>&1/g, ''))) return false;
+  const PIPE = '( \\| (tail|head|wc)( -[A-Za-z0-9]+)*( \\d+)?)*';
+  const READ = `git (status|log|diff|rev-parse)( [\\w .\\/=:@^~%,-]*?)?( 2>&1)?${PIPE}`;
+  if (/--(output|ext-diff|textconv|no-index|exec|upload-pack)/.test(rest)) return false;
+  return new RegExp(`^( 2>&1)?${PIPE}(\\s*(&&|;)\\s*${READ})*\\s*$`).test(rest);
 }
 
 /** 3단계 판단. 승인함을 기다리는 일은 하지 않는다(type 'ask' 로 돌려줌). */
@@ -1662,6 +1742,7 @@ export function decideApprovalStage(
     if ((kind === 'write' || kind === 'outsideWrite') && b.fileOpsOnly === true && !b.modeChange && !(b.linkSources ?? []).length && b.writePaths.length > 0 && b.writePaths.every(ownSpot))
       return { type: 'allow', reason: `시안·임시 폴더·코드 지도에 쓰기(${kind}): ${b.writePaths.map(displayPath).join(', ')}` };
     let trustNote = '';
+    let trustedSync = false;
     if (trust) {
       // 믿는 미션: 이 미션 임시 폴더·이 과제 시안 폴더도 작업 폴더처럼 보고 다시 판단한다(결과 담기·시안 코드 실행)
       const scratch = [tmpDir, ...(actor.draftsDir ? [actor.draftsDir] : [])];
@@ -1681,6 +1762,8 @@ export function decideApprovalStage(
       const why = bt.decision === 'ask' ? trustedBashProblem(mission, bt.kind ?? 'command', bt, scratch, judged, actor.netHosts, roots, appPrograms(config)) : null;
       if (bt.decision === 'ask' && why === null)
         return { type: 'allow', reason: `믿는 미션, 작업 폴더 안 명령(${bt.kind ?? 'command'}): ${bt.reasons.join('; ')}` };
+      // 앞으로 감기로만 받기: 다른 과제가 같은 폴더에서 돌 때의 경고(H4-A)를 거친 뒤에 바로 허용한다(부르는 쪽 guard 가 trustedSync 를 본다)
+      if (why && bt.kind === 'commit' && trustedBashProblem(mission, 'commit', bt, scratch, judged, actor.netHosts, roots, appPrograms(config), true) === null) trustedSync = true;
       if (why) trustNote = `\n믿는 미션이지만 묻는 이유: ${redactCommand(why)}`;
     }
     const files = b.writePaths.length ? `\n바뀔 수 있는 파일: ${b.writePaths.map(displayPath).join(', ')}${realPathNote(mission, b.writePaths)}` : '';
@@ -1699,6 +1782,7 @@ export function decideApprovalStage(
         paths: b.writePaths,
         fileOpsOnly: !!b.fileOpsOnly,
         ...(b.syncOnly ? { syncOnly: true } : {}),
+        ...(trustedSync ? { trustedSync: true } : {}),
         ...(b.gitWide?.length ? { gitWide: [...b.gitWide] } : {}),
         ...(bashLogTarget(b) ? { logTarget: bashLogTarget(b) } : {}),
         ...(curlHosts(b).length ? { netHosts: curlHosts(b) } : {}),
@@ -1970,7 +2054,8 @@ export class LeaderGuard {
     const cmd = command.trim();
     const here = path.resolve(cwd);
     for (const g of list) {
-      if (g.command !== cmd || path.resolve(g.cwd) !== here) continue;
+      // 승인받은 명령 뒤에 결과만 보는 꼬리(2>&1 | tail -3 && git status -sb | head -1)를 붙인 것은 같은 명령으로 본다 (0.9.21)
+      if ((g.command !== cmd && !(cmd.startsWith(g.command) && readTailOnly(cmd.slice(g.command.length)))) || path.resolve(g.cwd) !== here) continue;
       if (releaseOnly && !g.release) continue; // 커밋·push·배포는 릴리즈 목록으로 승인받은 것만
       if (!g.files.every((f) => fileFingerprint(f.path) === f.hash)) continue;
       // 릴리즈 목록의 명령은 한 번 쓰면 없앤다(같은 커밋·push 를 다시 하려면 다시 묻는다)
@@ -2179,6 +2264,7 @@ export class LeaderGuard {
       }
     }
     // 사용자가 직접 받아오기를 시킨 과제: 받아오기만 하는 명령은 승인 없이(지시가 곧 승인). 다른 명령이 섞이면 평소대로
+    if (d.type === 'ask' && d.ask?.bash && d.ask.trustedSync) return { type: 'allow', reason: `믿는 미션, 원격 최신을 앞으로 감기로 받기: ${d.reason}` };
     if (d.type === 'ask' && d.ask?.bash && d.ask.syncOnly && this.task?.preSync) {
       return { type: 'allow', reason: '사용자가 직접 시킨 원격 최신 받아오기' };
     }

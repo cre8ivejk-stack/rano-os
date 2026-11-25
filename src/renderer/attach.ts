@@ -1,10 +1,26 @@
-// 대화창 그림 첨부: 붙여 넣기(⌘V)·끌어다 놓기·📎 버튼. 보내기 전 미리보기와 지우기. 보낸 말풍선의 그림 보기.
+// 대화창 그림·파일 첨부: 붙여 넣기(⌘V)·끌어다 놓기·📎 버튼. 보내기 전 미리보기와 지우기. 보낸 말풍선의 그림 보기.
 import { el } from './dom.js';
 import { annotateImage } from './annotate.js';
 
 const TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+// 붙일 수 있는 파일 종류(main 의 attachments.ts 와 같게 둔다)
+const FILE_EXTS = ['pdf', 'xlsx', 'xlsm', 'xls', 'csv', 'tsv', 'docx', 'doc', 'pptx', 'ppt', 'hwp', 'hwpx', 'txt', 'md', 'json', 'xml', 'html', 'htm', 'yaml', 'yml', 'log', 'zip', 'eml', 'msg'];
 const MAX = 6;
 const MAX_BYTES = 5 * 1024 * 1024;
+const MAX_FILE_BYTES = 20 * 1024 * 1024;
+
+const extOf = (name: string): string => (/\.([A-Za-z0-9]{1,5})$/.exec(name.trim())?.[1] ?? '').toLowerCase();
+const isImage = (mime: string): boolean => TYPES.includes(mime);
+const sizeText = (n: number): string => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)}MB` : `${Math.max(1, Math.round(n / 1024))}KB`);
+
+/** 파일 한 개를 나타내는 작은 표(종류 글자 + 이름) */
+function fileChip(name: string, ext: string, size?: number): HTMLElement {
+  const chip = el('span', 'file-chip');
+  chip.appendChild(el('span', 'file-chip-ext', (ext || '파일').toUpperCase()));
+  chip.appendChild(el('span', 'file-chip-name', name));
+  if (size) chip.appendChild(el('span', 'file-chip-size', sizeText(size)));
+  return chip;
+}
 
 interface Pending extends NewAttachment {
   url: string; // 미리보기 data URL
@@ -37,13 +53,13 @@ export class ImageTray {
     form.before(this.tray);
     this.tray.after(this.note);
     this.fileInput.type = 'file';
-    this.fileInput.accept = TYPES.join(',');
+    this.fileInput.accept = [...TYPES, ...FILE_EXTS.map((x) => `.${x}`)].join(',');
     this.fileInput.multiple = true;
     this.fileInput.hidden = true;
     const btn = el('button', 'attach-btn', '📎');
     btn.type = 'button';
-    btn.title = '그림 붙이기 (캡처는 ⌘V 로 붙여 넣어도 돼요)';
-    btn.setAttribute('aria-label', '그림 붙이기');
+    btn.title = '그림·파일 붙이기 (PDF·엑셀·워드·한글·파워포인트·글 파일. 캡처는 ⌘V 로 붙여 넣어도 돼요)';
+    btn.setAttribute('aria-label', '그림·파일 붙이기');
     btn.addEventListener('click', () => this.fileInput.click());
     this.fileInput.addEventListener('change', () => {
       void this.addFiles(Array.from(this.fileInput.files ?? []));
@@ -53,7 +69,7 @@ export class ImageTray {
 
     input.addEventListener('paste', (e) => {
       const files = Array.from(e.clipboardData?.items ?? [])
-        .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
+        .filter((it) => it.kind === 'file')
         .map((it) => it.getAsFile())
         .filter((f): f is File => !!f);
       if (files.length) {
@@ -94,7 +110,7 @@ export class ImageTray {
   /** 보내지 못했을 때 되돌려 놓기 */
   restore(items: NewAttachment[]): void {
     if (this.list.length) return;
-    this.list = items.map((x) => ({ ...x, url: `data:${x.mime};base64,${x.data}` }));
+    this.list = items.map((x) => ({ ...x, url: isImage(x.mime) ? `data:${x.mime};base64,${x.data}` : '' }));
     this.render();
   }
 
@@ -107,24 +123,31 @@ export class ImageTray {
     const problems: string[] = [];
     for (const f of files) {
       if (this.list.length >= MAX) {
-        problems.push(`그림은 한 번에 ${MAX}개까지 붙일 수 있어요`);
+        problems.push(`그림·파일은 한 번에 ${MAX}개까지 붙일 수 있어요`);
         break;
       }
-      if (!TYPES.includes(f.type)) {
-        problems.push(`${f.name || '파일'}: PNG·JPG·GIF·WEBP 그림만 붙일 수 있어요`);
+      const image = isImage(f.type);
+      if (!image && !FILE_EXTS.includes(extOf(f.name))) {
+        problems.push(`${f.name || '파일'}: 이 종류는 붙일 수 없어요 (그림, PDF, 엑셀, 워드, 한글, 파워포인트, 글 파일, zip 을 붙일 수 있어요)`);
         continue;
       }
-      if (f.size > MAX_BYTES) {
-        problems.push(`${f.name || '그림'}: 5MB 까지 붙일 수 있어요`);
+      if (f.size > (image ? MAX_BYTES : MAX_FILE_BYTES)) {
+        problems.push(`${f.name || '파일'}: ${image ? '그림은 5MB' : '파일은 20MB'} 까지 붙일 수 있어요`);
+        continue;
+      }
+      if (!f.size) {
+        problems.push(`${f.name || '파일'}: 빈 파일이에요`);
         continue;
       }
       try {
         const url = await readAsDataUrl(f);
         const data = url.slice(url.indexOf(',') + 1);
-        const name = f.name && f.name !== 'image.png' ? f.name : `캡처 ${new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}.png`;
-        this.list.push({ name, mime: f.type, data, url });
+        if (image) {
+          const name = f.name && f.name !== 'image.png' ? f.name : `캡처 ${new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}.png`;
+          this.list.push({ name, mime: f.type, data, url });
+        } else this.list.push({ name: f.name, mime: f.type || 'application/octet-stream', data, url: '' });
       } catch {
-        problems.push(`${f.name || '그림'}: 읽지 못했어요`);
+        problems.push(`${f.name || '파일'}: 읽지 못했어요`);
       }
     }
     if (problems.length) this.say(problems.join(" · "));
@@ -134,7 +157,7 @@ export class ImageTray {
   /** i 번째 그림에 표시하기 */
   private async mark(i: number): Promise<void> {
     const p = this.list[i];
-    if (!p) return;
+    if (!p || !p.url) return;
     const url = await annotateImage(p.url, p.name);
     if (!url || this.list[i] !== p) return;
     const mime = url.slice(5, url.indexOf(';'));
@@ -148,6 +171,22 @@ export class ImageTray {
     this.tray.replaceChildren();
     this.tray.hidden = !this.list.length;
     this.list.forEach((p, i) => {
+      if (!p.url) {
+        // 파일: 종류와 이름만 보인다
+        const item = el('div', 'attach-item attach-file');
+        item.title = p.name;
+        item.appendChild(fileChip(p.name, extOf(p.name)));
+        const del = el('button', 'attach-del', '×');
+        del.type = 'button';
+        del.setAttribute('aria-label', `${p.name} 빼기`);
+        del.addEventListener('click', () => {
+          this.list.splice(i, 1);
+          this.render();
+        });
+        item.appendChild(del);
+        this.tray.appendChild(item);
+        return;
+      }
       const item = el('div', 'attach-item');
       const img = el('img');
       img.src = p.url;
@@ -179,6 +218,20 @@ export class ImageTray {
 export function messageImages(list: ChatAttachment[]): HTMLElement {
   const box = el('div', 'msg-images');
   for (const a of list) {
+    if (!isImage(a.mime)) {
+      // 파일: 누르면 연다(글 파일은 앱 안 보기 창, 그 밖은 기본 앱)
+      const file = el('button', 'msg-file');
+      file.type = 'button';
+      file.title = `${a.name} 열기`;
+      file.appendChild(fileChip(a.name, a.ext ?? extOf(a.name), a.size));
+      file.addEventListener('click', () => {
+        void window.rano.attachmentOpen(a).then((r) => {
+          if (!r.ok) file.title = r.message ?? '열지 못했어요';
+        });
+      });
+      box.appendChild(file);
+      continue;
+    }
     const btn = el('button', 'msg-image');
     btn.type = 'button';
     btn.title = a.name;

@@ -180,6 +180,8 @@ export interface ConnectorInfo {
   usedBy: string[]; // 쓰는 미션 id
   missingSecrets: string[]; // 아직 값을 넣지 않은 비밀 이름 (이 맥 사용자가 넣어야 함)
   from?: string;
+  state?: 'ok' | 'needsAuth' | 'failed'; // 리더가 마지막으로 과제를 시작할 때 본 연결 상태
+  stateAt?: string;
 }
 export interface ConnectorCandidate {
   name: string;
@@ -322,6 +324,8 @@ export interface ChatAttachment {
   name: string; // 원래 파일 이름 (없으면 '캡처')
   mime: string; // image/png 등
   marked?: boolean; // 사용자가 펜·네모·화살표·번호로 표시한 그림
+  ext?: string; // 그림이 아닌 파일일 때: 확장자(pdf, xlsx …)
+  size?: number; // 그림이 아닌 파일일 때: 크기(바이트)
 }
 /** 화면에서 보낼 새 그림 (base64) */
 export interface NewAttachment {
@@ -414,6 +418,7 @@ export const IPC = {
   search: 'search:all', // invoke(query) → SearchHit[]
   missionDocs: 'org:mission-docs', // invoke(missionId) → MissionDoc[] (미션 홈 문서 읽기만)
   attachmentData: 'rano:attachment-data', // invoke(ChatAttachment) → data URL | null
+  attachmentOpen: 'rano:attachment-open', // invoke(ChatAttachment) → { ok, message? } 붙인 파일 열기(글 파일은 앱 안 보기 창)
   updateCheck: 'update:check', // invoke → UpdateInfo (GitHub Releases 최신 버전)
   openReleasePage: 'update:open-page', // github.com 주소만 연다
   updateLocal: 'update:local', // invoke → LocalBuildInfo | null (이 맥에서 포장한 새 판)
@@ -452,6 +457,7 @@ export interface RanoApi {
   unanswered(): Promise<string[]>; // 앱이 꺼져 답하지 못한 내 말 id
   resend(messageId: string): Promise<{ ok: boolean; message?: string }>; // 그 말을 다시 줄에 세움
   attachmentData(a: ChatAttachment): Promise<string | null>; // 미리보기 data URL
+  attachmentOpen(a: ChatAttachment): Promise<{ ok: boolean; message?: string }>; // 붙인 파일 열기
   onEvent(cb: (e: RanoUiEvent) => void): () => void; // 해제 함수 반환
   // ---- 2단계 ----
   missionList(): Promise<MissionStatus[]>;

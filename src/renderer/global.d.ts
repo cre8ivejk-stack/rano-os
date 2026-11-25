@@ -133,6 +133,8 @@ interface ChatAttachment {
   name: string; // 원래 파일 이름 (없으면 '캡처')
   mime: string; // image/png 등
   marked?: boolean; // 사용자가 펜·네모·화살표·번호로 표시한 그림
+  ext?: string; // 그림이 아닌 파일일 때: 확장자(pdf, xlsx …)
+  size?: number; // 그림이 아닌 파일일 때: 크기(바이트)
 }
 /** 화면에서 보낼 새 그림 (base64) */
 interface NewAttachment {
@@ -198,6 +200,8 @@ interface ConnectorInfo {
   secretEnv: string[];
   usedBy: string[];
   from?: string;
+  state?: 'ok' | 'needsAuth' | 'failed'; // 리더가 마지막으로 과제를 시작할 때 본 연결 상태
+  stateAt?: string;
 }
 interface ConnectorCandidate {
   name: string;
@@ -396,6 +400,7 @@ interface RanoApi {
   unanswered(): Promise<string[]>; // 앱이 꺼져 답하지 못한 내 말 id
   resend(messageId: string): Promise<{ ok: boolean; message?: string }>;
   attachmentData(a: ChatAttachment): Promise<string | null>;
+  attachmentOpen(a: ChatAttachment): Promise<{ ok: boolean; message?: string }>;
   onEvent(cb: (e: RanoUiEvent) => void): () => void;
   missionList(): Promise<MissionStatus[]>;
   missionHistory(missionId: string): Promise<ChatMessage[]>;

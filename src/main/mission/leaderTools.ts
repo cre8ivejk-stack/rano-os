@@ -19,6 +19,7 @@ export interface LeaderToolsDeps {
   signal?: AbortSignal; // 앱이 꺼지거나 과제가 중단되면 대기를 정리
   emitActivity?: (text: string) => void;
   pastReports?: (taskId?: string, query?: string) => string; // 이 미션의 지난 과제 보고 읽기
+  checkLater?: (minutes: number, what: string) => string; // 몇 분 뒤 다시 확인 예약(결과 안내 글을 돌려준다)
 }
 
 /**
@@ -804,5 +805,18 @@ export function createLeaderMcpServer(deps: LeaderToolsDeps) {
     { annotations: { readOnlyHint: true } },
   );
 
-  return createSdkMcpServer({ name: LEADER_MCP_NAME, version: '0.1.0', tools: [requestApproval, proposeChanges, proposeCommands, proposeRelease, workSolo, pastReports] });
+  // 오래 걸리는 바깥 작업: 기다리지 않고 나중에 다시 확인하도록 예약한다 (0.9.21)
+  const checkLater = tool(
+    'check_later',
+    [
+      '오래 걸리는 바깥 작업(배포·빌드·시험 실행·일괄 처리 등)이 끝나기를 기다려야 할 때, 붙잡고 기다리지 말고 "몇 분 뒤 다시 확인"을 예약합니다.',
+      '예약하면 그 시각에 앱이 이 미션에 확인 과제를 새로 맡깁니다(같은 업무로 이어짐). 예약한 뒤에는 지금까지 한 일과 "언제 무엇을 다시 확인하기로 했는지"를 보고하고 이 과제를 끝내세요.',
+      'what 에는 다음 과제의 리더가 그 글만 보고 확인할 수 있게 적습니다: 무엇을(앱·작업 이름, 실행 id), 어디서(도구·주소), 끝났다고 볼 기준, 끝났으면 이어서 볼 것.',
+      '비밀 값(토큰·비밀번호)은 적지 않습니다.',
+    ].join('\n'),
+    { afterMinutes: z.number().describe('몇 분 뒤에 다시 확인할지 (3~240)'), what: z.string().describe('무엇을 어떻게 확인할지') },
+    async (args) => text(deps.checkLater ? deps.checkLater(Number(args.afterMinutes), String(args.what ?? '')) : '(지금은 다시 확인을 예약할 수 없어요. 보고에 "나중에 확인할 일"로 적어 주세요)'),
+  );
+
+  return createSdkMcpServer({ name: LEADER_MCP_NAME, version: '0.1.0', tools: [requestApproval, proposeChanges, proposeCommands, proposeRelease, workSolo, pastReports, checkLater] });
 }

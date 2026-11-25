@@ -30,11 +30,12 @@ import { PREVIEW_EXTS } from '../approvals/previewSafety.js';
 import { createLeaderMcpServer, describePastReports } from './leaderTools.js';
 import { buildLeaderMaterial, buildLeaderSystemPrompt, CODE_MAP_FILE, codeMapText, HANDOFF_FILE, readLeaderContext } from './leaderPrompt.js';
 import { APPROVAL_STAGE_TOOLS, loadRoles, READ_ONLY_TOOLS } from './roles.js';
-import { shareWithMission } from '../engine/attachments.js';
+import { fileNoteForLeader, shareWithMission } from '../engine/attachments.js';
 import { fetchPlanLimits, recordLimit, recordResult } from '../engine/usage.js';
 import { roleSkills, skillCatalog } from '../skills/skills.js';
 import { mcpServersFor } from '../connectors/connectors.js';
 import { liveMcpServers } from '../connectors/probe.js';
+import { noteConnectorState } from '../connectors/connectors.js';
 import { FILE_TOOLS } from '../approvals/approvalQueue.js';
 import { buildCarryBlock, isLeaderEditTarget, leaderEditNote, runTaskAttempts } from './leaderCarry.js';
 
@@ -50,8 +51,12 @@ export interface MissionLeaderDeps {
   // 같은 미션 동시 작업 (2026-11-12): 몇 번째 리더인지(0부터)와, 지금 다른 리더가 하고 있는 과제
   slot?: number;
   others?: () => MissionTask[];
+  // 나중에 다시 확인 예약(0.9.21): 과제 id·분·확인할 것 → 안내 글
+  followUp?: (taskId: string, minutes: number, what: string) => string;
 }
 
+/** 외부 연결 문제를 마지막으로 알린 시각(연결 이름별). 같은 문제를 과제마다 되풀이해 알리지 않는다 */
+const CONNECTOR_WARNED = new Map<string, number>();
 const MAX_TURNS = 300; // 한 번에 쓸 수 있는 단계. 긴 과제(검수 여러 번·수집)가 끝에서 끊기지 않게 넉넉히
 const MAX_CONTINUES = 2; // 그래도 한도에 걸리면 같은 대화를 이어서 마무리하게 하는 횟수
 const CONTINUE_PROMPT = '[앱 안내] 단계 한도에 걸려 잠시 끊겼어요. 이미 한 일은 다시 하지 말고, 남은 일만 마무리한 뒤 보고 형식대로 최종 보고를 남기세요.';
@@ -117,6 +122,7 @@ export class MissionLeader implements MissionLeaderApi {
   private readonly tracker: MissionTrackerApi;
   private readonly store: ConversationStoreApi;
   private readonly uiEmit: Emit;
+  private readonly followUp?: (taskId: string, minutes: number, what: string) => string;
   private readonly eventsLog: string;
   private readonly permissionsLog: string;
   private readonly leaderLabel: string;
@@ -155,6 +161,7 @@ export class MissionLeader implements MissionLeaderApi {
     this.others = deps.others ?? (() => []);
     this.store = deps.store;
     this.uiEmit = deps.emit;
+    this.followUp = deps.followUp;
     this.eventsLog = path.join(deps.config.runsDir, 'events.jsonl');
     this.permissionsLog = path.join(deps.config.runsDir, 'permissions.jsonl');
     this.leaderLabel = deps.slot ? `${deps.mission.name} 리더 ${deps.slot + 1}` : `${deps.mission.name} 리더`;
@@ -252,6 +259,36 @@ export class MissionLeader implements MissionLeaderApi {
     this.emit({ kind: 'leaderMessage', missionId: this.mission.id, message });
   }
 
+  /** 이 미션이 쓰는 외부 연결의 상태를 적어 두고, 로그인이 풀렸거나 붙지 못한 것은 대화 화면에 알린다. 아직 붙는 중인 것이 있으면 true */
+  private noteConnectors(list: { name: string; status: string }[]): boolean {
+    let pending = false;
+    for (const name of this.mission.connectors ?? []) {
+      const s = list.find((x) => x.name === name);
+      if (!s) continue;
+      if (s.status === 'pending') {
+        pending = true;
+        continue;
+      }
+      const state = s.status === 'connected' ? 'ok' : s.status === 'needs-auth' ? 'needsAuth' : s.status === 'failed' ? 'failed' : null;
+      if (!state) continue;
+      this.safe(() => noteConnectorState(name, state));
+      if (state === 'ok') {
+        CONNECTOR_WARNED.delete(name);
+        continue;
+      }
+      if (Date.now() - (CONNECTOR_WARNED.get(name) ?? 0) < 30 * 60_000) continue;
+      CONNECTOR_WARNED.set(name, Date.now());
+      const label = this.config.connectors?.[name]?.label ?? name;
+      const text =
+        state === 'needsAuth'
+          ? `⚠️ ${label} 연결이 로그인되지 않았어요. ${this.mission.name} 리더는 이 연결 없이 일을 계속해요(이 연결로 하는 확인은 못 해요). 터미널에서 claude 를 켜고 /mcp 를 입력해 ${label} 을(를) 골라 로그인해 주세요. 로그인한 뒤 맡기는 과제부터 쓸 수 있어요.`
+          : `⚠️ ${label} 연결에 붙지 못했어요. ${this.mission.name} 리더는 이 연결 없이 일을 계속해요. 사내망·VPN 과 연결 프로그램을 확인해 주세요.`;
+      this.safe(() => this.tracker.activity('앱', text));
+      this.safe(() => this.uiEmit({ kind: 'activity', text, at: new Date().toISOString() }));
+    }
+    return pending;
+  }
+
   private safe(fn: () => void) {
     try {
       fn();
@@ -307,7 +344,7 @@ export class MissionLeader implements MissionLeaderApi {
           ]
         : []),
       ...behind.map((n) => `- ${n}`),
-      ...(this.mission.stagePolicy === 'approval' ? ['- 이 미션의 지난 과제 보고는 past_reports 도구로 읽어요(목록 → 과제 id 로 전문). 앱 기록 파일(runs 아래 outputs.json·conversation.json)은 직접 읽지 않아요.'] : []),
+      ...(this.mission.stagePolicy === 'approval' ? ['- 이 미션의 지난 과제 보고는 past_reports 도구로 읽어요(목록 → 과제 id 로 전문). 앱 기록 파일(runs 아래 outputs.json·conversation.json)은 직접 읽지 않아요.', '- 배포·시험 실행처럼 오래 걸리는 바깥 작업이 끝나기를 기다려야 하면, 오래 붙잡고 기다리지 말고 check_later 도구로 "몇 분 뒤 다시 확인"을 예약한 뒤 지금까지 한 일을 보고하고 끝내요(그 시각에 앱이 확인 과제를 새로 맡겨요).'] : []),
       `- 이 미션의 임시 폴더: ${tmpDir} (명령 결과 담기·읽기용, Bash 로만 승인 없이). 경로를 글자 그대로 적으세요(예: npm test > ${path.join(tmpDir, 'test.txt')} 2>&1). /tmp, $TMPDIR, mktemp 를 쓰면 승인함으로 가요.`,
       task.planFirst
         ? '- 이 과제는 "기획 먼저"예요. 안 2~3개와 권장안을 request_approval(kind: decision, planGate: true, items …)로 올려 사용자가 고르기 전에는 작업 폴더를 고칠 수 없어요(앱이 막음). 고른 뒤 그 안대로 구현하세요.'
@@ -317,8 +354,9 @@ export class MissionLeader implements MissionLeaderApi {
     let pics = '';
     if (task.attachments?.length) {
       const shared = shareWithMission(this.config.runsDir, this.mission.id, task.attachments.map((a) => a.id));
-      if (shared.paths.length)
-        pics = `\n\n[첨부 그림] 사용자가 붙인 그림이에요. Read 도구로 열어 보세요(팀원에게도 이 경로를 넘기세요).${task.attachments.some((a) => a.marked) ? ' 그림 위의 펜·네모·화살표·번호는 사용자가 고치고 싶은 곳을 직접 표시한 거예요. 번호는 지시 글의 "1번 …"과 짝지으세요.' : ''}\n${shared.paths.map((p) => `- ${p}`).join('\n')}`;
+      if (shared.images.length)
+        pics = `\n\n[첨부 그림] 사용자가 붙인 그림이에요. Read 도구로 열어 보세요(팀원에게도 이 경로를 넘기세요).${task.attachments.some((a) => a.marked) ? ' 그림 위의 펜·네모·화살표·번호는 사용자가 고치고 싶은 곳을 직접 표시한 거예요. 번호는 지시 글의 "1번 …"과 짝지으세요.' : ''}\n${shared.images.map((p) => `- ${p}`).join('\n')}`;
+      pics += fileNoteForLeader(shared.files);
     }
     const prompt = `${task.text}${pics}${appNote}${carry ? `\n\n${carry}` : ''}`;
     if (this.outputs) await this.outputs.taskStarted(this.mission, mt).catch(() => undefined);
@@ -483,6 +521,7 @@ export class MissionLeader implements MissionLeaderApi {
           signal: abort.signal,
           emitActivity: (t) => this.emitActivity(t),
           pastReports: (taskId, query) => describePastReports(this.outputs?.list(mission.id) ?? [], this.currentTask?.id, taskId, query),
+          checkLater: (minutes, what) => (this.followUp && this.currentTask?.id ? this.followUp(this.currentTask.id, minutes, what) : '(지금은 다시 확인을 예약할 수 없어요. 보고에 "나중에 확인할 일"로 적어 주세요)'),
         })
       : null;
     const env = buildSdkEnv(config);
@@ -552,6 +591,15 @@ export class MissionLeader implements MissionLeaderApi {
             if (msg.session_id) out.sessionId = msg.session_id;
             if (msg.session_id) this.guard.addSession(msg.session_id);
             if (msg.session_id) await this.store.setSessionId(msg.session_id).catch(() => undefined);
+            // 외부 연결 상태: 로그인이 풀렸거나 붙지 못한 연결을 과제 시작 때 바로 알린다 (0.9.21)
+            const servers = (msg as { mcp_servers?: { name: string; status: string }[] }).mcp_servers ?? [];
+            if (this.noteConnectors(servers)) {
+              const later = setTimeout(() => {
+                const ask = (q as { mcpServerStatus?: () => Promise<{ name: string; status: string }[]> }).mcpServerStatus;
+                if (typeof ask === 'function') void ask.call(q).then((list) => this.noteConnectors(list)).catch(() => undefined);
+              }, 12_000);
+              later.unref?.();
+            }
           } else if (msg.subtype === 'task_notification' && msg.tool_use_id) {
             // 팀원이 백그라운드로 돌았을 때를 위한 예비 처리
             endMember(msg.tool_use_id, msg.status === 'completed');

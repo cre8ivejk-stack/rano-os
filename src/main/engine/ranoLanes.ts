@@ -1,6 +1,7 @@
 // 라노 차례 줄: 사용자 말 칸(먼저)과 앱 알림 칸(뒤) 두 칸으로 줄을 세우고, 다음 차례에 무엇을 할지 정한다.
 // 이 파일은 순수 함수만 둔다(파일·엔진·화면을 건드리지 않음) — 시험에서 그대로 부른다.
 import type { ChatAttachment, ChatMessage } from '../../shared/types.js';
+import { attachLabel, isImage, ranoCanSee } from './attachments.js';
 
 /** 기다리는 사용자 말 하나 (이미 저장·화면 표시를 마친 말) */
 export interface LaneUser {
@@ -80,10 +81,23 @@ export function markPassed(notices: LaneNotice[]): void {
 /** 그림 안내 한 줄(기존 문구 그대로). 그림이 없으면 빈 글 */
 export function imageNote(attachments: ChatAttachment[]): string {
   if (!attachments.length) return '';
-  const marked = attachments.filter((a) => a.marked).length;
-  let s = `\n\n[앱 안내] 사용자가 그림 ${attachments.length}개를 붙였어요 (위 그림, 순서대로 id: ${attachments.map((a) => `${a.id}(${a.name}${a.marked ? ', 표시함' : ''})`).join(', ')}). 리더에게 일을 맡길 때 이 그림이 필요하면 assign_to_mission 의 attachments 에 id 를 넣으세요.`;
-  if (marked)
-    s += ' "표시함" 그림에는 사용자가 펜·네모·화살표·번호(①②③)로 고치고 싶은 곳을 직접 표시했어요. 표시한 곳이 무엇인지 그림에서 정확히 짚고, 번호가 있으면 사용자 글의 "1번 …" 설명과 짝지으세요. 리더에게 넘길 때도 표시의 뜻을 task 에 적으세요.';
+  const pics = attachments.filter((a) => isImage(a));
+  const files = attachments.filter((a) => !isImage(a));
+  let s = '';
+  if (pics.length) {
+    const marked = pics.filter((a) => a.marked).length;
+    s += `\n\n[앱 안내] 사용자가 그림 ${pics.length}개를 붙였어요 (위 그림, 순서대로 id: ${pics.map((a) => `${a.id}(${a.name}${a.marked ? ', 표시함' : ''})`).join(', ')}). 리더에게 일을 맡길 때 이 그림이 필요하면 assign_to_mission 의 attachments 에 id 를 넣으세요.`;
+    if (marked)
+      s += ' "표시함" 그림에는 사용자가 펜·네모·화살표·번호(①②③)로 고치고 싶은 곳을 직접 표시했어요. 표시한 곳이 무엇인지 그림에서 정확히 짚고, 번호가 있으면 사용자 글의 "1번 …" 설명과 짝지으세요. 리더에게 넘길 때도 표시의 뜻을 task 에 적으세요.';
+  }
+  if (files.length) {
+    const seen = files.filter((a) => ranoCanSee(a));
+    const blind = files.filter((a) => !ranoCanSee(a));
+    s += `\n\n[앱 안내] 사용자가 파일 ${files.length}개를 붙였어요 (id: ${files.map((a) => `${a.id}(${a.name})`).join(', ')}).`;
+    if (seen.length) s += ` ${seen.map((a) => a.name).join(', ')} 은(는) 내용이 위에 함께 있어 네가 직접 읽을 수 있어요.`;
+    if (blind.length) s += ` ${blind.map((a) => a.name).join(', ')} 은(는) 네가 내용을 열 수 없는 종류예요(엑셀·워드·한글·파워포인트·zip·큰 PDF 등). 내용을 짐작해 말하지 말고, 내용이 필요한 일이면 리더에게 맡기세요.`;
+    s += ' 리더에게 일을 맡길 때 이 파일이 필요하면 assign_to_mission 의 attachments 에 id 를 넣으세요(앱이 그 미션이 읽을 수 있는 곳으로 복사해 경로를 지시에 붙여요).';
+  }
   return s;
 }
 
@@ -110,7 +124,7 @@ export function userTurnPrompt(users: LaneUser[], notices: LaneNotice[], roomNot
     parts.push((note ? `${note}\n\n` : '') + u.text + (u.via === 'mobile' ? '\n\n(휴대폰에서 보냄)' : ''));
   } else {
     const lines = users.map((u, i) => {
-      const pics = u.attachments.length ? ` [그림 ${u.attachments.length}개: ${u.attachments.map((a) => a.id).join(', ')}]` : '';
+      const pics = u.attachments.length ? ` [${attachLabel(u.attachments)}: ${u.attachments.map((a) => a.id).join(', ')}]` : '';
       const note = u.workId ? roomNote(u.workId) : '';
       return `${i + 1}) ${note ? `${note} → ` : ''}${u.via === 'mobile' ? '(휴대폰에서 보냄) ' : ''}${u.text}${pics}`;
     });
